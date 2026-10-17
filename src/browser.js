@@ -77,7 +77,7 @@ export async function browserStep({ jobId, token, observation, screenshot, llm =
     if (action.type === 'done') return stop('done', action.summary || 'Finished.');
     const log = [...j.log, { n: j.step_count + 1, type: action.type, index: action.index, text: action.type === 'type' ? String(action.text || '').slice(0, 40) : undefined, url: String(observation?.url || '').slice(0, 200) }].slice(-40);
     const sig = (x) => `${x.type}|${x.index}|${x.text || ''}|${x.url}`;
-    if (log.length >= 3 && sig(log.at(-1)) === sig(log.at(-2)) && sig(log.at(-2)) === sig(log.at(-3))) return stop('failed', 'Stopped: the browser repeated the same action three times.');
+    if (action.type !== 'scroll' && log.length >= 3 && sig(log.at(-1)) === sig(log.at(-2)) && sig(log.at(-2)) === sig(log.at(-3))) return stop('failed', 'Stopped: the browser repeated the same action three times.');
     const save = (extra = '') => c.query(`UPDATE browser_jobs SET status='running', step_count=step_count+1, log=$2, screenshots=$3 ${extra} WHERE id=$1`, [jobId, JSON.stringify(log), JSON.stringify(shots)]);
     if (action.type === 'scroll') { await save(); return { status: 200, body: { action: { type: 'scroll' } } }; }
     if (action.type === 'goto') {
