@@ -311,3 +311,52 @@ CREATE OR REPLACE FUNCTION browser_job_tenant(p_job uuid, p_hash text) RETURNS u
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 REVOKE ALL ON FUNCTION browser_job_tenant(uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION browser_job_tenant(uuid, text) TO hi_app;
+
+-- ===== WhatsApp connector (phase 2, engine-agnostic; simulator until a number is linked) =====
+CREATE TABLE IF NOT EXISTS wa_channels (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  number text NOT NULL UNIQUE CHECK (number ~ '^[0-9]{8,15}$' AND number !~ '^27(67|61)'),  -- the 067 and 061 outreach lines are never used for HI
+  engine text NOT NULL DEFAULT 'simulator' CHECK (engine IN ('simulator','own_engine','meta_cloud')),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused')),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS wa_contacts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  phone text NOT NULL CHECK (phone ~ '^[0-9]{8,15}$'),
+  name text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, phone)
+);
+CREATE TABLE IF NOT EXISTS wa_messages (
+  id bigserial PRIMARY KEY,
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  phone text NOT NULL,
+  direction text NOT NULL CHECK (direction IN ('in','out')),
+  body text NOT NULL,
+  status text NOT NULL DEFAULT 'received' CHECK (status IN ('received','ignored','queued','sent','failed')),
+  external_id text,
+  conversation_id uuid,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS wa_messages_ext ON wa_messages (tenant_id, external_id) WHERE external_id IS NOT NULL;
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['wa_channels','wa_contacts','wa_messages']
+  LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+    EXECUTE format($f$CREATE POLICY tenant_isolation ON %I USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)$f$, t);
+  END LOOP;
+END $$;
+GRANT SELECT, INSERT, UPDATE, DELETE ON wa_channels, wa_contacts, wa_messages TO hi_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO hi_app;
+CREATE OR REPLACE FUNCTION wa_channel_lookup(p_number text) RETURNS TABLE (tenant_id uuid, agent_id uuid, engine text) AS $$
+  SELECT c.tenant_id, c.agent_id, c.engine FROM wa_channels c JOIN tenants t ON t.id = c.tenant_id WHERE c.number = p_number AND c.status='active' AND NOT t.paused;
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
+REVOKE ALL ON FUNCTION wa_channel_lookup(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION wa_channel_lookup(text) TO hi_app;

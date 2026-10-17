@@ -11,6 +11,7 @@ import { matchTenant, matchAllTenants } from './match.js';
 import { buildBriefsForAll, decideApproval, setEmergencyStop, emergencyStopped, vaultAlerts } from './core.js';
 import { explainFit, modelEnabled } from './gateway.js';
 import { mailConfigured } from './mail.js';
+import { handleInbound, makeAdapter, normalisePhone } from './whatsapp.js';
 import { browserStep, browserPoll } from './browser.js';
 import { runAgent, runDueTasks, ensureDefaultAgent } from './agent.js';
 import { chat as defaultChat, agentModelEnabled } from './gateway.js';
@@ -438,6 +439,38 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       await c.query("UPDATE browser_jobs SET screenshots=$2, status=CASE WHEN status IN ('running','queued','awaiting_approval') THEN 'done' ELSE status END, result=coalesce(result,'The browser session ended.'), finished_at=coalesce(finished_at, now()) WHERE id=$1", [b.job_id, JSON.stringify(shots)]);
     });
     return { ok: true };
+  });
+
+
+  // ---------- WhatsApp ----------
+  app.post('/internal/wa/inbound', async (req, reply) => {
+    if (!secretEq(req.headers['x-wa-secret'], process.env.WA_INBOUND_SECRET)) return reply.code(401).send({ error: 'unauthorised' });
+    const b = req.body || {};
+    const r = await handleInbound({ to: b.to, from: b.from, text: b.text, externalId: b.id ? String(b.id).slice(0, 80) : null, llm, fetchImpl, lookup, adapter: makeAdapter(fetchImpl) });
+    return reply.code(r.status || 200).send(r);
+  });
+  app.get('/app/whatsapp', { preHandler: guard }, async (req, reply) => {
+    const u = req.user; await ensureDefaultAgent(u.tenant_id);
+    const d = await withTenant(u.tenant_id, async (c) => ({
+      channels: (await c.query('SELECT number, engine, status FROM wa_channels')).rows,
+      contacts: (await c.query('SELECT id, phone, name FROM wa_contacts ORDER BY created_at')).rows,
+      msgs: (await c.query('SELECT phone, direction, body, status, created_at FROM wa_messages ORDER BY id DESC LIMIT 30')).rows }));
+    return render(reply, u, 'WhatsApp', `<h1>WhatsApp</h1><p class="mut">Your agent answers WhatsApp messages from the people you add here, and only replies. It never starts a conversation, and anyone not on this list is ignored. ${d.channels.length ? '' : 'No WhatsApp number is linked yet; a number is linked by NahaLabs when you are ready.'}</p>
+      <div class="card"><b>Linked number</b><ul>${d.channels.map((x) => `<li>${esc(x.number)} (${esc(x.engine)}, ${esc(x.status)})</li>`).join('') || '<li class="mut">None yet</li>'}</ul></div>
+      <div class="card"><b>People HI may reply to</b><table>${d.contacts.map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.phone)}</td><td><form method="post" action="/app/whatsapp/contacts/${x.id}/delete">${csrf(u)}<button class="sec">Remove</button></form></td></tr>`).join('') || '<tr><td class="mut">No contacts yet</td></tr>'}</table>
+        <form method="post" action="/app/whatsapp/contacts">${csrf(u)}<label>Name</label><input name="name" maxlength="60"><label>Phone number with country code, e.g. 27821234567</label><input name="phone" required><p><button>Add contact</button></p></form></div>
+      <div class="card"><b>Recent messages</b><table>${d.msgs.map((m) => `<tr><td>${fdate(m.created_at)}</td><td>${m.direction === 'in' ? 'from' : 'to'} ${esc(m.phone)}</td><td>${esc(m.body.slice(0, 200))}</td><td>${esc(m.status)}</td></tr>`).join('') || '<tr><td class="mut">Nothing yet</td></tr>'}</table></div>`, flashOf(req));
+  });
+  app.post('/app/whatsapp/contacts', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, phone = normalisePhone(req.body?.phone);
+    if (!/^[0-9]{8,15}$/.test(phone)) return reply.redirect('/app/whatsapp?m=' + encodeURIComponent('Enter the number with country code, digits only.'));
+    await withTenant(u.tenant_id, async (c) => { await c.query("INSERT INTO wa_contacts (tenant_id, phone, name) VALUES (current_setting('app.tenant_id')::uuid,$1,$2) ON CONFLICT DO NOTHING", [phone, String(req.body?.name || '').slice(0, 60)]); await audit(c, u.tenant_id, `user:${u.user_id}`, 'wa.contact_added', {}); });
+    return reply.redirect('/app/whatsapp?m=' + encodeURIComponent('Added.'));
+  });
+  app.post('/app/whatsapp/contacts/:id/delete', { preHandler: guard }, async (req, reply) => {
+    if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
+    await withTenant(req.user.tenant_id, async (c) => { await c.query('DELETE FROM wa_contacts WHERE id=$1', [req.params.id]); await audit(c, req.user.tenant_id, `user:${req.user.user_id}`, 'wa.contact_removed', {}); });
+    return reply.redirect('/app/whatsapp?m=' + encodeURIComponent('Removed.'));
   });
 
   // ---------- Internal (scheduler) ----------
