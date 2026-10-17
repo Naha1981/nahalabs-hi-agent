@@ -1,0 +1,30 @@
+name: browser-job
+on:
+  workflow_dispatch:
+    inputs:
+      job_id: { required: true }
+      token: { required: true }
+      base_url: { required: true }
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Mask token
+        run: echo "::add-mask::${{ inputs.token }}"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm i --no-save --no-audit --no-fund playwright-core@1.49.0
+      - name: Fetch job
+        id: job
+        run: |
+          START_URL=$(curl -sf -X POST "${{ inputs.base_url }}/internal/browser/start" -H 'content-type: application/json' -d "{\"job_id\":\"${{ inputs.job_id }}\",\"token\":\"${{ inputs.token }}\"}" | jq -r .start_url)
+          echo "::add-mask::$START_URL" ; echo "start_url=$START_URL" >> $GITHUB_OUTPUT
+      - name: Run browser
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          JOB_TOKEN: ${{ inputs.token }}
+          BASE_URL: ${{ inputs.base_url }}
+          START_URL: ${{ steps.job.outputs.start_url }}
+        run: node browser/worker.mjs

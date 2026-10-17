@@ -277,3 +277,37 @@ BEGIN
 END $$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON agents, conversations, messages, memories, tasks, runs TO hi_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO hi_app;
+
+-- ===== Browser jobs (phase 2) =====
+CREATE TABLE IF NOT EXISTS browser_jobs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_id uuid REFERENCES agents(id) ON DELETE SET NULL,
+  start_url text NOT NULL,
+  goal text NOT NULL CHECK (char_length(goal) <= 1500),
+  mode text NOT NULL DEFAULT 'read' CHECK (mode IN ('read','act')),
+  status text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','queued','running','awaiting_approval','done','failed','rejected','expired')),
+  token_hash text,
+  token_expires_at timestamptz,
+  step_count integer NOT NULL DEFAULT 0,
+  pending jsonb,
+  result text,
+  log jsonb NOT NULL DEFAULT '[]',
+  screenshots jsonb NOT NULL DEFAULT '[]',
+  approval_id uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz
+);
+ALTER TABLE browser_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE browser_jobs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON browser_jobs;
+CREATE POLICY tenant_isolation ON browser_jobs USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON browser_jobs TO hi_app;
+-- The runner authenticates with a one-job token, not a session, so lookup by id happens in a SECURITY DEFINER function that
+-- returns the tenant only when the token hash matches.
+CREATE OR REPLACE FUNCTION browser_job_tenant(p_job uuid, p_hash text) RETURNS uuid AS $$
+  SELECT tenant_id FROM browser_jobs WHERE id = p_job AND token_hash = p_hash AND token_expires_at > now() AND status IN ('queued','running','awaiting_approval');
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
+REVOKE ALL ON FUNCTION browser_job_tenant(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION browser_job_tenant(uuid, text) TO hi_app;

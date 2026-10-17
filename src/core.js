@@ -1,6 +1,7 @@
 // Brief building, approval queue, vault alerts, emergency stop. All tenant access goes through withTenant (RLS).
 import { withTenant, withSystem, audit } from './db.js';
 import { sendMail } from './mail.js';
+import { applyBrowserDecision } from './browser.js';
 
 const fmtDate = (d) => d ? new Date(d).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', dateStyle: 'medium', timeStyle: 'short' }) : 'not stated';
 
@@ -74,11 +75,18 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
     if (decision === 'reject') {
       await c.query("UPDATE approvals SET status='rejected', decided_by=$2, decided_at=now() WHERE id=$1", [approvalId, userId]);
       if (ap.kind === 'send_brief') await c.query("UPDATE briefs SET status='rejected' WHERE id=$1", [ap.payload.brief_id]);
+      if (ap.kind.startsWith('browser_')) await applyBrowserDecision(c, { tenantId, approval: ap, decision: 'reject', fetchImpl });
       await audit(c, tenantId, `user:${userId}`, 'approval.rejected', { approval_id: approvalId });
       return { status: 'rejected' };
     }
     await c.query("UPDATE approvals SET status='approved', decided_by=$2, decided_at=now() WHERE id=$1", [approvalId, userId]);
     await audit(c, tenantId, `user:${userId}`, 'approval.approved', { approval_id: approvalId, kind: ap.kind });
+    if (ap.kind.startsWith('browser_')) {
+      const stopped0 = (await c.query("SELECT value FROM system_flags WHERE key='emergency_stop'")).rows[0]?.value === 'on';
+      const paused0 = (await c.query("SELECT paused FROM tenants WHERE id = current_setting('app.tenant_id')::uuid")).rows[0].paused;
+      if (stopped0 || paused0) { await c.query("UPDATE approvals SET status='cancelled' WHERE id=$1", [approvalId]); return { status: 'cancelled', reason: stopped0 ? 'emergency stop is on' : 'tenant is paused' }; }
+      return applyBrowserDecision(c, { tenantId, approval: ap, decision: 'approve', fetchImpl });
+    }
     if (!['send_brief', 'send_email'].includes(ap.kind)) return { status: 'approved' };
     // Execute only after approval. Re-check stops at execution time.
     const stopped = (await c.query("SELECT value FROM system_flags WHERE key='emergency_stop'")).rows[0]?.value === 'on';

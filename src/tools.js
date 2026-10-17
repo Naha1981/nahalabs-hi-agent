@@ -2,6 +2,7 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import { audit } from './db.js';
+import { proposeBrowserJob } from './browser.js';
 
 export function isPrivateIp(ip) {
   if (net.isIPv4(ip)) {
@@ -57,6 +58,8 @@ export const TOOL_SCHEMAS = [
   { name: 'find_tenders', description: 'Search South African public tenders (eTenders) that are still open. Opportunity Desk module.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
   { name: 'plan', description: 'Write the numbered steps you will follow for a multi-step job before you start.', parameters: { type: 'object', properties: { steps: { type: 'array', items: { type: 'string' } } }, required: ['steps'] } },
   { name: 'schedule_task', description: 'Schedule a task to run later (once) or repeatedly. every_minutes must be 60 or more. Use run_in_minutes for a one-off.', parameters: { type: 'object', properties: { title: { type: 'string' }, instruction: { type: 'string' }, every_minutes: { type: 'integer' }, run_in_minutes: { type: 'integer' } }, required: ['title', 'instruction'] } },
+  { name: 'browser_task', description: 'Ask to open a public website in an isolated cloud browser to read it or fill and click through it (forms, searches, pages that need clicking). The customer must approve before it starts, and approves again before any final submit. mode=read only reads and follows links; mode=act can type and click. Cannot use passwords, card numbers or codes.', parameters: { type: 'object', properties: { start_url: { type: 'string' }, goal: { type: 'string' }, mode: { type: 'string', enum: ['read', 'act'] } }, required: ['start_url', 'goal'] } },
+  { name: 'browser_results', description: 'Read the results of the most recent browser tasks.', parameters: { type: 'object', properties: {} } },
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
 ];
 
@@ -123,6 +126,18 @@ export async function runTool(name, args, ctx) {
         [ctx.agentId, clip(a.title, 120), clip(a.instruction, 2000), every, String(inMin), `agent:${ctx.agentName || 'hi'}`]);
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'task.scheduled', { task_id: r.rows[0].id, every_minutes: every });
       return `Scheduled. First run at ${new Date(r.rows[0].next_run_at).toISOString()}${every ? `, then every ${every} minutes` : ''}.`;
+    }
+    case 'browser_task': {
+      if (ctx.mode === 'task') return 'Unattended runs cannot start browser tasks.';
+      try {
+        const r = await proposeBrowserJob(c, { tenantId, agentId: ctx.agentId, agentName: ctx.agentName || 'hi', startUrl: String(a.start_url || ''), goal: clip(a.goal, 1500), mode: a.mode, lookup: ctx.lookup });
+        if (r.error) return r.error;
+        return 'Browser task proposed and waiting in the approval queue. It will not start until the customer approves it. Check back with browser_results.';
+      } catch (e) { return 'Cannot open that address: ' + clip(e.message, 80); }
+    }
+    case 'browser_results': {
+      const r = await c.query("SELECT start_url, goal, status, result, created_at FROM browser_jobs ORDER BY created_at DESC LIMIT 3");
+      return UNTRUSTED(r.rowCount ? r.rows.map((j) => `- [${j.status}] ${j.goal.slice(0, 120)} (${new URL(j.start_url).hostname}): ${clip(j.result || 'no result yet', 600)}`).join('\n') : 'No browser tasks yet.');
     }
     case 'propose_email': {
       const subject = clip(a.subject, 150).trim(), body = clip(a.body, 5000).trim();

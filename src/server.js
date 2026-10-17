@@ -1,7 +1,8 @@
 import Fastify from 'fastify';
 import formbody from '@fastify/formbody';
 import cookie from '@fastify/cookie';
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual, createHash } from 'node:crypto';
+const require_hash = (t) => createHash('sha256').update(String(t || '')).digest('hex');
 import { withTenant, withSystem, audit, auditFor, closePool } from './db.js';
 import { hashPassword, verifyPassword, newToken, tokenHash, makeLimiter } from './auth.js';
 import { page, esc, fdate, safeUrl } from './views.js';
@@ -10,6 +11,7 @@ import { matchTenant, matchAllTenants } from './match.js';
 import { buildBriefsForAll, decideApproval, setEmergencyStop, emergencyStopped, vaultAlerts } from './core.js';
 import { explainFit, modelEnabled } from './gateway.js';
 import { mailConfigured } from './mail.js';
+import { browserStep, browserPoll } from './browser.js';
 import { runAgent, runDueTasks, ensureDefaultAgent } from './agent.js';
 import { chat as defaultChat, agentModelEnabled } from './gateway.js';
 
@@ -31,7 +33,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     reply.header('x-content-type-options', 'nosniff');
     reply.header('x-frame-options', 'DENY');
     reply.header('referrer-policy', 'same-origin');
-    reply.header('content-security-policy', "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'");
+    reply.header('content-security-policy', "default-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'");
     if (req.url.startsWith('/app')) reply.header('cache-control', 'no-store');
   });
 
@@ -255,9 +257,9 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
 
   app.get('/app/approvals', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
-    const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT a.*, b.body_text FROM approvals a LEFT JOIN briefs b ON b.id = (a.payload->>\'brief_id\')::uuid ORDER BY a.created_at DESC LIMIT 50'))).rows;
+    const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT a.*, b.body_text, (SELECT j.screenshots->-1->>\'img\' FROM browser_jobs j WHERE j.id = (a.payload->>\'job_id\')::uuid) shot FROM approvals a LEFT JOIN briefs b ON b.id = (a.payload->>\'brief_id\')::uuid ORDER BY a.created_at DESC LIMIT 50'))).rows;
     const html = rows.map((a) => `<div class="card"><div class="row"><b>${esc(a.summary)}</b><span class="tag">${esc(a.status)}</span></div><div class="mut">Proposed by ${esc(a.proposed_by)} on ${fdate(a.created_at)}</div>
-      ${(a.body_text || a.payload?.body) ? `<pre>${esc(a.body_text || a.payload.body)}</pre>` : ''}${a.status === 'proposed' ? `<form method="post" action="/app/approvals/${a.id}">${csrf(u)}<p>This will email the text above to <b>${esc(u.email)}</b> only.</p><button name="decision" value="approve">Approve and send</button> <button name="decision" value="reject" class="sec">Reject</button></form>` : ''}</div>`).join('');
+      ${a.shot && /^[A-Za-z0-9+/=]+$/.test(a.shot) ? `<img alt="What the browser sees now" style="max-width:100%;border:1px solid var(--line);border-radius:8px" src="data:image/jpeg;base64,${a.shot}">` : ''}${(a.body_text || a.payload?.body) ? `<pre>${esc(a.body_text || a.payload.body)}</pre>` : ''}${a.status === 'proposed' ? `<form method="post" action="/app/approvals/${a.id}">${csrf(u)}<p>${a.kind.startsWith('browser_') ? 'Approving lets the isolated browser continue.' : `This will email the text above to <b>${esc(u.email)}</b> only.`}</p><button name="decision" value="approve">Approve and send</button> <button name="decision" value="reject" class="sec">Reject</button></form>` : ''}</div>`).join('');
     return render(reply, u, 'Approvals', `<h1>Approval queue</h1><p class="mut">HI proposes. You decide. Nothing leaves your account without your approval here.</p>${html || '<div class="card mut">Nothing waiting.</div>'}`, flashOf(req));
   });
   app.post('/app/approvals/:id', { preHandler: guard }, async (req, reply) => {
@@ -401,6 +403,40 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
     await withTenant(req.user.tenant_id, async (c) => { await c.query('DELETE FROM memories WHERE id=$1', [req.params.id]); await audit(c, req.user.tenant_id, `user:${req.user.user_id}`, 'memory.deleted', {}); });
     return reply.redirect('/app/memory?m=' + encodeURIComponent('Deleted.'));
+  });
+
+
+  // ---------- Browser jobs ----------
+  app.get('/app/browser', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const jobs = (await withTenant(u.tenant_id, (c) => c.query('SELECT id, start_url, goal, mode, status, result, step_count, screenshots, created_at, finished_at FROM browser_jobs ORDER BY created_at DESC LIMIT 15'))).rows;
+    return render(reply, u, 'Browser', `<h1>Browser tasks</h1><p class="mut">Each task runs in its own fresh cloud browser that is destroyed afterwards. Nothing starts until you approve it in Approvals, and any final submit needs a second approval. Passwords, card numbers and codes are never entered by HI.</p>
+      ${jobs.map((j) => `<div class="card"><div class="row"><b>${esc(new URL(j.start_url).hostname)}</b><span class="tag">${esc(j.status)} - ${esc(j.mode)}</span></div><div class="mut">${esc(j.goal.slice(0, 200))}</div>${j.result ? `<div>${mdLite(j.result)}</div>` : ''}
+        ${(j.screenshots || []).slice(-3).map((s) => `<img alt="Browser step ${s.step + 1}" style="max-width:100%;border:1px solid var(--line);border-radius:8px;margin-top:8px" src="data:image/jpeg;base64,${/^[A-Za-z0-9+/=]+$/.test(s.img) ? s.img : ''}">`).join('')}</div>`).join('') || '<div class="card mut">No browser tasks yet. Ask your agent to open a site and do something on it.</div>'}`, flashOf(req));
+  });
+  const jsonBig = { bodyLimit: 700 * 1024 };
+  app.post('/internal/browser/start', async (req, reply) => {
+    const { job_id, token } = req.body || {};
+    const tenantId = (await withSystem((c) => c.query('SELECT browser_job_tenant($1,$2) t', [String(job_id), require_hash(token)]))).rows[0]?.t;
+    if (!tenantId) return reply.code(401).send({ error: 'invalid job token' });
+    const j = await withTenant(tenantId, async (c) => { await c.query("UPDATE browser_jobs SET status='running' WHERE id=$1 AND status='queued'", [job_id]); return (await c.query('SELECT start_url FROM browser_jobs WHERE id=$1', [job_id])).rows[0]; });
+    return { start_url: j.start_url };
+  });
+  app.post('/internal/browser/step', jsonBig, async (req, reply) => {
+    const b = req.body || {}; const r = await browserStep({ jobId: String(b.job_id), token: b.token, observation: b.observation, screenshot: b.screenshot, llm, lookup });
+    return reply.code(r.status).send(r.body);
+  });
+  app.post('/internal/browser/poll', async (req, reply) => { const b = req.body || {}; const r = await browserPoll({ jobId: String(b.job_id), token: b.token }); return reply.code(r.status).send(r.body); });
+  app.post('/internal/browser/finish', jsonBig, async (req, reply) => {
+    const b = req.body || {};
+    const tenantId = (await withSystem((c) => c.query('SELECT browser_job_tenant($1,$2) t', [String(b.job_id), require_hash(b.token)]))).rows[0]?.t;
+    if (!tenantId) return reply.code(401).send({ error: 'invalid job token' });
+    await withTenant(tenantId, async (c) => {
+      const j = (await c.query('SELECT screenshots, status FROM browser_jobs WHERE id=$1 FOR UPDATE', [b.job_id])).rows[0];
+      const shots = j.screenshots; if (typeof b.screenshot === 'string' && b.screenshot.length < 400000 && /^[A-Za-z0-9+/=]+$/.test(b.screenshot)) { if (shots.length >= 6) shots.shift(); shots.push({ step: 99, url: String(b.observation?.url || '').slice(0, 300), img: b.screenshot }); }
+      await c.query("UPDATE browser_jobs SET screenshots=$2, status=CASE WHEN status IN ('running','queued','awaiting_approval') THEN 'done' ELSE status END, result=coalesce(result,'The browser session ended.'), finished_at=coalesce(finished_at, now()) WHERE id=$1", [b.job_id, JSON.stringify(shots)]);
+    });
+    return { ok: true };
   });
 
   // ---------- Internal (scheduler) ----------
