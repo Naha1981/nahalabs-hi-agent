@@ -301,7 +301,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
 
 
   // ---------- Agent platform ----------
-  const mdLite = (t) => esc(t).replace(/\n/g, '<br>');
+  const mdLite = (t) => esc(String(t).replace(/<br\s*\/?>/gi, '\n').replace(/^\s*\|?[-:| ]{3,}\|?\s*$/gm, '')).replace(/\*\*([^*\n]{1,200})\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
   const srcList = (src) => (src || []).length ? `<div class="mut">Sources: ${(src).map((x, i) => `[${i + 1}] <a href="${safeUrl(x.url)}" rel="noopener noreferrer" target="_blank">${esc(String(x.title || x.url).slice(0, 80))}</a>`).join(' &nbsp; ')}</div>` : '';
   const uuidOk = (x) => /^[0-9a-f-]{36}$/i.test(String(x || ''));
 
