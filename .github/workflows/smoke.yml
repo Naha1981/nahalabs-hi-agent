@@ -1,0 +1,22 @@
+name: live-smoke
+on:
+  push: { branches: [main] }
+  schedule: [{ cron: '23 */6 * * *' }]
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Wait for the deploy, then check the live app and its database role
+        run: |
+          U=https://nahalabs-hi.onrender.com
+          ok=0
+          for i in $(seq 1 30); do
+            c1=$(curl -s -m 30 -o /dev/null -w '%{http_code}' $U/healthz/db || true)
+            c2=$(curl -s -m 30 -o /dev/null -w '%{http_code}' $U/login || true)
+            echo "attempt $i: healthz/db=$c1 login=$c2"
+            if [ "$c1" = 200 ] && [ "$c2" = 200 ]; then ok=$((ok+1)); [ $ok -ge 3 ] && exit 0; else ok=0; fi
+            sleep 20
+          done
+          echo "live smoke failed"; exit 1

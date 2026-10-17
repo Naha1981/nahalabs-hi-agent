@@ -7,7 +7,9 @@ export async function migrate(url, appPassword) {
   await c.connect();
   try {
     await c.query(schemaSql());
-    if (appPassword) {
+    // Only (re)set the app password when asked: re-setting it on every migration briefly breaks pooled connections.
+    const login = (await c.query("SELECT rolcanlogin FROM pg_roles WHERE rolname='hi_app'")).rows[0]?.rolcanlogin;
+    if (appPassword && (!login || process.env.FORCE_APP_PASSWORD === 'true')) {
       if (!/^[A-Za-z0-9_\-]{20,}$/.test(appPassword)) throw new Error('HI_APP_PASSWORD must be 20+ chars of [A-Za-z0-9_-]');
       await c.query(`ALTER ROLE hi_app LOGIN PASSWORD '${appPassword}'`);
     }

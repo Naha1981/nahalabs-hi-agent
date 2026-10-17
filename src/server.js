@@ -58,6 +58,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   const flashOf = (req) => req.query?.m ? String(req.query.m).slice(0, 160) : null;
 
   app.get('/healthz', async () => ({ ok: true }));
+  app.get('/healthz/db', async (req, reply) => { try { const r = await withSystem((c) => c.query('SELECT count(*)::int n FROM tenants')); return { ok: true, db: 'ok' }; } catch (e) { return reply.code(503).send({ ok: false, db: 'down' }); } });
 
   app.get('/', async (req, reply) => {
     const s = await sessionOf(req);
