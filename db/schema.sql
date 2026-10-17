@@ -199,3 +199,81 @@ GRANT SELECT, INSERT, UPDATE ON tenders, ingest_runs, system_flags, tenants TO h
 GRANT SELECT, INSERT, UPDATE, DELETE ON users, sessions TO hi_app;
 GRANT SELECT, INSERT ON email_log TO hi_app;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO hi_app;
+
+-- ===== Agent platform (phase 1) =====
+CREATE TABLE IF NOT EXISTS agents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 40),
+  persona text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, name)
+);
+CREATE TABLE IF NOT EXISTS conversations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  title text NOT NULL DEFAULT 'Conversation',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id bigserial PRIMARY KEY,
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  role text NOT NULL CHECK (role IN ('user','assistant','system')),
+  content text NOT NULL,
+  sources jsonb NOT NULL DEFAULT '[]',
+  steps jsonb NOT NULL DEFAULT '[]',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS memories (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_id uuid REFERENCES agents(id) ON DELETE CASCADE,
+  kind text NOT NULL DEFAULT 'archival' CHECK (kind IN ('core','archival')),
+  content text NOT NULL CHECK (char_length(content) <= 1000),
+  tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS memories_tsv_idx ON memories USING gin (tsv);
+CREATE TABLE IF NOT EXISTS tasks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  instruction text NOT NULL CHECK (char_length(instruction) <= 2000),
+  interval_minutes integer CHECK (interval_minutes IS NULL OR interval_minutes >= 60),
+  next_run_at timestamptz,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','done')),
+  last_run_at timestamptz,
+  created_by text NOT NULL DEFAULT 'user',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS runs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  task_id uuid REFERENCES tasks(id) ON DELETE SET NULL,
+  agent_id uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  conversation_id uuid REFERENCES conversations(id) ON DELETE SET NULL,
+  status text NOT NULL DEFAULT 'running' CHECK (status IN ('running','done','failed','budget')),
+  result text,
+  steps jsonb NOT NULL DEFAULT '[]',
+  sources jsonb NOT NULL DEFAULT '[]',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['agents','conversations','messages','memories','tasks','runs']
+  LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+    EXECUTE format($f$CREATE POLICY tenant_isolation ON %I
+      USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+      WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)$f$, t);
+  END LOOP;
+END $$;
+GRANT SELECT, INSERT, UPDATE, DELETE ON agents, conversations, messages, memories, tasks, runs TO hi_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO hi_app;

@@ -79,7 +79,7 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
     }
     await c.query("UPDATE approvals SET status='approved', decided_by=$2, decided_at=now() WHERE id=$1", [approvalId, userId]);
     await audit(c, tenantId, `user:${userId}`, 'approval.approved', { approval_id: approvalId, kind: ap.kind });
-    if (ap.kind !== 'send_brief') return { status: 'approved' };
+    if (!['send_brief', 'send_email'].includes(ap.kind)) return { status: 'approved' };
     // Execute only after approval. Re-check stops at execution time.
     const stopped = (await c.query("SELECT value FROM system_flags WHERE key='emergency_stop'")).rows[0]?.value === 'on';
     const t = (await c.query('SELECT paused FROM tenants WHERE id = current_setting(\'app.tenant_id\')::uuid')).rows[0];
@@ -97,16 +97,23 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
       await audit(c, tenantId, 'system', 'send.blocked', { reason: 'daily email cap reached', cap });
       return { status: 'failed', reason: 'daily email cap reached' };
     }
-    const brief = (await c.query('SELECT * FROM briefs WHERE id=$1', [ap.payload.brief_id])).rows[0];
+    const isBrief = ap.kind === 'send_brief';
+    const brief = isBrief ? (await c.query('SELECT * FROM briefs WHERE id=$1', [ap.payload.brief_id])).rows[0] : { id: null, subject: ap.payload.subject, body_text: ap.payload.body };
+    // v1: outbound email goes to the approving user's own address only, whatever the payload says
+    if (!isBrief && String(ap.payload.to).toLowerCase() !== String(userEmail).toLowerCase()) {
+      await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]);
+      await audit(c, tenantId, 'system', 'send.blocked', { reason: 'recipient is not the account address' });
+      return { status: 'failed', reason: 'recipient is not your account address' };
+    }
     try {
       const id = await sendMail({ to: userEmail, subject: brief.subject, text: brief.body_text, fetchImpl });
       await c.query("INSERT INTO email_log (tenant_id, to_addr, subject, provider_id) VALUES ($1,$2,$3,$4)", [tenantId, userEmail, brief.subject, id]);
-      await c.query("UPDATE briefs SET status='sent' WHERE id=$1", [brief.id]);
+      if (isBrief) await c.query("UPDATE briefs SET status='sent' WHERE id=$1", [brief.id]);
       await c.query("UPDATE approvals SET status='executed' WHERE id=$1", [approvalId]);
-      await audit(c, tenantId, 'agent:briefer', 'brief.sent', { brief_id: brief.id, provider_id: id });
+      await audit(c, tenantId, isBrief ? 'agent:briefer' : ap.proposed_by, isBrief ? 'brief.sent' : 'email.sent', { brief_id: brief.id, approval_id: approvalId, provider_id: id });
       return { status: 'executed' };
     } catch (e) {
-      await c.query("UPDATE briefs SET status='failed' WHERE id=$1", [brief.id]);
+      if (isBrief) await c.query("UPDATE briefs SET status='failed' WHERE id=$1", [brief.id]);
       await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]);
       await audit(c, tenantId, 'agent:briefer', 'brief.failed', { error: String(e.message).slice(0, 200) });
       return { status: 'failed', reason: String(e.message).slice(0, 200) };

@@ -10,6 +10,8 @@ import { matchTenant, matchAllTenants } from './match.js';
 import { buildBriefsForAll, decideApproval, setEmergencyStop, emergencyStopped, vaultAlerts } from './core.js';
 import { explainFit, modelEnabled } from './gateway.js';
 import { mailConfigured } from './mail.js';
+import { runAgent, runDueTasks, ensureDefaultAgent } from './agent.js';
+import { chat as defaultChat, agentModelEnabled } from './gateway.js';
 
 const COOKIE = 'hi_session';
 const secretEq = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && x.length > 0 && timingSafeEqual(x, y); };
@@ -18,7 +20,7 @@ const lines = (s) => String(s || '').split(/[\n,]/).map((x) => x.trim()).filter(
 const STATUSES = ['new', 'saved', 'dismissed', 'applied', 'won', 'lost'];
 const DOC_TYPES = ['CSD supplier report', 'Tax compliance status (SARS)', 'B-BBEE certificate or affidavit', 'CIPC registration', 'Bank confirmation letter', 'Other'];
 
-export async function buildApp({ fetchImpl = fetch, logger = false } = {}) {
+export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaultChat, lookup } = {}) {
   const app = Fastify({ logger, trustProxy: true, bodyLimit: 100 * 1024 });
   await app.register(formbody);
   await app.register(cookie);
@@ -57,7 +59,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false } = {}) {
 
   app.get('/', async (req, reply) => {
     const s = await sessionOf(req);
-    if (s) return reply.redirect('/app');
+    if (s) return reply.redirect('/app/agent');
     return render(reply, null, 'Opportunity Desk', `
       <h1>Find the South African tenders worth your time.</h1>
       <p>HI reads National Treasury's public eTenders data every day, matches open tenders to your business profile, shows exactly why each one matched, and keeps your compliance documents in view. You approve everything before anything is sent.</p>
@@ -117,7 +119,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false } = {}) {
     await withSystem((c) => c.query("INSERT INTO sessions (token_hash, user_id, tenant_id, expires_at) VALUES ($1,$2,$3, now() + interval '14 days')", [tokenHash(token), u.id, u.tenant_id]));
     await auditFor(u.tenant_id, `user:${u.id}`, 'login.ok', {});
     reply.setCookie(COOKIE, token, { path: '/', httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 14 * 86400 });
-    return reply.redirect('/app');
+    return reply.redirect('/app/agent');
   });
 
   app.post('/logout', { preHandler: guard }, async (req, reply) => {
@@ -255,7 +257,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false } = {}) {
     const u = req.user;
     const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT a.*, b.body_text FROM approvals a LEFT JOIN briefs b ON b.id = (a.payload->>\'brief_id\')::uuid ORDER BY a.created_at DESC LIMIT 50'))).rows;
     const html = rows.map((a) => `<div class="card"><div class="row"><b>${esc(a.summary)}</b><span class="tag">${esc(a.status)}</span></div><div class="mut">Proposed by ${esc(a.proposed_by)} on ${fdate(a.created_at)}</div>
-      ${a.body_text ? `<pre>${esc(a.body_text)}</pre>` : ''}${a.status === 'proposed' ? `<form method="post" action="/app/approvals/${a.id}">${csrf(u)}<p>This will email the brief to <b>${esc(u.email)}</b> only.</p><button name="decision" value="approve">Approve and send</button> <button name="decision" value="reject" class="sec">Reject</button></form>` : ''}</div>`).join('');
+      ${(a.body_text || a.payload?.body) ? `<pre>${esc(a.body_text || a.payload.body)}</pre>` : ''}${a.status === 'proposed' ? `<form method="post" action="/app/approvals/${a.id}">${csrf(u)}<p>This will email the text above to <b>${esc(u.email)}</b> only.</p><button name="decision" value="approve">Approve and send</button> <button name="decision" value="reject" class="sec">Reject</button></form>` : ''}</div>`).join('');
     return render(reply, u, 'Approvals', `<h1>Approval queue</h1><p class="mut">HI proposes. You decide. Nothing leaves your account without your approval here.</p>${html || '<div class="card mut">Nothing waiting.</div>'}`, flashOf(req));
   });
   app.post('/app/approvals/:id', { preHandler: guard }, async (req, reply) => {
@@ -297,6 +299,110 @@ export async function buildApp({ fetchImpl = fetch, logger = false } = {}) {
     return reply.redirect('/app/settings?m=' + encodeURIComponent(paused ? 'Paused.' : 'Resumed.'));
   });
 
+
+  // ---------- Agent platform ----------
+  const mdLite = (t) => esc(t).replace(/\n/g, '<br>');
+  const srcList = (src) => (src || []).length ? `<div class="mut">Sources: ${(src).map((x, i) => `[${i + 1}] <a href="${safeUrl(x.url)}" rel="noopener noreferrer" target="_blank">${esc(String(x.title || x.url).slice(0, 80))}</a>`).join(' &nbsp; ')}</div>` : '';
+  const uuidOk = (x) => /^[0-9a-f-]{36}$/i.test(String(x || ''));
+
+  app.get('/app/agent', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    await ensureDefaultAgent(u.tenant_id);
+    const d = await withTenant(u.tenant_id, async (c) => {
+      const agents = (await c.query('SELECT id, name, persona FROM agents ORDER BY created_at')).rows;
+      const agent = agents.find((a) => a.id === req.query.agent) || agents[0];
+      const convs = (await c.query('SELECT id, title, created_at FROM conversations WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 15', [agent.id])).rows;
+      const conv = uuidOk(req.query.c) ? convs.find((x) => x.id === req.query.c) : null;
+      const msgs = conv ? (await c.query('SELECT role, content, sources, steps, created_at FROM messages WHERE conversation_id=$1 ORDER BY id', [conv.id])).rows : [];
+      return { agents, agent, convs, conv, msgs };
+    });
+    const thread = d.msgs.map((m) => `<div class="card"><div class="mut">${m.role === 'user' ? 'You' : esc(d.agent.name)}</div><div>${mdLite(m.content)}</div>${m.role === 'assistant' ? srcList(m.sources) : ''}${(m.steps || []).filter((x) => x.type === 'tool').length ? `<div class="mut">Used: ${(m.steps).filter((x) => x.type === 'tool').map((x) => esc(x.name)).join(', ')}</div>` : ''}</div>`).join('');
+    return render(reply, u, 'Agent', `<h1>${esc(d.agent.name)}</h1>
+      <p class="mut">${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join(' | ')} ${agentModelEnabled() ? '' : '<span class="bad"> (AI model not configured)</span>'}</p>
+      ${thread || '<div class="card mut">Ask me to research something, remember a fact about your business, find tenders, or schedule a recurring job. I draft; you approve anything that leaves your account.</div>'}
+      <form method="post" action="/app/agent/message" class="card">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}">
+        <label>Message ${esc(d.agent.name)}</label><textarea name="text" rows="3" maxlength="4000" required></textarea><p><button>Send</button></p></form>
+      <div class="card"><b>Recent conversations</b><ul>${d.convs.map((x) => `<li><a href="/app/agent?agent=${d.agent.id}&c=${x.id}">${esc(x.title)}</a> <span class="mut">${fdate(x.created_at)}</span></li>`).join('') || '<li class="mut">None yet</li>'}</ul></div>
+      <form method="post" action="/app/agent/new" class="card">${csrf(u)}<b>Add another named agent</b><label>Name</label><input name="name" required maxlength="40"><label>What is this agent for?</label><input name="persona" maxlength="300" placeholder="e.g. Handles supplier research and quotes"><p><button class="sec">Create agent</button></p></form>`, flashOf(req));
+  });
+  const msgLimit = makeLimiter(30, 60 * 60 * 1000);
+  app.post('/app/agent/message', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const { agent, c: conv, text } = req.body || {};
+    if (!uuidOk(agent) || !String(text || '').trim()) return reply.redirect('/app/agent?m=' + encodeURIComponent('Write a message first.'));
+    if (!msgLimit(u.tenant_id)) return reply.redirect('/app/agent?m=' + encodeURIComponent('Too many messages this hour.'));
+    const r = await runAgent({ tenantId: u.tenant_id, userEmail: u.email, agentId: agent, conversationId: uuidOk(conv) ? conv : null, userText: String(text).trim(), llm, fetchImpl, lookup });
+    if (r.error) return reply.redirect(`/app/agent?agent=${agent}&m=` + encodeURIComponent(r.error));
+    return reply.redirect(`/app/agent?agent=${agent}&c=${r.conversationId}`);
+  });
+  app.post('/app/agent/new', { preHandler: guard }, async (req, reply) => {
+    const u = req.user; const name = String(req.body?.name || '').trim().slice(0, 40);
+    if (!name) return reply.redirect('/app/agent?m=' + encodeURIComponent('Give the agent a name.'));
+    try {
+      const a = await withTenant(u.tenant_id, async (c) => {
+        if ((await c.query('SELECT count(*)::int n FROM agents')).rows[0].n >= 5) return null;
+        const r = (await c.query("INSERT INTO agents (tenant_id, name, persona) VALUES (current_setting('app.tenant_id')::uuid,$1,$2) RETURNING id", [name, String(req.body?.persona || '').slice(0, 300)])).rows[0];
+        await audit(c, u.tenant_id, `user:${u.user_id}`, 'agent.created', { agent_id: r.id }); return r;
+      });
+      if (!a) return reply.redirect('/app/agent?m=' + encodeURIComponent('Limit of 5 agents reached.'));
+      return reply.redirect(`/app/agent?agent=${a.id}`);
+    } catch (e) { return reply.redirect('/app/agent?m=' + encodeURIComponent('That name is already used.')); }
+  });
+
+  app.get('/app/tasks', { preHandler: guard }, async (req, reply) => {
+    const u = req.user; await ensureDefaultAgent(u.tenant_id);
+    const d = await withTenant(u.tenant_id, async (c) => ({
+      tasks: (await c.query('SELECT t.*, a.name agent_name FROM tasks t JOIN agents a ON a.id=t.agent_id ORDER BY t.created_at DESC LIMIT 50')).rows,
+      runs: (await c.query("SELECT r.id, r.status, r.result, r.sources, r.created_at, t.title FROM runs r LEFT JOIN tasks t ON t.id=r.task_id WHERE r.task_id IS NOT NULL ORDER BY r.created_at DESC LIMIT 10")).rows,
+      agents: (await c.query('SELECT id, name FROM agents ORDER BY created_at')).rows }));
+    return render(reply, u, 'Tasks', `<h1>Scheduled tasks</h1>
+      <div class="card"><table><tr><th>Task</th><th>Agent</th><th>Runs</th><th>Next</th><th>Status</th><th></th></tr>${d.tasks.map((t) => `<tr><td>${esc(t.title)}<div class="mut">${esc(t.instruction.slice(0, 120))}</div></td><td>${esc(t.agent_name)}</td><td>${t.interval_minutes ? `every ${t.interval_minutes} min` : 'once'}</td><td>${fdate(t.next_run_at)}</td><td>${esc(t.status)}</td>
+        <td>${t.status !== 'done' ? `<form method="post" action="/app/tasks/${t.id}/toggle">${csrf(u)}<button class="sec">${t.status === 'active' ? 'Pause' : 'Resume'}</button></form>` : ''}<form method="post" action="/app/tasks/${t.id}/delete">${csrf(u)}<button class="sec">Delete</button></form></td></tr>`).join('') || '<tr><td colspan="6" class="mut">No tasks yet. Ask your agent to schedule one, or add one below.</td></tr>'}</table></div>
+      <form method="post" action="/app/tasks" class="card">${csrf(u)}<b>New task</b><label>Title</label><input name="title" required maxlength="120"><label>What should the agent do each time?</label><textarea name="instruction" rows="3" maxlength="2000" required></textarea>
+        <label>Agent</label><select name="agent">${d.agents.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select><label>Repeat every (minutes, 60 or more, blank for once)</label><input name="every" type="number" min="60"><label>First run in (minutes)</label><input name="first" type="number" min="1" value="60"><p><button>Schedule</button></p></form>
+      <h2>Recent runs</h2>${d.runs.map((r) => `<div class="card"><div class="row"><b>${esc(r.title || 'Task')}</b><span class="tag">${esc(r.status)}</span></div><div class="mut">${fdate(r.created_at)}</div><div>${mdLite((r.result || '').slice(0, 1500))}</div>${srcList(r.sources)}</div>`).join('') || '<div class="card mut">No runs yet.</div>'}`, flashOf(req));
+  });
+  app.post('/app/tasks', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, b = req.body || {};
+    if (!uuidOk(b.agent) || !String(b.title || '').trim() || !String(b.instruction || '').trim()) return reply.redirect('/app/tasks?m=' + encodeURIComponent('Title and instruction are required.'));
+    const every = b.every ? Math.max(60, Math.min(43200, Number(b.every) || 60)) : null;
+    const first = Math.max(1, Math.min(525600, Number(b.first) || 60));
+    const ok = await withTenant(u.tenant_id, async (c) => {
+      if ((await c.query("SELECT count(*)::int n FROM tasks WHERE status='active'")).rows[0].n >= 10) return false;
+      const r = (await c.query("INSERT INTO tasks (tenant_id, agent_id, title, instruction, interval_minutes, next_run_at, created_by) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4, now() + ($5 || ' minutes')::interval,$6) RETURNING id", [b.agent, String(b.title).slice(0, 120), String(b.instruction).slice(0, 2000), every, String(first), `user:${u.user_id}`])).rows[0];
+      await audit(c, u.tenant_id, `user:${u.user_id}`, 'task.scheduled', { task_id: r.id, every_minutes: every }); return true;
+    });
+    return reply.redirect('/app/tasks?m=' + encodeURIComponent(ok ? 'Scheduled.' : 'Limit of 10 active tasks reached.'));
+  });
+  app.post('/app/tasks/:id/toggle', { preHandler: guard }, async (req, reply) => {
+    if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
+    await withTenant(req.user.tenant_id, (c) => c.query("UPDATE tasks SET status = CASE status WHEN 'active' THEN 'paused' ELSE 'active' END, next_run_at = CASE WHEN status='paused' THEN now() + interval '5 minutes' ELSE next_run_at END WHERE id=$1 AND status<>'done'", [req.params.id]));
+    return reply.redirect('/app/tasks');
+  });
+  app.post('/app/tasks/:id/delete', { preHandler: guard }, async (req, reply) => {
+    if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
+    await withTenant(req.user.tenant_id, async (c) => { await c.query('DELETE FROM tasks WHERE id=$1', [req.params.id]); await audit(c, req.user.tenant_id, `user:${req.user.user_id}`, 'task.deleted', { task_id: req.params.id }); });
+    return reply.redirect('/app/tasks?m=' + encodeURIComponent('Deleted.'));
+  });
+
+  app.get('/app/memory', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT id, kind, content, created_at FROM memories ORDER BY created_at DESC LIMIT 100'))).rows;
+    return render(reply, u, 'Memory', `<h1>What your agents remember</h1><p class="mut">You can see and delete everything saved here. Core memories are always in the agent's mind; archival ones are searched when relevant.</p>
+      <form method="post" action="/app/memory" class="card">${csrf(u)}<label>Add a memory</label><input name="content" required maxlength="1000"><label>Type</label><select name="kind"><option value="core">core (always remembered)</option><option value="archival">archival</option></select><p><button>Save</button></p></form>
+      <div class="card"><table><tr><th>When</th><th>Type</th><th>Memory</th><th></th></tr>${rows.map((m) => `<tr><td>${fdate(m.created_at)}</td><td>${esc(m.kind)}</td><td>${esc(m.content)}</td><td><form method="post" action="/app/memory/${m.id}/delete">${csrf(u)}<button class="sec">Delete</button></form></td></tr>`).join('') || '<tr><td colspan="4" class="mut">Nothing saved yet.</td></tr>'}</table></div>`, flashOf(req));
+  });
+  app.post('/app/memory', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, content = String(req.body?.content || '').trim().slice(0, 1000);
+    if (content) await withTenant(u.tenant_id, async (c) => { await c.query("INSERT INTO memories (tenant_id, kind, content) VALUES (current_setting('app.tenant_id')::uuid,$1,$2)", [req.body?.kind === 'core' ? 'core' : 'archival', content]); await audit(c, u.tenant_id, `user:${u.user_id}`, 'memory.saved', {}); });
+    return reply.redirect('/app/memory?m=' + encodeURIComponent('Saved.'));
+  });
+  app.post('/app/memory/:id/delete', { preHandler: guard }, async (req, reply) => {
+    if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
+    await withTenant(req.user.tenant_id, async (c) => { await c.query('DELETE FROM memories WHERE id=$1', [req.params.id]); await audit(c, req.user.tenant_id, `user:${req.user.user_id}`, 'memory.deleted', {}); });
+    return reply.redirect('/app/memory?m=' + encodeURIComponent('Deleted.'));
+  });
+
   // ---------- Internal (scheduler) ----------
   const cronAuth = async (req, reply) => { if (!secretEq(req.headers['x-cron-secret'], process.env.CRON_SECRET)) { reply.code(401).send({ error: 'unauthorised' }); return reply; } };
   app.post('/internal/run', { preHandler: cronAuth }, async (req) => {
@@ -306,6 +412,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false } = {}) {
     if (job === 'ingest' || job === 'all') out.ingest = await ingest({ days: Number(req.query.days || 3), fetchImpl });
     if (job === 'match' || job === 'all') out.match = await matchAllTenants();
     if (job === 'brief' || job === 'all') out.brief = await buildBriefsForAll();
+    if (job === 'tasks' || job === 'all') out.tasks = await runDueTasks({ llm, fetchImpl, lookup });
     return out;
   });
   app.post('/internal/stop', { preHandler: cronAuth }, async (req) => { await setEmergencyStop(req.query.on !== 'false'); return { emergency_stop: req.query.on !== 'false' }; });
