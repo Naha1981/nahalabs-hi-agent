@@ -166,3 +166,13 @@ test('internal run executes tasks only with the cron secret', async () => {
   const ok = await app.inject({ method: 'POST', url: '/internal/run?job=tasks', headers: { 'x-cron-secret': 'cron-test-secret-value' } });
   assert.equal(ok.statusCode, 200);
 });
+
+test('model gateway retries on 429 then falls back to the smaller model', async () => {
+  const { chat } = await import('../src/gateway.js');
+  process.env.GROQ_API_KEY = 'gsk_test_placeholder_key';
+  const used = [];
+  const f = async (url, opts) => { const m = JSON.parse(opts.body).model; used.push(m); if (m.includes('120b')) return { ok: false, status: 429, headers: new Map([['retry-after', '1']]) }; return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'hello' } }], usage: {} }) }; };
+  const out = await chat({ messages: [], tools: [], fetchImpl: f, sleep: async () => {} });
+  assert.equal(out.content, 'hello'); assert.deepEqual(used, ['openai/gpt-oss-120b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b']);
+  delete process.env.GROQ_API_KEY;
+});

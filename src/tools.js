@@ -95,7 +95,7 @@ export async function runTool(name, args, ctx) {
       try {
         const r = await fetchPublicText(String(a.url || ''), { fetchImpl: ctx.fetchImpl, lookup: ctx.lookup });
         if (!ctx.sources.some((s) => s.url === r.url)) ctx.sources.push({ title: r.url, url: r.url });
-        return UNTRUSTED(clip(r.text, 6000));
+        return UNTRUSTED(clip(r.text, 3500));
       } catch (e) { return 'Could not fetch: ' + clip(e.message, 100); }
     }
     case 'find_tenders': {
