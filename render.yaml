@@ -1,0 +1,28 @@
+# Render blueprint for HI Opportunity Desk (free plan). Secrets are set in the Render dashboard or API, never in this file.
+services:
+  - type: web
+    name: nahalabs-hi
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL        # hi_app role connection string (set manually)
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: CRON_SECRET
+        sync: false
+      - key: HI_INVITE_CODES
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: HI_EMAIL_DAILY_CAP
+        value: "5"
+      - key: GROQ_API_KEY
+        sync: false

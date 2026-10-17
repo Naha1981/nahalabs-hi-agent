@@ -1,0 +1,320 @@
+import Fastify from 'fastify';
+import formbody from '@fastify/formbody';
+import cookie from '@fastify/cookie';
+import { timingSafeEqual } from 'node:crypto';
+import { withTenant, withSystem, audit, auditFor, closePool } from './db.js';
+import { hashPassword, verifyPassword, newToken, tokenHash, makeLimiter } from './auth.js';
+import { page, esc, fdate, safeUrl } from './views.js';
+import { ingest } from './ingest.js';
+import { matchTenant, matchAllTenants } from './match.js';
+import { buildBriefsForAll, decideApproval, setEmergencyStop, emergencyStopped, vaultAlerts } from './core.js';
+import { explainFit, modelEnabled } from './gateway.js';
+import { mailConfigured } from './mail.js';
+
+const COOKIE = 'hi_session';
+const secretEq = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && x.length > 0 && timingSafeEqual(x, y); };
+const csrfFor = (token) => tokenHash(token + (process.env.SESSION_SECRET || 'dev-only')).slice(0, 40);
+const lines = (s) => String(s || '').split(/[\n,]/).map((x) => x.trim()).filter(Boolean).slice(0, 40).map((x) => x.slice(0, 80));
+const STATUSES = ['new', 'saved', 'dismissed', 'applied', 'won', 'lost'];
+const DOC_TYPES = ['CSD supplier report', 'Tax compliance status (SARS)', 'B-BBEE certificate or affidavit', 'CIPC registration', 'Bank confirmation letter', 'Other'];
+
+export async function buildApp({ fetchImpl = fetch, logger = false } = {}) {
+  const app = Fastify({ logger, trustProxy: true, bodyLimit: 100 * 1024 });
+  await app.register(formbody);
+  await app.register(cookie);
+  const loginLimit = makeLimiter(8, 10 * 60 * 1000);
+  const signupLimit = makeLimiter(Number(process.env.SIGNUP_RATE_MAX || 5), 60 * 60 * 1000);
+
+  app.addHook('onSend', async (req, reply) => {
+    reply.header('x-content-type-options', 'nosniff');
+    reply.header('x-frame-options', 'DENY');
+    reply.header('referrer-policy', 'same-origin');
+    reply.header('content-security-policy', "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'");
+    if (req.url.startsWith('/app')) reply.header('cache-control', 'no-store');
+  });
+
+  async function sessionOf(req) {
+    const token = req.cookies?.[COOKIE];
+    if (!token) return null;
+    const r = await withSystem((c) => c.query(
+      `SELECT u.id user_id, u.email, u.tenant_id, t.name tenant_name, t.paused
+       FROM sessions s JOIN users u ON u.id=s.user_id JOIN tenants t ON t.id=s.tenant_id
+       WHERE s.token_hash=$1 AND s.expires_at > now()`, [tokenHash(token)]));
+    const u = r.rows[0];
+    return u ? { ...u, csrf: csrfFor(token) } : null;
+  }
+  const guard = async (req, reply) => {
+    const s = await sessionOf(req);
+    if (!s) { reply.redirect('/login'); return reply; }
+    if (req.method === 'POST' && !secretEq(req.body?.csrf, s.csrf)) { reply.code(403).send('Bad request token'); return reply; }
+    req.user = s;
+  };
+  const render = (reply, user, title, body, flash) => reply.type('text/html').send(page({ title, user, body, flash }));
+  const csrf = (u) => `<input type="hidden" name="csrf" value="${esc(u.csrf)}">`;
+  const flashOf = (req) => req.query?.m ? String(req.query.m).slice(0, 160) : null;
+
+  app.get('/healthz', async () => ({ ok: true }));
+
+  app.get('/', async (req, reply) => {
+    const s = await sessionOf(req);
+    if (s) return reply.redirect('/app');
+    return render(reply, null, 'Opportunity Desk', `
+      <h1>Find the South African tenders worth your time.</h1>
+      <p>HI reads National Treasury's public eTenders data every day, matches open tenders to your business profile, shows exactly why each one matched, and keeps your compliance documents in view. You approve everything before anything is sent.</p>
+      <div class="card"><b>What it does</b><ul><li>Daily matching of open public-sector tenders to your keywords</li><li>Every match shows its reasons and links to the official source and bid documents</li><li>Document tracker with expiry alerts (CSD, tax status, B-BBEE, CIPC)</li><li>Briefs sent to you only after you approve them</li></ul></div>
+      <p><a class="btn" href="/login">Sign in</a> <a href="/signup">Have an invite code? Create an account</a></p>
+      <p class="mut">Data source: National Treasury eTender Publication Portal, published under the Open Data Commons PDDL. HI does not submit bids on your behalf.</p>`);
+  });
+
+  app.get('/signup', async (req, reply) => render(reply, null, 'Create account', `
+    <h1>Create your account</h1><form method="post" class="card">
+    <label>Invite code</label><input name="invite" required autocomplete="off">
+    <label>Company name</label><input name="company" required maxlength="120">
+    <label>Email</label><input name="email" type="email" required>
+    <label>Password (12+ characters)</label><input name="password" type="password" minlength="12" required autocomplete="new-password">
+    <p><button>Create account</button></p></form>`, flashOf(req)));
+
+  app.post('/signup', async (req, reply) => {
+    if (!signupLimit(req.ip)) return reply.code(429).send('Too many attempts');
+    const { invite, company, email, password } = req.body || {};
+    const codes = (process.env.HI_INVITE_CODES || '').split(',').map((x) => x.trim()).filter(Boolean);
+    if (!codes.length || !codes.some((c) => secretEq(c, invite))) return reply.redirect('/signup?m=' + encodeURIComponent('That invite code is not valid.'));
+    if (!company || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email || '') || String(password || '').length < 12) return reply.redirect('/signup?m=' + encodeURIComponent('Check the company, email and a password of 12+ characters.'));
+    const pw = await hashPassword(password);
+    try {
+      const tenantId = await withSystem(async (c) => {
+        const t = (await c.query('INSERT INTO tenants (name) VALUES ($1) RETURNING id', [String(company).slice(0, 120)])).rows[0].id;
+        await c.query('INSERT INTO users (tenant_id, email, pw_hash) VALUES ($1,$2,$3)', [t, String(email).toLowerCase(), pw]);
+        return t;
+      });
+      await withTenant(tenantId, async (c) => {
+        await c.query("INSERT INTO profiles (tenant_id, company_name) VALUES (current_setting('app.tenant_id')::uuid,$1)", [String(company).slice(0, 120)]);
+        await audit(c, tenantId, 'user:signup', 'tenant.created', {});
+      });
+    } catch (e) {
+      if (String(e.message).includes('users_email_key')) return reply.redirect('/signup?m=' + encodeURIComponent('That email is already registered.'));
+      throw e;
+    }
+    return reply.redirect('/login?m=' + encodeURIComponent('Account created. Sign in to set up your profile.'));
+  });
+
+  app.get('/login', async (req, reply) => render(reply, null, 'Sign in', `
+    <h1>Sign in</h1><form method="post" class="card">
+    <label>Email</label><input name="email" type="email" required autocomplete="username">
+    <label>Password</label><input name="password" type="password" required autocomplete="current-password">
+    <p><button>Sign in</button></p></form>`, flashOf(req)));
+
+  app.post('/login', async (req, reply) => {
+    const email = String(req.body?.email || '').toLowerCase();
+    if (!loginLimit(req.ip + '|' + email)) return reply.code(429).send('Too many attempts. Try again later.');
+    const u = (await withSystem((c) => c.query('SELECT id, tenant_id, pw_hash FROM users WHERE email=$1', [email]))).rows[0];
+    const ok = u ? await verifyPassword(String(req.body?.password || ''), u.pw_hash) : (await verifyPassword('x', 's1$00$00'), false);
+    if (!ok) {
+      await auditFor(u?.tenant_id || null, 'anonymous', 'login.failed', { email_hash: tokenHash(email).slice(0, 12) });
+      return reply.redirect('/login?m=' + encodeURIComponent('Email or password is not right.'));
+    }
+    const token = newToken();
+    await withSystem((c) => c.query("INSERT INTO sessions (token_hash, user_id, tenant_id, expires_at) VALUES ($1,$2,$3, now() + interval '14 days')", [tokenHash(token), u.id, u.tenant_id]));
+    await auditFor(u.tenant_id, `user:${u.id}`, 'login.ok', {});
+    reply.setCookie(COOKIE, token, { path: '/', httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 14 * 86400 });
+    return reply.redirect('/app');
+  });
+
+  app.post('/logout', { preHandler: guard }, async (req, reply) => {
+    await withSystem((c) => c.query('DELETE FROM sessions WHERE token_hash=$1', [tokenHash(req.cookies[COOKIE])]));
+    reply.clearCookie(COOKIE, { path: '/' });
+    return reply.redirect('/login');
+  });
+
+  // ---------- App ----------
+  app.get('/app', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const status = STATUSES.includes(req.query.status) ? req.query.status : 'new';
+    const data = await withTenant(u.tenant_id, async (c) => {
+      const prof = (await c.query('SELECT * FROM profiles LIMIT 1')).rows[0];
+      const rows = (await c.query(`SELECT m.ocid, m.score, m.reasons, m.status, t.title, t.tender_no, t.buyer, t.closes_at, t.category
+        FROM matches m JOIN tenders t USING (ocid) WHERE m.status=$1 ORDER BY m.score DESC, t.closes_at NULLS LAST LIMIT 100`, [status])).rows;
+      const counts = (await c.query('SELECT status, count(*)::int n FROM matches GROUP BY status')).rows;
+      const alerts = await vaultAlerts(c);
+      const pend = (await c.query("SELECT count(*)::int n FROM approvals WHERE status='proposed'")).rows[0].n;
+      return { prof, rows, counts, alerts, pend };
+    });
+    const tabs = STATUSES.map((s) => { const n = data.counts.find((x) => x.status === s)?.n || 0; return `<a class="tag" href="/app?status=${s}">${s} (${n})</a>`; }).join(' ');
+    const cards = data.rows.map((r) => `<div class="card"><div class="row"><a href="/app/opportunity/${encodeURIComponent(r.ocid)}"><b>${esc(r.title)}</b></a><span class="score">${r.score}</span></div>
+      <div class="mut">${esc(r.tender_no)} | ${esc(r.buyer)} | closes ${fdate(r.closes_at)}</div>
+      <div class="mut">${r.reasons.map((x) => esc(x.text)).join(' - ')}</div></div>`).join('');
+    const empty = !data.prof?.keywords?.length ? `<div class="card">Set your keywords first so HI knows what to look for. <a class="btn" href="/app/profile">Set up profile</a></div>` : (!data.rows.length ? '<div class="card mut">No opportunities here yet. HI checks for new tenders daily.</div>' : '');
+    const warn = [u.paused ? '<div class="flash">Your account is paused. Nothing will be sent.</div>' : '', data.pend ? `<div class="flash">${data.pend} item(s) waiting for your approval. <a href="/app/approvals">Review</a></div>` : '', data.alerts.length ? `<div class="flash">${data.alerts.length} document(s) expired or expiring within 30 days. <a href="/app/documents">Review</a></div>` : ''].join('');
+    return render(reply, u, 'Opportunities', `<h1>Opportunities for ${esc(u.tenant_name)}</h1>${warn}<p>${tabs}</p>${cards}${empty}`, flashOf(req));
+  });
+
+  app.get('/app/opportunity/:ocid', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, ocid = req.params.ocid;
+    const d = await withTenant(u.tenant_id, async (c) => {
+      const m = (await c.query('SELECT * FROM matches WHERE ocid=$1', [ocid])).rows[0];
+      const t = (await c.query('SELECT * FROM tenders WHERE ocid=$1', [ocid])).rows[0];
+      const prof = (await c.query('SELECT * FROM profiles LIMIT 1')).rows[0];
+      const docs = (await c.query('SELECT doc_type, title, expires_on FROM vault_docs ORDER BY expires_on NULLS LAST')).rows;
+      return { m, t, prof, docs };
+    });
+    if (!d.t) return reply.code(404).type('text/html').send(page({ title: 'Not found', user: u, body: '<h1>Not found</h1>' }));
+    if (d.m && !d.m.ai_note && modelEnabled()) {
+      try {
+        const note = await explainFit({ tenantId: u.tenant_id, profile: d.prof, tender: d.t, fetchImpl });
+        if (note) { await withTenant(u.tenant_id, (c) => c.query('UPDATE matches SET ai_note=$2 WHERE ocid=$1', [ocid, note])); d.m.ai_note = note; }
+      } catch { /* model note is optional */ }
+    }
+    const t = d.t;
+    const bids = (t.documents || []).map((x) => `<li><a href="${safeUrl(x.url)}" rel="noopener noreferrer" target="_blank">${esc(x.title || 'Bid document')}</a></li>`).join('') || '<li class="mut">No documents listed in the data.</li>';
+    const have = new Set(d.docs.map((x) => x.doc_type));
+    const checklist = DOC_TYPES.slice(0, 5).map((x) => `<li>${have.has(x) ? '<span class="ok">on file</span>' : '<span class="bad">not on file</span>'} - ${esc(x)}</li>`).join('');
+    const buttons = d.m ? ['saved', 'applied', 'won', 'lost'].map((s) => `<button name="status" value="${s}" class="sec">Mark ${s}</button>`).join(' ') : '';
+    return render(reply, u, t.title, `<h1>${esc(t.title)}</h1>
+      <div class="card"><div class="mut">Bid no ${esc(t.tender_no)} | ${esc(t.buyer)} | ${esc(t.category)} | ${esc(t.method)}</div>
+      <p>Opens ${fdate(t.opens_at)}<br>Closes <b>${fdate(t.closes_at)}</b></p><p>${esc(t.description)}</p>
+      <p class="mut">Source: <a href="${safeUrl(t.source_url)}" rel="noopener noreferrer" target="_blank">National Treasury eTenders OCDS record</a> (fetched ${fdate(t.fetched_at)})</p></div>
+      ${d.m ? `<div class="card"><b>Why it matched (score ${d.m.score}/100)</b><ul>${d.m.reasons.map((r) => `<li>${esc(r.text)} (${r.points > 0 ? '+' : ''}${r.points})</li>`).join('')}</ul>${d.m.ai_note ? `<p class="mut">AI note, unverified: ${esc(d.m.ai_note)}</p>` : ''}</div>` : ''}
+      <div class="card"><b>Bid documents (official)</b><ul>${bids}</ul></div>
+      <div class="card"><b>Your documents</b><p class="mut">Typical requirements. Always confirm in the bid pack.</p><ul>${checklist}</ul></div>
+      ${d.m ? `<form method="post" action="/app/opportunity/${encodeURIComponent(ocid)}/status" class="card">${csrf(u)}<p>Status: <span class="tag">${esc(d.m.status)}</span></p>${buttons}
+        <label>Not for you? Say why (HI learns from this)</label><input name="reason" maxlength="200" placeholder="e.g. too far, wrong trade"><p><button name="status" value="dismissed" class="danger">Dismiss</button></p></form>` : ''}`, flashOf(req));
+  });
+
+  app.post('/app/opportunity/:ocid/status', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, ocid = req.params.ocid, status = req.body?.status;
+    if (!STATUSES.includes(status)) return reply.code(400).send('bad status');
+    await withTenant(u.tenant_id, async (c) => {
+      const r = await c.query('UPDATE matches SET status=$2, dismiss_reason=$3, updated_at=now() WHERE ocid=$1 RETURNING ocid', [ocid, status, status === 'dismissed' ? String(req.body.reason || '').slice(0, 200) : null]);
+      if (!r.rowCount) return;
+      if (status === 'dismissed') {
+        const t = (await c.query('SELECT buyer FROM tenders WHERE ocid=$1', [ocid])).rows[0];
+        if (t?.buyer) await c.query("INSERT INTO memory_notes (tenant_id, kind, subject, detail) VALUES (current_setting('app.tenant_id')::uuid,'dismiss_buyer',$1,$2)", [t.buyer, String(req.body.reason || '').slice(0, 200)]);
+      }
+      if (['won', 'lost', 'applied'].includes(status)) await c.query("INSERT INTO memory_notes (tenant_id, kind, subject, detail) VALUES (current_setting('app.tenant_id')::uuid,'outcome',$1,$2)", [ocid, status]);
+      await audit(c, u.tenant_id, `user:${u.user_id}`, 'match.status', { ocid, status });
+    });
+    return reply.redirect(`/app?m=${encodeURIComponent('Saved.')}`);
+  });
+
+  app.get('/app/profile', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const p = (await withTenant(u.tenant_id, (c) => c.query('SELECT * FROM profiles LIMIT 1'))).rows[0] || {};
+    return render(reply, u, 'Profile', `<h1>What should HI look for?</h1><form method="post" class="card">${csrf(u)}
+      <label>Company name</label><input name="company_name" value="${esc(p.company_name)}" maxlength="120">
+      <label>Keywords (one per line or comma separated). Example: security guarding, cleaning services, CCTV</label><textarea name="keywords" rows="4">${esc((p.keywords || []).join('\n'))}</textarea>
+      <label>Exclude terms (tenders with these are never shown)</label><textarea name="exclude_keywords" rows="2">${esc((p.exclude_keywords || []).join('\n'))}</textarea>
+      <label>Categories you serve</label><select name="categories" multiple size="3">${['goods', 'services', 'works'].map((x) => `<option value="${x}" ${(p.categories || []).includes(x) ? 'selected' : ''}>${x}</option>`).join('')}</select>
+      <label>Favour buyers whose name contains (municipality, province, department)</label><textarea name="buyer_terms" rows="2">${esc((p.buyer_terms || []).join('\n'))}</textarea>
+      <label>Notes to HI (kept in your memory)</label><textarea name="notes" rows="3" maxlength="1000">${esc(p.notes)}</textarea>
+      <p><button>Save and re-match</button></p></form>`, flashOf(req));
+  });
+
+  app.post('/app/profile', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, b = req.body || {};
+    const cats = [].concat(b.categories || []).filter((x) => ['goods', 'services', 'works'].includes(x));
+    await withTenant(u.tenant_id, async (c) => {
+      await c.query(`INSERT INTO profiles (tenant_id, company_name, keywords, exclude_keywords, categories, buyer_terms, notes)
+        VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6)
+        ON CONFLICT (tenant_id) DO UPDATE SET company_name=$1, keywords=$2, exclude_keywords=$3, categories=$4, buyer_terms=$5, notes=$6, updated_at=now()`,
+        [String(b.company_name || '').slice(0, 120), lines(b.keywords), lines(b.exclude_keywords), cats, lines(b.buyer_terms), String(b.notes || '').slice(0, 1000)]);
+      await audit(c, u.tenant_id, `user:${u.user_id}`, 'profile.updated', {});
+    });
+    const r = await matchTenant(u.tenant_id);
+    return reply.redirect(`/app?m=${encodeURIComponent(`Profile saved. ${r.matched || 0} matching open tender(s) found.`)}`);
+  });
+
+  app.get('/app/documents', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const docs = (await withTenant(u.tenant_id, (c) => c.query('SELECT * FROM vault_docs ORDER BY expires_on NULLS LAST'))).rows;
+    const today = new Date().toISOString().slice(0, 10);
+    const rows = docs.map((d) => { const exp = d.expires_on ? String(d.expires_on).slice(0, 10) : null; const cls = exp && exp < today ? 'bad' : ''; return `<tr><td>${esc(d.doc_type)}</td><td>${esc(d.title)}<div class="mut">${esc(d.reference)}</div></td><td class="${cls}">${exp ? esc(exp) + (exp < today ? ' (expired)' : '') : 'no expiry'}</td>
+      <td><form method="post" action="/app/documents/${d.id}/delete">${csrf(u)}<button class="sec">Remove</button></form></td></tr>`; }).join('');
+    return render(reply, u, 'Documents', `<h1>Document tracker</h1><p class="mut">HI tracks what you have and when it expires. In this version it stores details only, not the files themselves.</p>
+      <div class="card"><table><tr><th>Type</th><th>Title</th><th>Expires</th><th></th></tr>${rows || '<tr><td colspan="4" class="mut">No documents recorded yet.</td></tr>'}</table></div>
+      <form method="post" class="card">${csrf(u)}<b>Add a document</b><label>Type</label><select name="doc_type">${DOC_TYPES.map((x) => `<option>${esc(x)}</option>`).join('')}</select>
+      <label>Title</label><input name="title" required maxlength="120"><label>Reference number (optional)</label><input name="reference" maxlength="80"><label>Expiry date (optional)</label><input name="expires_on" type="date"><p><button>Add</button></p></form>`, flashOf(req));
+  });
+  app.post('/app/documents', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, b = req.body || {};
+    if (!DOC_TYPES.includes(b.doc_type) || !b.title) return reply.code(400).send('bad input');
+    const exp = /^\d{4}-\d{2}-\d{2}$/.test(b.expires_on || '') ? b.expires_on : null;
+    await withTenant(u.tenant_id, async (c) => {
+      await c.query("INSERT INTO vault_docs (tenant_id, doc_type, title, reference, expires_on) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4)", [b.doc_type, String(b.title).slice(0, 120), String(b.reference || '').slice(0, 80), exp]);
+      await audit(c, u.tenant_id, `user:${u.user_id}`, 'document.added', { doc_type: b.doc_type });
+    });
+    return reply.redirect('/app/documents?m=' + encodeURIComponent('Added.'));
+  });
+  app.post('/app/documents/:id/delete', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return reply.code(400).send('bad id');
+    await withTenant(u.tenant_id, async (c) => { await c.query('DELETE FROM vault_docs WHERE id=$1', [req.params.id]); await audit(c, u.tenant_id, `user:${u.user_id}`, 'document.removed', { id: req.params.id }); });
+    return reply.redirect('/app/documents?m=' + encodeURIComponent('Removed.'));
+  });
+
+  app.get('/app/approvals', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT a.*, b.body_text FROM approvals a LEFT JOIN briefs b ON b.id = (a.payload->>\'brief_id\')::uuid ORDER BY a.created_at DESC LIMIT 50'))).rows;
+    const html = rows.map((a) => `<div class="card"><div class="row"><b>${esc(a.summary)}</b><span class="tag">${esc(a.status)}</span></div><div class="mut">Proposed by ${esc(a.proposed_by)} on ${fdate(a.created_at)}</div>
+      ${a.body_text ? `<pre>${esc(a.body_text)}</pre>` : ''}${a.status === 'proposed' ? `<form method="post" action="/app/approvals/${a.id}">${csrf(u)}<p>This will email the brief to <b>${esc(u.email)}</b> only.</p><button name="decision" value="approve">Approve and send</button> <button name="decision" value="reject" class="sec">Reject</button></form>` : ''}</div>`).join('');
+    return render(reply, u, 'Approvals', `<h1>Approval queue</h1><p class="mut">HI proposes. You decide. Nothing leaves your account without your approval here.</p>${html || '<div class="card mut">Nothing waiting.</div>'}`, flashOf(req));
+  });
+  app.post('/app/approvals/:id', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return reply.code(400).send('bad id');
+    const r = await decideApproval({ tenantId: u.tenant_id, userId: u.user_id, userEmail: u.email, approvalId: req.params.id, decision: req.body?.decision, fetchImpl });
+    return reply.redirect('/app/approvals?m=' + encodeURIComponent(r.error ? r.error : r.reason ? `${r.status}: ${r.reason}` : r.status));
+  });
+
+  app.get('/app/briefs', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT id, subject, status, created_at FROM briefs ORDER BY created_at DESC LIMIT 30'))).rows;
+    return render(reply, u, 'Briefs', `<h1>Briefs</h1><div class="card"><table><tr><th>Date</th><th>Subject</th><th>Status</th></tr>${rows.map((b) => `<tr><td>${fdate(b.created_at)}</td><td>${esc(b.subject)}</td><td>${esc(b.status)}</td></tr>`).join('') || '<tr><td colspan="3" class="mut">No briefs yet.</td></tr>'}</table></div>
+      <form method="post" action="/app/briefs/now" class="card">${csrf(u)}<p>Want one now? HI will draft it and put it in your approval queue.</p><button>Draft a brief now</button></form>`, flashOf(req));
+  });
+  app.post('/app/briefs/now', { preHandler: guard }, async (req, reply) => {
+    const { buildBrief } = await import('./core.js');
+    const r = await buildBrief(req.user.tenant_id);
+    return reply.redirect(r.approval_id ? '/app/approvals?m=' + encodeURIComponent('Brief drafted. Review it below.') : '/app/briefs?m=' + encodeURIComponent(`No brief: ${r.skipped}`));
+  });
+
+  app.get('/app/audit', { preHandler: guard }, async (req, reply) => {
+    const rows = (await withTenant(req.user.tenant_id, (c) => c.query('SELECT at, actor, action, detail FROM audit_log ORDER BY id DESC LIMIT 100'))).rows;
+    return render(reply, req.user, 'Audit log', `<h1>Audit log</h1><div class="card"><table><tr><th>When</th><th>Who</th><th>What</th><th>Detail</th></tr>${rows.map((r) => `<tr><td>${fdate(r.at)}</td><td>${esc(r.actor)}</td><td>${esc(r.action)}</td><td class="mut">${esc(JSON.stringify(r.detail))}</td></tr>`).join('')}</table></div>`);
+  });
+
+  app.get('/app/settings', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    return render(reply, u, 'Settings', `<h1>Settings</h1>
+      <div class="card"><b>Emergency stop for your account</b><p class="mut">${u.paused ? 'Your account is paused. HI will not match, draft or send anything.' : 'Pause stops all matching, drafting and sending for your account immediately.'}</p>
+      <form method="post" action="/app/settings/pause">${csrf(u)}<button name="paused" value="${u.paused ? 'false' : 'true'}" class="${u.paused ? '' : 'danger'}">${u.paused ? 'Resume' : 'Pause my account'}</button></form></div>
+      <div class="card"><b>Connections</b><ul><li>eTenders (National Treasury open data): active</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
+  });
+  app.post('/app/settings/pause', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, paused = req.body?.paused === 'true';
+    await withSystem((c) => c.query('UPDATE tenants SET paused=$2 WHERE id=$1', [u.tenant_id, paused]));
+    await auditFor(u.tenant_id, `user:${u.user_id}`, paused ? 'tenant.paused' : 'tenant.resumed', {});
+    if (paused) await withTenant(u.tenant_id, (c) => c.query("UPDATE approvals SET status='cancelled' WHERE status='proposed'"));
+    return reply.redirect('/app/settings?m=' + encodeURIComponent(paused ? 'Paused.' : 'Resumed.'));
+  });
+
+  // ---------- Internal (scheduler) ----------
+  const cronAuth = async (req, reply) => { if (!secretEq(req.headers['x-cron-secret'], process.env.CRON_SECRET)) { reply.code(401).send({ error: 'unauthorised' }); return reply; } };
+  app.post('/internal/run', { preHandler: cronAuth }, async (req) => {
+    const job = req.query.job || 'all';
+    if (await emergencyStopped()) return { skipped: 'emergency stop is on' };
+    const out = {};
+    if (job === 'ingest' || job === 'all') out.ingest = await ingest({ days: Number(req.query.days || 3), fetchImpl });
+    if (job === 'match' || job === 'all') out.match = await matchAllTenants();
+    if (job === 'brief' || job === 'all') out.brief = await buildBriefsForAll();
+    return out;
+  });
+  app.post('/internal/stop', { preHandler: cronAuth }, async (req) => { await setEmergencyStop(req.query.on !== 'false'); return { emergency_stop: req.query.on !== 'false' }; });
+
+  app.addHook('onClose', async () => { await closePool(); });
+  return app;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const app = await buildApp({ logger: true });
+  await app.listen({ port: Number(process.env.PORT || 3000), host: '0.0.0.0' });
+}
