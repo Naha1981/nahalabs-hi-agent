@@ -104,3 +104,10 @@ test('step cap, pause, platform stop, goal rules, daily limit, isolation', async
   process.env.BROWSER_MAX_JOBS_PER_TENANT_DAY = '1'; assert.match((await newJob(B, 'read')).error, /limit/); process.env.BROWSER_MAX_JOBS_PER_TENANT_DAY = '100';
   const bRows = (await withTenant(B.tenantId, (c) => c.query('SELECT tenant_id FROM browser_jobs'))).rows; assert.ok(bRows.length && bRows.every((r) => r.tenant_id === B.tenantId));
 });
+
+test('a repeating action loop is stopped', async () => {
+  const j = await launch(A, 'act');
+  await step(j, { type: 'type', index: 1, text: 'x' }); await step(j, { type: 'type', index: 1, text: 'x' });
+  const r = await step(j, { type: 'type', index: 1, text: 'x' }); assert.equal(r.body.action.type, 'done');
+  assert.match((await state(A, j.job_id)).result, /repeated the same action/);
+});

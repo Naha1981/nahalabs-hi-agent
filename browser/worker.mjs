@@ -12,7 +12,7 @@ const observe = (page) => page.evaluate(() => {
     const r = e.getBoundingClientRect(); if (r.width < 2 || r.height < 2) continue;
     e.setAttribute('data-hi-idx', String(i));
     const label = (e.getAttribute('aria-label') || e.innerText || e.value || e.placeholder || e.getAttribute('title') || e.name || '').trim().replace(/\s+/g, ' ').slice(0, 80);
-    els.push({ i, tag: e.tagName.toLowerCase(), type: e.getAttribute('type') || (e.tagName === 'BUTTON' ? 'submit' : ''), label, name: e.getAttribute('name') || e.getAttribute('autocomplete') || '' });
+    els.push({ i, tag: e.tagName.toLowerCase(), type: e.getAttribute('type') || (e.tagName === 'BUTTON' ? 'submit' : ''), label, name: e.getAttribute('name') || e.getAttribute('autocomplete') || '', value: (['text','search','email','tel','url','number',''].includes(e.getAttribute('type') || '') && /^(input|textarea)$/.test(e.tagName.toLowerCase())) ? String(e.value || '').slice(0, 60) : (e.tagName === 'SELECT' ? String(e.value || '').slice(0, 40) : (e.checked ? 'checked' : '')) });
     if (++i >= 60) break;
   }
   return { url: location.href, title: document.title, text: document.body.innerText.replace(/\s+/g, ' ').slice(0, 2500), elements: els };
