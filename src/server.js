@@ -157,7 +157,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     <label>Password</label><input name="password" type="password" required autocomplete="current-password">
     <p><button>Sign in</button></p><p class="mut"><a href="/forgot">Forgot your password?</a></p></form>`, flashOf(req)));
 
-  const baseUrl = () => (process.env.PUBLIC_BASE_URL || 'https://nahalabs-hi.onrender.com').replace(/\/$/, '');
+  const baseUrl = () => (process.env.PUBLIC_BASE_URL || 'https://hi.nahalabs.co.za').replace(/\/$/, '');
   app.get('/forgot', async (req, reply) => render(reply, null, 'Forgot password', `
     <h1>Forgot password</h1><form method="post" class="card">
     <label>Email</label><input name="email" type="email" required autocomplete="username">
@@ -445,7 +445,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
         <tr><td><code>GET /v1/tenders?query=</code> / <code>GET /v1/matches</code></td><td>Opportunity Desk: search open SA tenders, or read the account's profile matches.</td></tr>
         <tr><td><code>POST /v1/browser</code> <span class="mut">{start_url, goal, mode}</span> / <code>GET /v1/browser/:id</code></td><td>Propose a browser job. It runs only after the account owner approves it in the queue; irreversible steps need a second approval.</td></tr>
       </table></div>
-      <div class="card"><b>Example</b><pre>curl -s https://nahalabs-hi.onrender.com/v1/chat \\
+      <div class="card"><b>Example</b><pre>curl -s https://hi.nahalabs.co.za/v1/chat \\
   -H "Authorization: Bearer hi_..." \\
   -H "content-type: application/json" \\
   -d '{"message":"What open tenders fit a cleaning company in Gauteng?"}'</pre></div>`);
