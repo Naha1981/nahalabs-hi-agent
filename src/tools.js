@@ -3,6 +3,7 @@ import dns from 'node:dns/promises';
 import net from 'node:net';
 import { audit } from './db.js';
 import { proposeBrowserJob } from './browser.js';
+import { saveFile } from './files.js';
 
 export function isPrivateIp(ip) {
   if (net.isIPv4(ip)) {
@@ -61,6 +62,7 @@ export const TOOL_SCHEMAS = [
   { name: 'schedule_task', description: 'Schedule a task to run later (once) or repeatedly. every_minutes must be 60 or more. Use run_in_minutes for a one-off.', parameters: { type: 'object', properties: { title: { type: 'string' }, instruction: { type: 'string' }, every_minutes: { type: 'integer' }, run_in_minutes: { type: 'integer' } }, required: ['title', 'instruction'] } },
   { name: 'browser_task', description: 'Ask to open a public website in an isolated cloud browser to read it or fill and click through it (forms, searches, pages that need clicking). The customer must approve before it starts, and approves again before any final submit. mode=read only reads and follows links; mode=act can type and click. Cannot use passwords, card numbers or codes.', parameters: { type: 'object', properties: { start_url: { type: 'string' }, goal: { type: 'string' }, mode: { type: 'string', enum: ['read', 'act'] } }, required: ['start_url', 'goal'] } },
   { name: 'browser_results', description: 'Read the results of the most recent browser tasks.', parameters: { type: 'object', properties: {} } },
+  { name: 'create_file', description: 'Save a file (csv, md or txt) into the customer account for download, e.g. a tender comparison spreadsheet or a report. Give the full file content.', parameters: { type: 'object', properties: { filename: { type: 'string' }, format: { type: 'string', enum: ['csv', 'md', 'txt'] }, content: { type: 'string' } }, required: ['filename', 'format', 'content'] } },
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
 ];
 
@@ -139,6 +141,11 @@ export async function runTool(name, args, ctx) {
     case 'browser_results': {
       const r = await c.query("SELECT start_url, goal, status, result, created_at FROM browser_jobs ORDER BY created_at DESC LIMIT 3");
       return UNTRUSTED(r.rowCount ? r.rows.map((j) => `- [${j.status}] ${j.goal.slice(0, 120)} (${new URL(j.start_url).hostname}): ${clip(j.result || 'no result yet', 600)}`).join('\n') : 'No browser tasks yet.');
+    }
+    case 'create_file': {
+      const r = await saveFile(c, { tenantId, agentId: ctx.agentId, filename: a.filename, format: a.format, content: a.content, actor: `agent:${ctx.agentName || 'hi'}` });
+      if (r.error) return r.error;
+      return `Saved as "${r.filename}". The customer can download it from the Files page.`;
     }
     case 'propose_email': {
       const subject = clip(a.subject, 150).trim(), body = clip(a.body, 5000).trim();

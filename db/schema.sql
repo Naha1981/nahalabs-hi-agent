@@ -425,3 +425,21 @@ CREATE OR REPLACE FUNCTION api_key_lookup(p_hash text) RETURNS TABLE (tenant_id 
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 REVOKE ALL ON FUNCTION api_key_lookup(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION api_key_lookup(text) TO hi_app;
+
+-- ===== Agent file generation (phase 3) =====
+CREATE TABLE IF NOT EXISTS files (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_id uuid REFERENCES agents(id) ON DELETE SET NULL,
+  filename text NOT NULL CHECK (char_length(filename) BETWEEN 1 AND 120),
+  mime text NOT NULL,
+  content text NOT NULL CHECK (char_length(content) <= 200000),
+  created_by text NOT NULL DEFAULT 'agent',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE files ENABLE ROW LEVEL SECURITY;
+ALTER TABLE files FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON files;
+CREATE POLICY tenant_isolation ON files USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON files TO hi_app;

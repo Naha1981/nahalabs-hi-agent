@@ -18,6 +18,7 @@ delete process.env.GROQ_API_KEY;
 let db, app, script = [];
 const llm = async ({ messages }) => { const r = script.shift(); if (!r) return { content: 'done', tool_calls: [] }; return { model: 'stub', usage: { prompt_tokens: 1, completion_tokens: 1 }, ...r }; };
 const say = (content) => ({ content, tool_calls: [] });
+const call = (name, args, id = 'c1') => ({ content: '', tool_calls: [{ id, name, args }] });
 const fakeFetch = async (url) => { throw new Error('unexpected fetch ' + url); };
 const lookup = async () => [{ address: '93.184.216.34' }];
 const H = { 'content-type': 'application/x-www-form-urlencoded' };
@@ -127,6 +128,22 @@ test('plans decompose, run specialist steps and combine', async () => {
   const got = await api(keyA, 'GET', `/v1/plans/${j.plan_id}`);
   assert.match(got.body, /Combined answer/);
   assert.equal((await api(keyB, 'GET', `/v1/plans/${j.plan_id}`)).statusCode, 404);
+});
+
+test('agent file generation: create via tool, list and read over API, download in app', async () => {
+  script = [call('create_file', { filename: 'matches', format: 'csv', content: 'title,buyer\nCleaning services for schools,Dept of Education\n' }), say('Saved the spreadsheet.')];
+  const r = await api(keyA, 'POST', '/v1/chat', { message: 'Save a csv of my matches' });
+  assert.equal(r.statusCode, 200);
+  const list = JSON.parse((await api(keyA, 'GET', '/v1/files')).body);
+  assert.equal(list.files[0].filename, 'matches.csv');
+  const f = JSON.parse((await api(keyA, 'GET', `/v1/files/${list.files[0].id}`)).body);
+  assert.match(f.file.content, /Cleaning services for schools/);
+  // tenant B cannot read it
+  assert.equal((await api(keyB, 'GET', `/v1/files/${list.files[0].id}`)).statusCode, 404);
+  // in-app download
+  const dl = await app.inject({ url: `/app/files/${list.files[0].id}/download`, headers: { cookie: A.cookie } });
+  assert.equal(dl.statusCode, 200);
+  assert.match(dl.headers['content-disposition'], /matches\.csv/);
 });
 
 test('revoked keys stop working', async () => {

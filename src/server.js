@@ -378,6 +378,25 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     return reply.redirect('/app/api-keys?m=' + encodeURIComponent('Key revoked.'));
   });
 
+  app.get('/app/files', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const files = await withTenant(u.tenant_id, (c) => c.query('SELECT id, filename, mime, char_length(content) size, created_by, created_at FROM files ORDER BY created_at DESC LIMIT 100').then((r) => r.rows));
+    const rows = files.map((f) => `<tr><td><a href="/app/files/${f.id}/download">${esc(f.filename)}</a></td><td><span class="chip">${esc(f.mime.split('/')[1])}</span></td><td>${Math.ceil(f.size / 1024)} KB</td><td>${esc(f.created_by)}</td><td>${fdate(f.created_at)}</td></tr>`).join('');
+    return render(reply, u, 'Files', `
+      <h1><b>Files</b> your agent made.</h1>
+      <p class="mut">Ask HI to save a report or spreadsheet and it lands here. Honest limit: csv, markdown and text for now.</p>
+      <div class="card"><table><tr><th>File</th><th>Type</th><th>Size</th><th>Made by</th><th>When</th></tr>${rows || '<tr><td colspan="5" class="mut">No files yet - ask the agent to create one, e.g. "save a csv of this week\'s matches"</td></tr>'}</table></div>`, flashOf(req));
+  });
+
+  app.get('/app/files/:id/download', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    if (!/^[0-9a-f-]{36}$/i.test(String(req.params.id || ''))) return reply.redirect('/app/files');
+    const f = await withTenant(u.tenant_id, (c) => c.query('SELECT filename, mime, content FROM files WHERE id=$1', [req.params.id]).then((r) => r.rows[0]));
+    if (!f) return reply.redirect('/app/files?m=' + encodeURIComponent('File not found.'));
+    reply.header('content-disposition', `attachment; filename="${f.filename.replace(/"/g, '')}"`);
+    return reply.type(f.mime).send(f.content);
+  });
+
   // ---------- Agent platform ----------
   const mdLite = (t) => esc(String(t).replace(/<br\s*\/?>/gi, '\n').replace(/^\s*\|?[-:| ]{3,}\|?\s*$/gm, '')).replace(/\*\*([^*\n]{1,200})\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
   const srcList = (src) => (src || []).length ? `<div class="mut">Sources: ${(src).map((x, i) => `[${i + 1}] <a href="${safeUrl(x.url)}" rel="noopener noreferrer" target="_blank">${esc(String(x.title || x.url).slice(0, 80))}</a>`).join(' &nbsp; ')}</div>` : '';
