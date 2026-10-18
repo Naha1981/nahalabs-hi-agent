@@ -561,7 +561,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const f = await withTenant(u.tenant_id, (c) => c.query('SELECT filename, mime, content FROM files WHERE id=$1', [req.params.id]).then((r) => r.rows[0]));
     if (!f) return reply.redirect('/app/files?m=' + encodeURIComponent('File not found.'));
     reply.header('content-disposition', `attachment; filename="${f.filename.replace(/"/g, '')}"`);
-    return reply.type(f.mime).send(f.content);
+    return reply.type(f.mime).send(f.mime === XLSX_MIME ? Buffer.from(f.content, 'base64') : f.content);
   });
 
   // ---------- Agent platform ----------

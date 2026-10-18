@@ -9,7 +9,7 @@ HI is NahaLabs' multi-tenant AI employee platform. The Opportunity Desk module f
 - Controlled browser jobs on isolated GitHub Actions runners: read or click through public sites; passwords/cards/codes refused, risky clicks wait for approval, one-job tokens, same-site only.
 - WhatsApp connector (engine-agnostic): reply-only to saved contacts, caps, no outbound-first messages.
 - Voice turns (Drive Companion slice 1): the Drive page records speech, transcribes it (Groq Whisper), runs it through the shared agent with a hands-free driving policy, and speaks the answer (Groq Orpheus TTS with browser-speech fallback). Approvals stay in the queue.
-- Agent file generation (csv/md/txt) with downloads and API reads.
+- Agent file generation (csv, md, txt and genuine xlsx workbooks) with downloads and API reads.
 - Approval queue, per-account pause, global emergency stop, append-only audit log, morning brief (approval-gated, per-tenant auto-send opt-in), public /v1 API with tenant keys.
 
 ## What it does not do

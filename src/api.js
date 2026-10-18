@@ -171,7 +171,7 @@ export function registerApi(app, { llm, fetchImpl, lookup } = {}) {
     if (!uuidOk(req.params.id)) return reply.code(400).send({ error: 'invalid file id.' });
     const f = await withTenant(req.apiKey.tenantId, (c) => c.query('SELECT id, filename, mime, content, created_at FROM files WHERE id=$1', [req.params.id]).then((r) => r.rows[0]));
     if (!f) return reply.code(404).send({ error: 'File not found.' });
-    return { file: f };
+    return { file: { ...f, encoding: f.mime === XLSX_MIME ? 'base64' : 'utf8' } };
   });
 
   // --- Plans (multi-agent) ---

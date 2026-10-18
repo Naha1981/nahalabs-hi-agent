@@ -146,6 +146,38 @@ test('agent file generation: create via tool, list and read over API, download i
   assert.match(dl.headers['content-disposition'], /matches\.csv/);
 });
 
+test('agent xlsx deliverable: genuine workbook stored, read back and downloaded', async () => {
+  const sheetJson = JSON.stringify({ sheets: [{ name: 'Compare', rows: [['Title', 'Buyer', 'Score'], ['Cleaning services for schools', 'Dept of Education', 0.9]] }] });
+  script = [call('create_file', { filename: 'tender-comparison', format: 'xlsx', content: sheetJson }), say('Saved the workbook.')];
+  const r = await api(keyA, 'POST', '/v1/chat', { message: 'Save an xlsx comparing my matches' });
+  assert.equal(r.statusCode, 200);
+  const list = JSON.parse((await api(keyA, 'GET', '/v1/files')).body);
+  const x = list.files.find((f) => f.filename === 'tender-comparison.xlsx');
+  assert.ok(x, 'xlsx file listed');
+  const f = JSON.parse((await api(keyA, 'GET', `/v1/files/${x.id}`)).body);
+  assert.equal(f.file.encoding, 'base64');
+  assert.match(f.file.mime, /spreadsheetml/);
+  const buf = Buffer.from(f.file.content, 'base64');
+  assert.deepEqual([...buf.subarray(0, 2)], [0x50, 0x4b]); // PK zip magic: genuine xlsx, not renamed csv
+  assert.ok(buf.includes(Buffer.from('Cleaning services for schools')), 'cell text present in workbook');
+  // tenant B cannot read it
+  assert.equal((await api(keyB, 'GET', `/v1/files/${x.id}`)).statusCode, 404);
+  // in-app download serves binary with the right type
+  const dl = await app.inject({ url: `/app/files/${x.id}/download`, headers: { cookie: A.cookie } });
+  assert.equal(dl.statusCode, 200);
+  assert.match(dl.headers['content-type'], /spreadsheetml/);
+  assert.match(dl.headers['content-disposition'], /tender-comparison\.xlsx/);
+  assert.deepEqual([...dl.rawPayload.subarray(0, 2)], [0x50, 0x4b]);
+});
+
+test('agent xlsx deliverable: invalid sheet JSON is rejected with guidance', async () => {
+  script = [call('create_file', { filename: 'broken', format: 'xlsx', content: 'not json at all' }), say('The xlsx content was not valid.')];
+  const r = await api(keyA, 'POST', '/v1/chat', { message: 'Save an xlsx' });
+  assert.equal(r.statusCode, 200);
+  const list = JSON.parse((await api(keyA, 'GET', '/v1/files')).body);
+  assert.ok(!list.files.some((f) => f.filename.startsWith('broken')), 'no file stored for invalid xlsx');
+});
+
 test('revoked keys stop working', async () => {
   const keys = await withTenant(A.tenantId, (c) => c.query("SELECT id FROM api_keys WHERE name='CargoIQ'").then((r) => r.rows));
   await withTenant(A.tenantId, (c) => c.query("UPDATE api_keys SET status='revoked' WHERE id=$1", [keys[0].id]));
