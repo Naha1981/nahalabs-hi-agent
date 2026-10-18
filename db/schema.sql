@@ -466,3 +466,6 @@ DROP POLICY IF EXISTS tenant_isolation ON integrations;
 CREATE POLICY tenant_isolation ON integrations USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON integrations TO hi_app;
+
+-- Column additions for existing databases (CREATE TABLE IF NOT EXISTS cannot add columns)
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS morning_brief_auto boolean NOT NULL DEFAULT false;
