@@ -21,6 +21,17 @@ import { authUrlFor, connectAccount, providerConfigured, PROVIDERS, integrations
 import { createHash as _ch } from 'node:crypto';
 
 const COOKIE = 'hi_session';
+
+// PWA: manifest, service worker, icons (static, no auth)
+import { readFileSync } from 'node:fs';
+const STATIC = {
+  '/manifest.webmanifest': ['public/manifest.webmanifest', 'application/manifest+json; charset=utf-8'],
+  '/sw.js': ['public/sw.js', 'text/javascript; charset=utf-8'],
+  '/apple-touch-icon.png': ['public/apple-touch-icon.png', 'image/png'],
+  '/icons/icon-192.png': ['public/icons/icon-192.png', 'image/png'],
+  '/icons/icon-512.png': ['public/icons/icon-512.png', 'image/png'],
+  '/icons/maskable-512.png': ['public/icons/maskable-512.png', 'image/png'],
+};
 const secretEq = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && x.length > 0 && timingSafeEqual(x, y); };
 const csrfFor = (token) => tokenHash(token + (process.env.SESSION_SECRET || 'dev-only')).slice(0, 40);
 const lines = (s) => String(s || '').split(/[\n,]/).map((x) => x.trim()).filter(Boolean).slice(0, 40).map((x) => x.slice(0, 80));
@@ -62,6 +73,21 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   const render = (reply, user, title, body, flash) => reply.type('text/html').send(page({ title, user, body, flash }));
   const csrf = (u) => `<input type="hidden" name="csrf" value="${esc(u.csrf)}">`;
   const flashOf = (req) => req.query?.m ? String(req.query.m).slice(0, 160) : null;
+
+  for (const [p, [file, mime]] of Object.entries(STATIC)) {
+
+    app.get(p, (req, reply) => {
+
+      reply.header('Cache-Control', p === '/sw.js' ? 'no-cache' : 'public, max-age=86400');
+
+      if (p === '/sw.js') reply.header('Service-Worker-Allowed', '/');
+
+      return reply.type(mime).send(readFileSync(file));
+
+    });
+
+  }
+
 
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/healthz/db', async (req, reply) => { try { const r = await withSystem((c) => c.query('SELECT count(*)::int n FROM tenants')); return { ok: true, db: 'ok' }; } catch (e) { return reply.code(503).send({ ok: false, db: 'down' }); } });
