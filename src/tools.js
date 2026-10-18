@@ -6,6 +6,16 @@ import { proposeBrowserJob } from './browser.js';
 import { saveFile } from './files.js';
 import { mailSearch, calendarUpcoming, proposeAccountEmail, proposeCalendarEvent } from './integrations.js';
 
+
+async function resolveIntegration(c, id, providerPrefix) {
+  const rows = (await c.query("SELECT id, provider, account_email FROM integrations WHERE status='active' ORDER BY created_at")).rows;
+  if (id && rows.find((r) => r.id === id)) return { id };
+  const pool = providerPrefix ? rows.filter((r) => r.provider === providerPrefix) : rows;
+  const use = pool.length ? pool : rows;
+  if (use.length === 1) return { id: use[0].id };
+  if (!use.length) return { error: 'No connected account. Ask the customer to connect one on the Integrations page.' };
+  return { error: 'Several accounts are connected: ' + use.map((r) => `${r.account_email} (${r.provider}, id ${r.id})`).join('; ') + '. Ask which one, then pass integration_id.' };
+}
 export function isPrivateIp(ip) {
   if (net.isIPv4(ip)) {
     const [a, b] = ip.split('.').map(Number);
@@ -66,8 +76,8 @@ export const TOOL_SCHEMAS = [
   { name: 'create_file', description: 'Save a file (csv, md or txt) into the customer account for download, e.g. a tender comparison spreadsheet or a report. Give the full file content.', parameters: { type: 'object', properties: { filename: { type: 'string' }, format: { type: 'string', enum: ['csv', 'md', 'txt'] }, content: { type: 'string' } }, required: ['filename', 'format', 'content'] } },
   { name: 'mail_search', description: 'Search the customer\'s connected Gmail and Outlook inboxes (read only). Only works after the customer connects an account on the Integrations page.', parameters: { type: 'object', properties: { query: { type: 'string' } } } },
   { name: 'calendar_upcoming', description: 'List upcoming events from the customer\'s connected Google and Outlook calendars (read only).', parameters: { type: 'object', properties: { days: { type: 'integer' } } } },
-  { name: 'propose_account_email', description: 'Draft an email to send from one of the customer\'s connected Gmail/Outlook accounts. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { integration_id: { type: 'string' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['integration_id', 'to', 'subject', 'body'] } },
-  { name: 'propose_calendar_event', description: 'Propose creating an event on one of the customer\'s connected calendars. It is created only after the customer approves.', parameters: { type: 'object', properties: { integration_id: { type: 'string' }, title: { type: 'string' }, starts_at: { type: 'string' }, ends_at: { type: 'string' }, description: { type: 'string' } }, required: ['integration_id', 'title', 'starts_at', 'ends_at'] } },
+  { name: 'propose_account_email', description: 'Draft an email to send from one of the customer\'s connected Gmail/Outlook accounts. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'] } },
+  { name: 'propose_calendar_event', description: 'Propose creating an event on one of the customer\'s connected calendars. It is created only after the customer approves.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, title: { type: 'string' }, starts_at: { type: 'string' }, ends_at: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'starts_at', 'ends_at'] } },
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
 ];
 
@@ -167,12 +177,16 @@ export async function runTool(name, args, ctx) {
       } catch (e) { return 'Calendar read failed: ' + clip(e.message, 80); }
     }
     case 'propose_account_email': {
-      const r = await proposeAccountEmail(c, { tenantId, integrationId: String(a.integration_id || ''), to: String(a.to || ''), subject: String(a.subject || ''), body: String(a.body || ''), actor: `agent:${ctx.agentName || 'hi'}` });
+      const ri = await resolveIntegration(c, String(a.integration_id || ''));
+      if (ri.error) return ri.error;
+      const r = await proposeAccountEmail(c, { tenantId, integrationId: ri.id, to: String(a.to || ''), subject: String(a.subject || ''), body: String(a.body || ''), actor: `agent:${ctx.agentName || 'hi'}` });
       if (r.error) return r.error;
       return 'Drafted and placed in the approval queue. It will be sent from the connected account only if the customer approves.';
     }
     case 'propose_calendar_event': {
-      const r = await proposeCalendarEvent(c, { tenantId, integrationId: String(a.integration_id || ''), title: String(a.title || ''), startsAt: String(a.starts_at || ''), endsAt: String(a.ends_at || ''), description: String(a.description || ''), actor: `agent:${ctx.agentName || 'hi'}` });
+      const ri = await resolveIntegration(c, String(a.integration_id || ''));
+      if (ri.error) return ri.error;
+      const r = await proposeCalendarEvent(c, { tenantId, integrationId: ri.id, title: String(a.title || ''), startsAt: String(a.starts_at || ''), endsAt: String(a.ends_at || ''), description: String(a.description || ''), actor: `agent:${ctx.agentName || 'hi'}` });
       if (r.error) return r.error;
       return 'Proposed and placed in the approval queue. The event will be created only if the customer approves.';
     }
