@@ -113,7 +113,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
         <li><span class="chip">Scheduled work</span> Recurring jobs that report back, plus daily briefs you approve before they send</li>
         <li><span class="chip">API</span> Powers other NahaLabs products - see the <a href="/developers">developer docs</a></li>
       </ul></div>
-      <p><a class="btn" href="/login">Sign in</a> <a href="/signup">Have an invite code? Create an account</a></p>
+      <p><a class="btn" href="/login">Sign in</a> <a href="/signup">Create an account</a></p>
       <p class="mut">Honest limits: HI drafts and proposes - you approve everything that leaves your account. It does not submit bids, make payments or send messages on its own, and it tells you when it cannot verify something. Tender data: National Treasury eTender Publication Portal, published under the Open Data Commons PDDL.</p>`);
   });
 
