@@ -7,6 +7,7 @@ import { withTenant, withSystem, audit } from './db.js';
 import { runAgent, ensureDefaultAgent } from './agent.js';
 import { ensureBuiltinSkills } from './skills.js';
 import { proposeBrowserJob } from './browser.js';
+import { buildXlsx, XLSX_MIME } from './xlsx.js';
 
 const hashKey = (k) => crypto.createHash('sha256').update(k).digest('hex');
 export const newApiKey = () => 'hi_' + crypto.randomBytes(24).toString('hex');
@@ -116,6 +117,29 @@ export function registerApi(app, { llm, fetchImpl, lookup } = {}) {
       `SELECT m.score, m.reasons, t.ocid, t.title, t.buyer, t.closes_at, t.source_url
        FROM matches m JOIN tenders t ON t.ocid = m.ocid WHERE m.status='new' ORDER BY m.score DESC LIMIT 20`).then((r) => r.rows));
     return { matches: rows };
+  });
+
+  app.get('/v1/tenders/export.xlsx', async (req, reply) => {
+    const rows = await withTenant(req.apiKey.tenantId, (c) => c.query(
+      `SELECT ocid, title, buyer, category, closes_at, source_url FROM tenders
+       WHERE closes_at IS NULL OR closes_at > now() ORDER BY closes_at NULLS LAST LIMIT 5000`).then((r) => r.rows));
+    const data = [['OCID', 'Title', 'Buyer', 'Category', 'Closes At', 'Source URL'],
+      ...rows.map((r) => [r.ocid, r.title, r.buyer, r.category, r.closes_at ? r.closes_at.toISOString() : '', r.source_url])];
+    return reply.header('content-type', XLSX_MIME)
+      .header('content-disposition', `attachment; filename="hi-tenders-${new Date().toISOString().slice(0, 10)}.xlsx"`)
+      .send(buildXlsx([{ name: 'Tenders', rows: data }]));
+  });
+
+  app.get('/v1/matches/export.xlsx', async (req, reply) => {
+    const rows = await withTenant(req.apiKey.tenantId, (c) => c.query(
+      `SELECT t.title, t.tender_no, t.buyer, t.category, m.status, m.score, m.reasons, t.closes_at, t.source_url
+       FROM matches m JOIN tenders t USING (ocid) ORDER BY m.score DESC, t.closes_at NULLS LAST LIMIT 5000`).then((r) => r.rows));
+    const data = [['Title', 'Tender No', 'Buyer', 'Category', 'Status', 'Score', 'Why it matched', 'Closes At', 'Source URL'],
+      ...rows.map((r) => [r.title, r.tender_no, r.buyer, r.category, r.status, r.score,
+        (r.reasons || []).map((x) => x.text).join('; '), r.closes_at ? r.closes_at.toISOString() : '', r.source_url])];
+    return reply.header('content-type', XLSX_MIME)
+      .header('content-disposition', `attachment; filename="hi-matches-${new Date().toISOString().slice(0, 10)}.xlsx"`)
+      .send(buildXlsx([{ name: 'Matches', rows: data }]));
   });
 
   // --- Browser actions (approval-gated) ---

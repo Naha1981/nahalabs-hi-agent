@@ -19,6 +19,7 @@ import { chat as defaultChat, agentModelEnabled } from './gateway.js';
 import { registerApi, newApiKey } from './api.js';
 import { ensureBuiltinSkills } from './skills.js';
 import { voiceConfigured, voiceMaxBytes, transcribe, speak } from './voice.js';
+import { buildXlsx, XLSX_MIME } from './xlsx.js';
 import { authUrlFor, connectAccount, providerConfigured, PROVIDERS, integrationsConfigured } from './integrations.js';
 import { createHash as _ch } from 'node:crypto';
 
@@ -191,12 +192,29 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       return { prof, rows, counts, alerts, pend };
     });
     const tabs = STATUSES.map((s) => { const n = data.counts.find((x) => x.status === s)?.n || 0; return `<a class="tag" href="/app?status=${s}">${s} (${n})</a>`; }).join(' ');
+    const exportLink = '<a class="tag" href="/app/opportunities.xlsx">Download XLSX</a>';
     const cards = data.rows.map((r) => `<div class="card"><div class="row"><a href="/app/opportunity/${encodeURIComponent(r.ocid)}"><b>${esc(r.title)}</b></a><span class="score">${r.score}</span></div>
       <div class="mut">${esc(r.tender_no)} | ${esc(r.buyer)} | closes ${fdate(r.closes_at)}</div>
       <div class="mut">${r.reasons.map((x) => esc(x.text)).join(' - ')}</div></div>`).join('');
     const empty = !data.prof?.keywords?.length ? `<div class="card">Set your keywords first so HI knows what to look for. <a class="btn" href="/app/profile">Set up profile</a></div>` : (!data.rows.length ? '<div class="card mut">No opportunities here yet. HI checks for new tenders daily.</div>' : '');
     const warn = [u.paused ? '<div class="flash">Your account is paused. Nothing will be sent.</div>' : '', data.pend ? `<div class="flash">${data.pend} item(s) waiting for your approval. <a href="/app/approvals">Review</a></div>` : '', data.alerts.length ? `<div class="flash">${data.alerts.length} document(s) expired or expiring within 30 days. <a href="/app/documents">Review</a></div>` : ''].join('');
-    return render(reply, u, 'Opportunities', `<h1>Opportunities for ${esc(u.tenant_name)}</h1>${warn}<p>${tabs}</p>${cards}${empty}`, flashOf(req));
+    return render(reply, u, 'Opportunities', `<h1>Opportunities for ${esc(u.tenant_name)}</h1>${warn}<p>${tabs} ${exportLink}</p>${cards}${empty}`, flashOf(req));
+  });
+
+
+  app.get('/app/opportunities.xlsx', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const rows = await withTenant(u.tenant_id, (c) => c.query(
+      `SELECT t.title, t.tender_no, t.buyer, t.category, m.status, m.score, m.reasons, t.closes_at, t.source_url
+       FROM matches m JOIN tenders t USING (ocid) ORDER BY m.score DESC, t.closes_at NULLS LAST LIMIT 5000`).then((r) => r.rows));
+    const data = [['Title', 'Tender No', 'Buyer', 'Category', 'Status', 'Score', 'Why it matched', 'Closes At', 'Source URL'],
+      ...rows.map((r) => [r.title, r.tender_no, r.buyer, r.category, r.status, r.score,
+        (r.reasons || []).map((x) => x.text).join('; '), r.closes_at ? r.closes_at.toISOString() : '', r.source_url])];
+    const buf = buildXlsx([{ name: 'Opportunities', rows: data }]);
+    await withTenant(u.tenant_id, (c) => audit(c, u.tenant_id, `user:${u.user_id}`, 'opportunities.export', { rows: rows.length }));
+    return reply.header('content-type', XLSX_MIME)
+      .header('content-disposition', `attachment; filename="hi-opportunities-${new Date().toISOString().slice(0, 10)}.xlsx"`)
+      .send(buf);
   });
 
   app.get('/app/opportunity/:ocid', { preHandler: guard }, async (req, reply) => {
