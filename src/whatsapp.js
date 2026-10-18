@@ -54,6 +54,36 @@ export function makeAdapter(fetchImpl = fetch) {
       if (!res.ok) throw new Error('engine http ' + res.status);
       return;
     }
+    if (engine === 'meta_cloud') {
+      // Official WhatsApp Business Platform (Meta Cloud API). Text replies only; no templates here.
+      const phoneId = process.env.WA_META_PHONE_NUMBER_ID, token = process.env.WA_META_TOKEN;
+      if (!phoneId || !token) throw new Error('meta_cloud not configured');
+      const res = await fetchImpl(`https://graph.facebook.com/v21.0/${phoneId}/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text.slice(0, 4000) } }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) throw new Error('meta_cloud http ' + res.status);
+      return;
+    }
     throw new Error('engine not supported yet');
   };
+}
+
+// Parse a Meta Cloud API webhook payload into our inbound shape. Only text messages;
+// everything else (statuses, reactions, media) is skipped. to = our WABA display number.
+export function parseMetaWebhook(payload) {
+  const out = [];
+  for (const entry of payload?.entry || []) {
+    for (const change of entry?.changes || []) {
+      const v = change?.value || {};
+      const to = String(v?.metadata?.display_phone_number || '');
+      for (const m of v?.messages || []) {
+        if (m?.type !== 'text') continue;
+        out.push({ to, from: String(m.from || ''), text: String(m.text?.body || ''), externalId: m.id ? String(m.id).slice(0, 80) : null });
+      }
+    }
+  }
+  return out;
 }

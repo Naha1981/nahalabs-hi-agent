@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import formbody from '@fastify/formbody';
 import cookie from '@fastify/cookie';
-import { timingSafeEqual, createHash } from 'node:crypto';
+import { timingSafeEqual, createHash, createHmac } from 'node:crypto';
 const require_hash = (t) => createHash('sha256').update(String(t || '')).digest('hex');
 import { withTenant, withSystem, audit, auditFor, closePool } from './db.js';
 import { hashPassword, verifyPassword, newToken, tokenHash, makeLimiter } from './auth.js';
@@ -11,7 +11,7 @@ import { matchTenant, matchAllTenants } from './match.js';
 import { buildBriefsForAll, decideApproval, setEmergencyStop, emergencyStopped, vaultAlerts } from './core.js';
 import { explainFit, modelEnabled } from './gateway.js';
 import { mailConfigured } from './mail.js';
-import { handleInbound, makeAdapter, normalisePhone } from './whatsapp.js';
+import { handleInbound, makeAdapter, normalisePhone, parseMetaWebhook } from './whatsapp.js';
 import { browserStep, browserPoll } from './browser.js';
 import { runAgent, runDueTasks, ensureDefaultAgent } from './agent.js';
 import { buildMorningBriefs } from './brief.js';
@@ -711,6 +711,32 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const r = await handleInbound({ to: b.to, from: b.from, text: b.text, externalId: b.id ? String(b.id).slice(0, 80) : null, llm, fetchImpl, lookup, adapter: makeAdapter(fetchImpl) });
     return reply.code(r.status || 200).send(r);
   });
+  // Meta Cloud API webhook: GET verifies the endpoint, POST delivers inbound messages.
+  // Encapsulated so the JSON parser can keep the raw body for X-Hub-Signature-256.
+  app.register(async (wa) => {
+    wa.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
+      req.rawBody = body;
+      try { done(null, JSON.parse(body.toString('utf8') || '{}')); } catch { done(null, {}); }
+    });
+    wa.get('/webhooks/whatsapp', async (req, reply) => {
+      const ok = req.query?.['hub.mode'] === 'subscribe' && secretEq(String(req.query?.['hub.verify_token'] || ''), process.env.WA_META_VERIFY_TOKEN);
+      return ok ? reply.type('text/plain').send(String(req.query['hub.challenge'])) : reply.code(403).send({ error: 'bad verify token' });
+    });
+    wa.post('/webhooks/whatsapp', async (req, reply) => {
+      const appSecret = process.env.WA_META_APP_SECRET;
+      if (!appSecret) return reply.code(503).send({ error: 'meta_cloud not configured' });
+      const sig = String(req.headers['x-hub-signature-256'] || '');
+      const hmac = createHmac('sha256', appSecret).update(req.rawBody || Buffer.alloc(0)).digest('hex');
+      if (!secretEq(sig, `sha256=${hmac}`)) return reply.code(401).send({ error: 'bad signature' });
+      const adapter = makeAdapter(fetchImpl);
+      const results = [];
+      for (const m of parseMetaWebhook(req.body)) {
+        results.push(await handleInbound({ ...m, llm, fetchImpl, lookup, adapter }));
+      }
+      return reply.send({ received: results.length });
+    });
+  });
+
   app.get('/app/whatsapp', { preHandler: guard }, async (req, reply) => {
     const u = req.user; await ensureDefaultAgent(u.tenant_id);
     const d = await withTenant(u.tenant_id, async (c) => ({

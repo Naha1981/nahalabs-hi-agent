@@ -4,10 +4,13 @@ import { startDb } from './helpers.js';
 import { withTenant, withSystem } from '../src/db.js';
 import { buildApp } from '../src/server.js';
 import { ensureDefaultAgent } from '../src/agent.js';
-import { normalisePhone } from '../src/whatsapp.js';
+import { normalisePhone, parseMetaWebhook, makeAdapter } from '../src/whatsapp.js';
+import { createHmac } from 'node:crypto';
 
 process.env.HI_INVITE_CODES = 'invite-test-code'; process.env.SIGNUP_RATE_MAX = '100'; process.env.CRON_SECRET = 'cron-test-secret-value';
 process.env.SESSION_SECRET = 'session-secret-for-tests'; process.env.WA_INBOUND_SECRET = 'wa-secret-for-tests'; delete process.env.GROQ_API_KEY;
+process.env.WA_META_VERIFY_TOKEN = 'meta-verify-for-tests'; process.env.WA_META_APP_SECRET = 'meta-app-secret-for-tests';
+process.env.WA_META_PHONE_NUMBER_ID = '1234567890'; process.env.WA_META_TOKEN = 'meta-token-for-tests';
 const H = { 'content-type': 'application/x-www-form-urlencoded' }; const form = (o) => new URLSearchParams(o).toString();
 let db, app, A, B, calls = 0;
 const llm = async () => { calls++; return { content: 'Hello from HI', tool_calls: [], model: 'stub' }; };
@@ -67,4 +70,43 @@ test('paused tenant, emergency stop and rate limits silence replies; outreach li
 test('tenant isolation on WhatsApp tables', async () => {
   for (const t of ['wa_channels', 'wa_contacts', 'wa_messages']) assert.ok((await withTenant(B.tenantId, (c) => c.query(`SELECT tenant_id FROM ${t}`))).rows.every((r) => r.tenant_id === B.tenantId), t);
   await assert.rejects(withTenant(B.tenantId, (c) => c.query("INSERT INTO wa_contacts (tenant_id, phone) VALUES ($1,'27821230000')", [A.tenantId])));
+});
+
+test('meta_cloud adapter posts a text message to the Graph API', async () => {
+  const seen = [];
+  const fetchImpl = async (url, opts) => { seen.push({ url: String(url), opts }); return { ok: true, status: 200 }; };
+  const adapter = makeAdapter(fetchImpl);
+  await adapter({ engine: 'meta_cloud', from: '27821110001', to: '27829990001', text: 'Your brief is ready' });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, 'https://graph.facebook.com/v21.0/1234567890/messages');
+  assert.equal(seen[0].opts.headers.authorization, 'Bearer meta-token-for-tests');
+  const body = JSON.parse(seen[0].opts.body);
+  assert.equal(body.messaging_product, 'whatsapp');
+  assert.equal(body.to, '27829990001');
+  assert.equal(body.text.body, 'Your brief is ready');
+  const bad = makeAdapter(async () => ({ ok: false, status: 401 }));
+  await assert.rejects(() => bad({ engine: 'meta_cloud', from: '1', to: '2', text: 'x' }), /meta_cloud http 401/);
+});
+
+test('meta webhook GET verifies with the token', async () => {
+  const ok = await app.inject({ url: '/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=meta-verify-for-tests&hub.challenge=abc123' });
+  assert.equal(ok.statusCode, 200); assert.equal(ok.body, 'abc123');
+  assert.equal((await app.inject({ url: '/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=abc123' })).statusCode, 403);
+});
+
+test('meta webhook POST verifies the signature and delivers inbound text', async () => {
+  const payload = JSON.stringify({ entry: [{ changes: [{ value: { metadata: { display_phone_number: '27821110001' },
+    messages: [{ id: 'wamid.test1', from: '27829990001', type: 'text', text: { body: 'Any new matches?' } }, { id: 'st1', type: 'reaction' }] } }] }] });
+  const sign = (secret, data) => 'sha256=' + createHmac('sha256', secret).update(data).digest('hex');
+  assert.equal((await app.inject({ method: 'POST', url: '/webhooks/whatsapp', headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign('wrong-secret', payload) }, payload })).statusCode, 401);
+  const r = await app.inject({ method: 'POST', url: '/webhooks/whatsapp', headers: { 'content-type': 'application/json', 'x-hub-signature-256': sign('meta-app-secret-for-tests', payload) }, payload });
+  assert.equal(r.statusCode, 200); assert.equal(r.json().received, 1, 'reaction skipped');
+  const msgs = await rows(A);
+  assert.ok(msgs.some((m) => m.direction === 'in' && m.phone === '27829990001'), 'inbound stored');
+  assert.ok(msgs.some((m) => m.direction === 'out'), 'reply stored');
+});
+
+test('parseMetaWebhook ignores statuses and non-text', () => {
+  assert.deepEqual(parseMetaWebhook({ entry: [{ changes: [{ value: { metadata: { display_phone_number: '2782' }, statuses: [{ id: 'x' }] } }] }] }), []);
+  assert.deepEqual(parseMetaWebhook({}), []);
 });
