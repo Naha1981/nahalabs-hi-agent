@@ -360,3 +360,68 @@ CREATE OR REPLACE FUNCTION wa_channel_lookup(p_number text) RETURNS TABLE (tenan
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 REVOKE ALL ON FUNCTION wa_channel_lookup(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION wa_channel_lookup(text) TO hi_app;
+
+-- ===== Multi-agent planner and skills registry (phase 3) =====
+CREATE TABLE IF NOT EXISTS skills (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name text NOT NULL CHECK (name ~ '^[a-z0-9][a-z0-9\-]{1,40}$'),
+  description text NOT NULL DEFAULT '',
+  instructions text NOT NULL CHECK (char_length(instructions) <= 2000),
+  tools jsonb NOT NULL DEFAULT '[]',
+  builtin boolean NOT NULL DEFAULT false,
+  enabled boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, name)
+);
+CREATE TABLE IF NOT EXISTS plans (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  goal text NOT NULL CHECK (char_length(goal) <= 1500),
+  status text NOT NULL DEFAULT 'planning' CHECK (status IN ('planning','running','done','failed')),
+  steps jsonb NOT NULL DEFAULT '[]',
+  answer text,
+  created_by text NOT NULL DEFAULT 'user',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz
+);
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['skills','plans']
+  LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+    EXECUTE format($f$CREATE POLICY tenant_isolation ON %I
+      USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+      WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)$f$, t);
+  END LOOP;
+END $$;
+GRANT SELECT, INSERT, UPDATE, DELETE ON skills, plans TO hi_app;
+
+-- ===== Public keyed API (phase 3) =====
+CREATE TABLE IF NOT EXISTS api_keys (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 60),
+  prefix text NOT NULL,
+  key_hash text NOT NULL UNIQUE,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz
+);
+ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE api_keys FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON api_keys;
+CREATE POLICY tenant_isolation ON api_keys USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON api_keys TO hi_app;
+-- Bearer-token lookup without a tenant context: returns the tenant only for a live key hash.
+CREATE OR REPLACE FUNCTION api_key_lookup(p_hash text) RETURNS TABLE (tenant_id uuid, key_id uuid) AS $$
+  SELECT k.tenant_id, k.id FROM api_keys k JOIN tenants t ON t.id = k.tenant_id
+  WHERE k.key_hash = p_hash AND k.status = 'active' AND NOT t.paused;
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
+REVOKE ALL ON FUNCTION api_key_lookup(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION api_key_lookup(text) TO hi_app;

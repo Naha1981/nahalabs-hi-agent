@@ -15,6 +15,9 @@ import { handleInbound, makeAdapter, normalisePhone } from './whatsapp.js';
 import { browserStep, browserPoll } from './browser.js';
 import { runAgent, runDueTasks, ensureDefaultAgent } from './agent.js';
 import { chat as defaultChat, agentModelEnabled } from './gateway.js';
+import { registerApi, newApiKey } from './api.js';
+import { ensureBuiltinSkills } from './skills.js';
+import { createHash as _ch } from 'node:crypto';
 
 const COOKIE = 'hi_session';
 const secretEq = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && x.length > 0 && timingSafeEqual(x, y); };
@@ -27,6 +30,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   const app = Fastify({ logger, trustProxy: true, bodyLimit: 100 * 1024 });
   await app.register(formbody);
   await app.register(cookie);
+  registerApi(app, { llm, fetchImpl, lookup });
   const loginLimit = makeLimiter(8, 10 * 60 * 1000);
   const signupLimit = makeLimiter(Number(process.env.SIGNUP_RATE_MAX || 5), 60 * 60 * 1000);
 
@@ -64,12 +68,19 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   app.get('/', async (req, reply) => {
     const s = await sessionOf(req);
     if (s) return reply.redirect('/app/agent');
-    return render(reply, null, 'Opportunity Desk', `
-      <h1>Find the South African tenders worth your time.</h1>
-      <p>HI reads National Treasury's public eTenders data every day, matches open tenders to your business profile, shows exactly why each one matched, and keeps your compliance documents in view. You approve everything before anything is sent.</p>
-      <div class="card"><b>What it does</b><ul><li>Daily matching of open public-sector tenders to your keywords</li><li>Every match shows its reasons and links to the official source and bid documents</li><li>Document tracker with expiry alerts (CSD, tax status, B-BBEE, CIPC)</li><li>Briefs sent to you only after you approve them</li></ul></div>
+    return render(reply, null, 'The AI employee', `
+      <h1>Hire HI: the <b>AI employee</b> for your business.</h1>
+      <p style="font-size:20px">HI <b>researches</b> with cited sources, <b>remembers</b> what matters about your business, <b>finds tenders</b> worth bidding for, <b>drafts emails</b>, <b>browses the web</b> on your say-so and runs <b>scheduled work</b> while you sleep. Your next action: sign in and give it its first job.</p>
+      <div class="card"><b>What it does today</b><ul>
+        <li><span class="chip">Agent</span> A persistent AI employee with long-term memory, chat and multi-step plans</li>
+        <li><span class="chip">Opportunity Desk</span> Daily matching of open South African public tenders to your business, with the reasons shown</li>
+        <li><span class="chip">Browser</span> Reads and clicks through websites in an isolated browser - you approve before it starts and again before any final submit</li>
+        <li><span class="chip">WhatsApp</span> Replies to your saved contacts on your business number (engine connects when your number is linked)</li>
+        <li><span class="chip">Scheduled work</span> Recurring jobs that report back, plus daily briefs you approve before they send</li>
+        <li><span class="chip">API</span> Powers other NahaLabs products - see the <a href="/developers">developer docs</a></li>
+      </ul></div>
       <p><a class="btn" href="/login">Sign in</a> <a href="/signup">Have an invite code? Create an account</a></p>
-      <p class="mut">Data source: National Treasury eTender Publication Portal, published under the Open Data Commons PDDL. HI does not submit bids on your behalf.</p>`);
+      <p class="mut">Honest limits: HI drafts and proposes - you approve everything that leaves your account. It does not submit bids, make payments or send messages on its own, and it tells you when it cannot verify something. Tender data: National Treasury eTender Publication Portal, published under the Open Data Commons PDDL.</p>`);
   });
 
   app.get('/signup', async (req, reply) => render(reply, null, 'Create account', `
@@ -97,6 +108,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
         await c.query("INSERT INTO profiles (tenant_id, company_name) VALUES (current_setting('app.tenant_id')::uuid,$1)", [String(company).slice(0, 120)]);
         await audit(c, tenantId, 'user:signup', 'tenant.created', {});
       });
+      await ensureBuiltinSkills(tenantId);
     } catch (e) {
       if (String(e.message).includes('users_email_key')) return reply.redirect('/signup?m=' + encodeURIComponent('That email is already registered.'));
       throw e;
@@ -303,6 +315,68 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     return reply.redirect('/app/settings?m=' + encodeURIComponent(paused ? 'Paused.' : 'Resumed.'));
   });
 
+
+  // ---------- Public API docs + key management ----------
+  app.get('/developers', async (req, reply) => {
+    return render(reply, null, 'HI API', `
+      <h1>HI <b>API</b> for NahaLabs products.</h1>
+      <p style="font-size:20px">One <b>keyed</b> API lets CargoIQ, RailWatch, ClaimTrace, MineMySol, RevenueDesk and RevUp use HI's <b>agent</b>, <b>memory</b>, <b>scheduled tasks</b>, <b>tender matching</b> and <b>browser actions</b>. Next action: create a key under <b>API keys</b> in the app.</p>
+      <div class="card"><b>Authenticate</b><p>Every call sends the key as a bearer token. Keys are created in the app, shown once, and stored only as a hash on the server. They are never written to logs or pages.</p>
+      <pre>Authorization: Bearer hi_...</pre>
+      <p class="mut">Limits: 60 calls per minute per key. The same account budgets and approval gates as the app apply. The API can draft and propose; it never sends, buys, books or submits.</p></div>
+      <div class="card"><b>Endpoints</b>
+      <table>
+        <tr><th>Call</th><th>What it does</th></tr>
+        <tr><td><code>POST /v1/chat</code> <span class="mut">{message, agent_id?, conversation_id?}</span></td><td>Talk to the AI employee. Returns answer, conversation_id, sources.</td></tr>
+        <tr><td><code>GET /v1/agents</code></td><td>List the account's agents.</td></tr>
+        <tr><td><code>POST /v1/memory</code> <span class="mut">{content, kind?}</span> / <code>GET /v1/memory?query=</code></td><td>Save and search durable memory.</td></tr>
+        <tr><td><code>POST /v1/tasks</code> <span class="mut">{title, instruction, every_minutes?}</span> / <code>GET /v1/tasks</code></td><td>Schedule recurring or one-off work, list tasks.</td></tr>
+        <tr><td><code>POST /v1/plans</code> <span class="mut">{goal}</span> / <code>GET /v1/plans/:id</code></td><td>Multi-step job: the planner breaks the goal into steps, specialist workers run them, HI returns one combined answer.</td></tr>
+        <tr><td><code>GET /v1/tenders?query=</code> / <code>GET /v1/matches</code></td><td>Opportunity Desk: search open SA tenders, or read the account's profile matches.</td></tr>
+        <tr><td><code>POST /v1/browser</code> <span class="mut">{start_url, goal, mode}</span> / <code>GET /v1/browser/:id</code></td><td>Propose a browser job. It runs only after the account owner approves it in the queue; irreversible steps need a second approval.</td></tr>
+      </table></div>
+      <div class="card"><b>Example</b><pre>curl -s https://nahalabs-hi.onrender.com/v1/chat \\
+  -H "Authorization: Bearer hi_..." \\
+  -H "content-type: application/json" \\
+  -d '{"message":"What open tenders fit a cleaning company in Gauteng?"}'</pre></div>`);
+  });
+
+  const apiKeysPage = async (u, reply, newKey = null, flash = null) => {
+    const keys = await withTenant(u.tenant_id, (c) => c.query('SELECT id, name, prefix, status, created_at, last_used_at FROM api_keys ORDER BY created_at DESC').then((r) => r.rows));
+    const rows = keys.map((k) => `<tr><td>${esc(k.name)}</td><td><code>${esc(k.prefix)}...</code></td><td><span class="chip">${k.status === 'active' ? 'active' : 'revoked'}</span></td><td>${fdate(k.created_at)}</td><td>${k.last_used_at ? fdate(k.last_used_at) : 'never'}</td><td>${k.status === 'active' ? `<form method="post" action="/app/api-keys/${k.id}/revoke" style="margin:0">${csrf(u)}<button class="sec">Revoke</button></form>` : ''}</td></tr>`).join('');
+    return render(reply, u, 'API keys', `
+      <h1><b>API keys</b></h1>
+      <p class="mut">Keys let other NahaLabs products call your HI account. A key is shown once at creation and stored only as a hash. Docs: <a href="/developers">/developers</a>.</p>
+      ${newKey ? `<div class="card"><b>Your new key - copy it now, it is never shown again:</b><pre>${esc(newKey)}</pre></div>` : ''}
+      <div class="card"><table><tr><th>Name</th><th>Key</th><th>Status</th><th>Created</th><th>Last used</th><th></th></tr>${rows || '<tr><td colspan="6" class="mut">No keys yet</td></tr>'}</table></div>
+      <form method="post" action="/app/api-keys" class="card">${csrf(u)}<b>Create a key</b><label>Name (which product uses it)</label><input name="name" required maxlength="60" placeholder="e.g. CargoIQ"><p><button>Create key</button></p></form>`, flash);
+  };
+
+  app.get('/app/api-keys', { preHandler: guard }, async (req, reply) => apiKeysPage(req.user, reply, null, flashOf(req)));
+
+  app.post('/app/api-keys', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const name = String(req.body?.name || '').trim().slice(0, 60);
+    if (!name) return apiKeysPage(u, reply, null, 'Give the key a name.');
+    const count = await withTenant(u.tenant_id, (c) => c.query("SELECT count(*)::int n FROM api_keys WHERE status='active'").then((r) => r.rows[0].n));
+    if (count >= 10) return apiKeysPage(u, reply, null, 'Limit of 10 active keys reached.');
+    const key = newApiKey();
+    await withTenant(u.tenant_id, async (c) => {
+      await c.query("INSERT INTO api_keys (tenant_id, name, prefix, key_hash) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3)", [name, key.slice(0, 10), require_hash(key)]);
+      await audit(c, u.tenant_id, `user:${u.user_id}`, 'apikey.created', { name });
+    });
+    return apiKeysPage(u, reply, key);
+  });
+
+  app.post('/app/api-keys/:id/revoke', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    if (!/^[0-9a-f-]{36}$/i.test(String(req.params.id || ''))) return reply.redirect('/app/api-keys');
+    await withTenant(u.tenant_id, async (c) => {
+      await c.query("UPDATE api_keys SET status='revoked' WHERE id=$1", [req.params.id]);
+      await audit(c, u.tenant_id, `user:${u.user_id}`, 'apikey.revoked', { key_id: req.params.id });
+    });
+    return reply.redirect('/app/api-keys?m=' + encodeURIComponent('Key revoked.'));
+  });
 
   // ---------- Agent platform ----------
   const mdLite = (t) => esc(String(t).replace(/<br\s*\/?>/gi, '\n').replace(/^\s*\|?[-:| ]{3,}\|?\s*$/gm, '')).replace(/\*\*([^*\n]{1,200})\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
