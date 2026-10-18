@@ -119,23 +119,24 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
 
   app.get('/signup', async (req, reply) => render(reply, null, 'Create account', `
     <h1>Create your account</h1><form method="post" class="card">
-    <label>Invite code</label><input name="invite" required autocomplete="off">
     <label>Company name</label><input name="company" required maxlength="120">
     <label>Email</label><input name="email" type="email" required>
     <label>Password (12+ characters)</label><input name="password" type="password" minlength="12" required autocomplete="new-password">
+    <input name="website" type="text" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px" aria-hidden="true">
     <p><button>Create account</button></p></form>`, flashOf(req)));
 
   app.post('/signup', async (req, reply) => {
     if (!signupLimit(req.ip)) return reply.code(429).send('Too many attempts');
-    const { invite, company, email, password } = req.body || {};
-    const codes = (process.env.HI_INVITE_CODES || '').split(',').map((x) => x.trim()).filter(Boolean);
-    if (!codes.length || !codes.some((c) => secretEq(c, invite))) return reply.redirect('/signup?m=' + encodeURIComponent('That invite code is not valid.'));
+    const { company, email, password } = req.body || {};
+    // Open SaaS onboarding: anyone can self-register. The honeypot field is invisible
+    // to people; bots that fill it are silently dropped with the generic failure.
+    if (String(req.body?.website || '')) return reply.redirect('/signup?m=' + encodeURIComponent('Check the company, email and a password of 12+ characters.'));
     if (!company || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email || '') || String(password || '').length < 12) return reply.redirect('/signup?m=' + encodeURIComponent('Check the company, email and a password of 12+ characters.'));
     const pw = await hashPassword(password);
     try {
       const tenantId = await withSystem(async (c) => {
         const t = (await c.query('INSERT INTO tenants (name) VALUES ($1) RETURNING id', [String(company).slice(0, 120)])).rows[0].id;
-        await c.query('INSERT INTO users (tenant_id, email, pw_hash) VALUES ($1,$2,$3)', [t, String(email).toLowerCase(), pw]);
+        await c.query('INSERT INTO users (tenant_id, email, pw_hash) VALUES ($1,$2,$3)', [t, String(email).trim().toLowerCase(), pw]);
         return t;
       });
       await withTenant(tenantId, async (c) => {

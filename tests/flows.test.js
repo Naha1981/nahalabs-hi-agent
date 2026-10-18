@@ -63,9 +63,12 @@ test('public pages do not require login, private pages do', async () => {
   for (const u of ['/app/profile', '/app/approvals', '/app/audit', '/app/documents', '/app/briefs', '/app/settings']) assert.equal((await app.inject({ url: u })).statusCode, 302, u);
 });
 
-test('signup needs a valid invite code; passwords are hashed', async () => {
-  const bad = await app.inject({ method: 'POST', url: '/signup', headers: H, payload: form({ invite: 'nope', company: 'X', email: 'x@example.test', password: 'a-long-test-password-1' }) });
-  assert.match(bad.headers.location, /not%20valid/);
+test('signup is open to anyone; the honeypot drops bots; passwords are hashed', async () => {
+  const open = await app.inject({ method: 'POST', url: '/signup', headers: H, remoteAddress: '10.9.0.1', payload: form({ company: 'No Invite Co', email: 'open@example.test', password: 'a-long-test-password-1' }) });
+  assert.match(open.headers.location, /login|m=/, 'no invite code needed');
+  const bot = await app.inject({ method: 'POST', url: '/signup', headers: H, remoteAddress: '10.9.0.2', payload: form({ company: 'Bot Co', email: 'bot@example.test', password: 'a-long-test-password-1', website: 'http://spam' }) });
+  assert.match(bot.headers.location, /Check%20the/, 'honeypot filled -> dropped');
+  assert.equal((await withSystem((c) => c.query('SELECT 1 FROM users WHERE email=$1', ['bot@example.test']))).rowCount, 0, 'bot account not created');
   const u = await signup('Alpha Security', 'alpha@example.test');
   const row = (await withSystem((c) => c.query('SELECT pw_hash FROM users WHERE email=$1', ['alpha@example.test']))).rows[0];
   assert.ok(row.pw_hash.startsWith('s1$') && !row.pw_hash.includes('a-long-test'));
