@@ -61,7 +61,7 @@ test('Google OAuth start redirects to Google with state, callback connects and s
   assert.equal(loc.hostname, 'accounts.google.com');
   const state = loc.searchParams.get('state');
   assert.match(loc.searchParams.get('scope'), /gmail.readonly/);
-  const cb = await app.inject({ url: `/integrations/google/callback?code=fake-code&state=${encodeURIComponent(state)}`, headers: { cookie: A.cookie } });
+  const cb = await app.inject({ url: `/integrations/google/callback?_h=1&code=fake-code&state=${encodeURIComponent(state)}`, headers: { cookie: A.cookie } });
   assert.equal(cb.statusCode, 302);
   assert.match(cb.headers.location, /Connected%20alpha%40gmail.test/);
   const row = await withTenant(A.tenantId, (c) => c.query('SELECT account_email, access_token_enc, refresh_token_enc FROM integrations').then((r) => r.rows[0]));
@@ -74,7 +74,7 @@ test('Google OAuth start redirects to Google with state, callback connects and s
 });
 
 test('bad state is rejected', async () => {
-  const cb = await app.inject({ url: '/integrations/google/callback?code=x&state=bad-state', headers: { cookie: A.cookie } });
+  const cb = await app.inject({ url: '/integrations/google/callback?_h=1&code=x&state=bad-state', headers: { cookie: A.cookie } });
   assert.match(cb.headers.location, /did%20not%20match/);
 });
 
@@ -126,4 +126,13 @@ test('disconnect deletes the stored tokens', async () => {
   assert.equal(res.statusCode, 302);
   const left = await withTenant(A.tenantId, (c) => c.query('SELECT count(*)::int n FROM integrations').then((r) => r.rows[0].n));
   assert.equal(left, 0);
+});
+
+test('OAuth callback without the same-site hop bounces through an HTML redirect page', async () => {
+  const app = await buildApp({ fetchImpl: async () => ({ ok: true, json: async () => ({}) }) });
+  const r = await app.inject({ url: '/integrations/google/callback?code=x&state=y' });
+  assert.equal(r.statusCode, 200);
+  assert.match(r.body, /location\.replace/);
+  assert.match(r.body, /_h=1/);
+  await app.close();
 });

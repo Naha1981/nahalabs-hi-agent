@@ -434,7 +434,15 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     return reply.redirect(url);
   });
 
-  app.get('/integrations/:provider/callback', { preHandler: guard }, async (req, reply) => {
+  const hop = async (req, reply) => {
+    // Session cookie is SameSite=Strict, so it is not sent on the cross-site redirect back from the provider.
+    // Bounce once through a same-site page so the next request carries it.
+    if (req.query?._h) return;
+    const qs = new URLSearchParams({ ...req.query, _h: '1' }).toString();
+    const target = `/integrations/${encodeURIComponent(String(req.params.provider || ''))}/callback?${qs}`;
+    return reply.type('text/html').send(`<!doctype html><meta charset="utf-8"><title>Connecting...</title><p>Connecting your account...</p><script>location.replace(${JSON.stringify(target)})</script><noscript><a href="${esc(target)}">Continue</a></noscript>`);
+  };
+  app.get('/integrations/:provider/callback', { preHandler: [hop, guard] }, async (req, reply) => {
     const u = req.user, p = String(req.params.provider || '');
     if (!stateOk(u, String(req.query?.state || ''))) return reply.redirect('/app/integrations?m=' + encodeURIComponent('The connection session did not match. Try again.'));
     if (req.query?.error) return reply.redirect('/app/integrations?m=' + encodeURIComponent('The provider said: ' + String(req.query.error).slice(0, 100)));
