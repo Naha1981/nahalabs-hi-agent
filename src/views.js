@@ -27,8 +27,31 @@ code{background:var(--chip);border-radius:6px;padding:1px 6px;font-size:14px}
 `;
 
 export function page({ title, user, body, flash }) {
-  const nav = user ? `<nav><a href="/app/agent">Agent</a><a href="/app/tasks">Tasks</a><a href="/app/browser">Browser</a><a href="/app/whatsapp">WhatsApp</a><a href="/app/memory">Memory</a><a href="/app">Opportunities</a><a href="/app/profile">Profile</a><a href="/app/documents">Documents</a><a href="/app/approvals">Approvals</a><a href="/app/briefs">Briefs</a><a href="/app/files">Files</a><a href="/app/integrations">Integrations</a><a href="/app/api-keys">API keys</a><a href="/app/audit">Audit log</a><a href="/app/settings">Settings</a></nav><form method="post" action="/logout"><input type="hidden" name="csrf" value="${esc(user.csrf)}"><button class="sec">Sign out</button></form>` : '<nav><a href="/developers">API</a><a href="/login">Sign in</a></nav>';
+  const nav = user ? `<nav><a href="/app/drive">Drive</a><a href="/app/agent">Agent</a><a href="/app/tasks">Tasks</a><a href="/app/browser">Browser</a><a href="/app/whatsapp">WhatsApp</a><a href="/app/memory">Memory</a><a href="/app">Opportunities</a><a href="/app/profile">Profile</a><a href="/app/documents">Documents</a><a href="/app/approvals">Approvals</a><a href="/app/briefs">Briefs</a><a href="/app/files">Files</a><a href="/app/integrations">Integrations</a><a href="/app/api-keys">API keys</a><a href="/app/audit">Audit log</a><a href="/app/settings">Settings</a></nav><form method="post" action="/logout"><input type="hidden" name="csrf" value="${esc(user.csrf)}"><button class="sec">Sign out</button></form>` : '<nav><a href="/developers">API</a><a href="/login">Sign in</a></nav>';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#f7f3ea"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="HI"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><title>${esc(title)} - HI by NahaLabs</title><style>${CSS}</style></head><body>
 <header><a class="brand" href="/">HI<small>the AI employee by NahaLabs</small></a>${nav}</header><main>${flash ? `<div class="flash">${esc(flash)}</div>` : ''}${body}</main>
 <footer>HI by NahaLabs (Pty) Ltd. Honest limits: HI researches, remembers, matches, drafts and schedules. It never sends, buys, books or submits anything without your approval, and it can be wrong - check the sources it cites.</footer><script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{})}</script></body></html>`;
+}
+
+// Drive Mode: minimal phone-first voice page. Script and styles are self-hosted (CSP 'self').
+export function drivePage({ csrf, voiceOn }) {
+  const DRIVE_CSS = CSS + `
+main.drive{max-width:520px;margin:0 auto;text-align:center}
+.talkbtn{width:180px;height:180px;border-radius:50%;font-size:22px;font-weight:800;margin:26px auto;display:block;background:var(--ink);color:var(--bg);border:0}
+.talkbtn.rec{background:var(--bad);animation:pulse 1.2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(179,64,47,.5)}70%{box-shadow:0 0 0 26px rgba(179,64,47,0)}100%{box-shadow:0 0 0 0 rgba(179,64,47,0)}}
+.stopbtn{background:transparent;color:var(--bad);border:1px solid var(--bad);border-radius:999px;padding:8px 20px;font-weight:700}
+.turn{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 14px;margin:8px 0;text-align:left;font-size:16px}
+.turn.me{border-left:4px solid var(--gold)}.turn.hi{border-left:4px solid var(--ok)}
+.small{font-size:14px}`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#f7f3ea"><title>HI Drive - HI by NahaLabs</title><style>${DRIVE_CSS}</style></head>
+<body data-csrf="${esc(csrf)}"><main class="drive">
+<h1>HI Drive</h1>
+<p id="status" class="mut">${voiceOn ? 'Tap the button and talk.' : 'Voice is not configured on this server yet.'}</p>
+<button id="talk" class="talkbtn" ${voiceOn ? '' : 'disabled'}>TALK</button>
+<p><button id="stop" class="stopbtn">Stop</button></p>
+<div id="log"></div>
+<p class="mut small">Keep this page open and the screen on while you use it. The microphone only works while the page is open. HI drafts and proposes; nothing sends, buys, books or submits without your approval on the approvals page.</p>
+<p class="small"><a href="#" id="newchat">New conversation</a> · <a href="/app">Back to HI</a></p>
+</main><script src="/drive.js"></script></body></html>`;
 }

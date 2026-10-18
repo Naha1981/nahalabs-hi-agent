@@ -5,7 +5,7 @@ import { timingSafeEqual, createHash } from 'node:crypto';
 const require_hash = (t) => createHash('sha256').update(String(t || '')).digest('hex');
 import { withTenant, withSystem, audit, auditFor, closePool } from './db.js';
 import { hashPassword, verifyPassword, newToken, tokenHash, makeLimiter } from './auth.js';
-import { page, esc, fdate, safeUrl } from './views.js';
+import { page, esc, fdate, safeUrl, drivePage } from './views.js';
 import { ingest } from './ingest.js';
 import { matchTenant, matchAllTenants } from './match.js';
 import { buildBriefsForAll, decideApproval, setEmergencyStop, emergencyStopped, vaultAlerts } from './core.js';
@@ -18,6 +18,7 @@ import { buildMorningBriefs } from './brief.js';
 import { chat as defaultChat, agentModelEnabled } from './gateway.js';
 import { registerApi, newApiKey } from './api.js';
 import { ensureBuiltinSkills } from './skills.js';
+import { voiceConfigured, voiceMaxBytes, transcribe, speak } from './voice.js';
 import { authUrlFor, connectAccount, providerConfigured, PROVIDERS, integrationsConfigured } from './integrations.js';
 import { createHash as _ch } from 'node:crypto';
 
@@ -28,6 +29,7 @@ import { readFileSync } from 'node:fs';
 const STATIC = {
   '/manifest.webmanifest': ['public/manifest.webmanifest', 'application/manifest+json; charset=utf-8'],
   '/sw.js': ['public/sw.js', 'text/javascript; charset=utf-8'],
+  '/drive.js': ['public/drive.js', 'text/javascript; charset=utf-8'],
   '/apple-touch-icon.png': ['public/apple-touch-icon.png', 'image/png'],
   '/icons/icon-192.png': ['public/icons/icon-192.png', 'image/png'],
   '/icons/icon-512.png': ['public/icons/icon-512.png', 'image/png'],
@@ -43,6 +45,9 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   const app = Fastify({ logger, trustProxy: true, bodyLimit: 100 * 1024 });
   await app.register(formbody);
   await app.register(cookie);
+  for (const t of ['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/ogg', 'audio/flac', 'application/octet-stream']) {
+    app.addContentTypeParser(t, { parseAs: 'buffer' }, (req, body, done) => done(null, body));
+  }
   registerApi(app, { llm, fetchImpl, lookup });
   const loginLimit = makeLimiter(8, 10 * 60 * 1000);
   const signupLimit = makeLimiter(Number(process.env.SIGNUP_RATE_MAX || 5), 60 * 60 * 1000);
@@ -521,6 +526,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const u = req.user;
     const { agent, c: conv, text } = req.body || {};
     if (!uuidOk(agent) || !String(text || '').trim()) return reply.redirect('/app/agent?m=' + encodeURIComponent('Write a message first.'));
+    if (uuidOk(conv)) { const owns = await withTenant(u.tenant_id, (c) => c.query('SELECT 1 FROM conversations WHERE id=$1', [String(conv)]).then((r) => r.rowCount > 0)); if (!owns) return reply.redirect('/app/agent?m=' + encodeURIComponent('That conversation is not available.')); }
     if (!msgLimit(u.tenant_id)) return reply.redirect('/app/agent?m=' + encodeURIComponent('Too many messages this hour.'));
     const r = await runAgent({ tenantId: u.tenant_id, userEmail: u.email, agentId: agent, conversationId: uuidOk(conv) ? conv : null, userText: String(text).trim(), llm, fetchImpl, lookup });
     if (r.error) return reply.redirect(`/app/agent?agent=${agent}&m=` + encodeURIComponent(r.error));
@@ -538,6 +544,40 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       if (!a) return reply.redirect('/app/agent?m=' + encodeURIComponent('Limit of 5 agents reached.'));
       return reply.redirect(`/app/agent?agent=${a.id}`);
     } catch (e) { return reply.redirect('/app/agent?m=' + encodeURIComponent('That name is already used.')); }
+  });
+
+  // ---- Drive Mode: browser voice (Drive Companion slice 1) ----
+  const voiceGuard = async (req, reply) => {
+    const sess = await sessionOf(req);
+    if (!sess) { reply.code(401).send({ error: 'Sign in first.' }); return reply; }
+    if (!secretEq(String(req.query?.csrf || ''), sess.csrf)) { reply.code(403).send({ error: 'Bad request token' }); return reply; }
+    req.user = sess;
+  };
+  app.get('/app/drive', { preHandler: guard }, async (req, reply) => {
+    await ensureDefaultAgent(req.user.tenant_id);
+    return reply.type('text/html').send(drivePage({ csrf: req.user.csrf, voiceOn: voiceConfigured() }));
+  });
+  const voiceLimit = makeLimiter(60, 60 * 60 * 1000);
+  app.post('/app/voice/turn', { preHandler: voiceGuard, bodyLimit: 8 * 1024 * 1024 }, async (req, reply) => {
+    const u = req.user;
+    if (!voiceConfigured()) return reply.code(503).send({ error: 'Voice is not configured on this server yet.' });
+    if (!voiceLimit(u.tenant_id)) return reply.code(429).send({ error: 'Voice turn limit reached for this hour.' });
+    const bytes = req.body;
+    if (!Buffer.isBuffer(bytes) || !bytes.length) return reply.code(400).send({ error: 'No audio received.' });
+    if (bytes.length > voiceMaxBytes()) return reply.code(413).send({ error: 'Keep one voice turn under about a minute.' });
+    let transcript;
+    try { transcript = await transcribe({ bytes, mime: req.headers['content-type'], fetchImpl }); }
+    catch { return reply.code(502).send({ error: 'Speech-to-text is unavailable right now. Try again shortly.' }); }
+    if (!transcript) return reply.send({ transcript: '', answer: 'I could not make that out. Try again, a little closer to the phone.', tts: 'client', status: 'empty' });
+    const agent = await ensureDefaultAgent(u.tenant_id);
+    // Only continue a conversation this tenant actually owns.
+    const wantConv = uuidOk(req.query.c) ? String(req.query.c) : null;
+    const convOk = wantConv ? await withTenant(u.tenant_id, (c) => c.query('SELECT 1 FROM conversations WHERE id=$1', [wantConv]).then((r) => r.rowCount > 0)) : false;
+    const r = await runAgent({ tenantId: u.tenant_id, userEmail: u.email, agentId: agent.id, conversationId: convOk ? wantConv : null, userText: transcript, llm, fetchImpl, lookup, voice: true });
+    if (r.error) return reply.send({ transcript, answer: r.error, tts: 'client', status: 'failed', conversationId: null });
+    const wav = await speak({ text: r.answer, fetchImpl });
+    await auditFor(u.tenant_id, `user:${u.user_id}`, 'voice.turn', { run_id: r.runId, chars: transcript.length, tts: wav ? 'server' : 'client' });
+    return reply.send({ transcript, answer: r.answer, conversationId: r.conversationId, status: r.status, audio: wav ? wav.toString('base64') : null, tts: wav ? 'server' : 'client' });
   });
 
   app.get('/app/tasks', { preHandler: guard }, async (req, reply) => {
