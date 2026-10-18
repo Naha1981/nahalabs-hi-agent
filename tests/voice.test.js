@@ -165,3 +165,13 @@ test('drive alerts need a session and csrf', async () => {
   assert.equal((await app.inject({ url: '/app/voice/alerts?csrf=x' })).statusCode, 401);
   assert.equal((await app.inject({ url: '/app/voice/alerts?csrf=wrong', headers: { cookie: A.cookie } })).statusCode, 403);
 });
+
+test('agent page carries the talk control wired to the same conversation', async () => {
+  const res = await app.inject({ url: '/app/agent', headers: { cookie: A.cookie } });
+  assert.equal(res.statusCode, 200);
+  assert.ok(res.body.includes('id="talkbox"'), 'talk container rendered');
+  assert.ok(res.body.includes('src="/talk.js"'), 'talk client loaded');
+  assert.ok(res.body.includes('id="thread"'), 'thread container for voice turns');
+  const dash = await app.inject({ url: '/app', headers: { cookie: A.cookie } });
+  assert.ok(dash.body.includes('href="/app/drive"'), 'Drive in nav');
+});

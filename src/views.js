@@ -8,6 +8,7 @@ const CSS = `
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:17px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 a{color:var(--gold)}header{display:flex;gap:18px;align-items:center;padding:16px 26px;border-bottom:1px solid var(--line);flex-wrap:wrap;background:var(--panel)}
 .brand{font-weight:800;letter-spacing:.02em;color:var(--ink);text-decoration:none;font-size:22px}.brand small{color:var(--mut);font-weight:400;letter-spacing:0;margin-left:8px;font-size:14px}
+#talkbtn.rec{background:var(--bad);color:#fff;border-color:var(--bad)}
 nav{display:flex;gap:16px;flex-wrap:wrap;flex:1}nav a{color:var(--text);text-decoration:none;padding:4px 0;border-bottom:2px solid transparent}nav a:hover{border-color:var(--gold)}
 main{max-width:980px;margin:0 auto;padding:28px 22px}h1{font-size:34px;line-height:1.15;margin:.2em 0 .5em;letter-spacing:-.01em}h2{font-size:22px;margin:1.4em 0 .5em}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:20px;margin:14px 0;box-shadow:0 1px 2px rgba(28,26,21,.04)}

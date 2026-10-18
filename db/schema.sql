@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS password_resets (
+  token_hash text PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS system_flags (
   key text PRIMARY KEY,
   value text NOT NULL,
@@ -197,7 +206,7 @@ GRANT USAGE ON SCHEMA public TO hi_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON profiles, matches, vault_docs, memory_notes, briefs, approvals, model_usage TO hi_app;
 GRANT SELECT, INSERT ON audit_log TO hi_app;
 GRANT SELECT, INSERT, UPDATE ON tenders, ingest_runs, system_flags, tenants TO hi_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON users, sessions TO hi_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON users, sessions, password_resets TO hi_app;
 GRANT SELECT, INSERT ON email_log TO hi_app;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO hi_app;
 

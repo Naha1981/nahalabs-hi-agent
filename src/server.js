@@ -10,7 +10,7 @@ import { ingest } from './ingest.js';
 import { matchTenant, matchAllTenants } from './match.js';
 import { buildBriefsForAll, decideApproval, setEmergencyStop, emergencyStopped, vaultAlerts } from './core.js';
 import { explainFit, modelEnabled } from './gateway.js';
-import { mailConfigured } from './mail.js';
+import { mailConfigured, sendMail } from './mail.js';
 import { handleInbound, makeAdapter, normalisePhone, parseMetaWebhook } from './whatsapp.js';
 import { browserStep, browserPoll } from './browser.js';
 import { runAgent, runDueTasks, ensureDefaultAgent } from './agent.js';
@@ -154,10 +154,60 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     <h1>Sign in</h1><form method="post" class="card">
     <label>Email</label><input name="email" type="email" required autocomplete="username">
     <label>Password</label><input name="password" type="password" required autocomplete="current-password">
-    <p><button>Sign in</button></p></form>`, flashOf(req)));
+    <p><button>Sign in</button></p><p class="mut"><a href="/forgot">Forgot your password?</a></p></form>`, flashOf(req)));
+
+  const baseUrl = () => (process.env.PUBLIC_BASE_URL || 'https://nahalabs-hi.onrender.com').replace(/\/$/, '');
+  app.get('/forgot', async (req, reply) => render(reply, null, 'Forgot password', `
+    <h1>Forgot password</h1><form method="post" class="card">
+    <label>Email</label><input name="email" type="email" required autocomplete="username">
+    <p><button>Send reset link</button></p></form>
+    <p class="mut"><a href="/login">Back to sign in</a></p>`, flashOf(req)));
+
+  const forgotLimit = makeLimiter(5, 10 * 60 * 1000);
+  app.post('/forgot', async (req, reply) => {
+    if (!forgotLimit(req.ip)) return reply.code(429).send('Too many attempts. Try again later.');
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const done = '/forgot?m=' + encodeURIComponent('If that email has an account, a reset link is on its way. It is valid for one hour.');
+    const u = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)
+      ? (await withSystem((c) => c.query('SELECT id, tenant_id FROM users WHERE email=$1', [email]))).rows[0] : null;
+    if (!u || !mailConfigured()) { await auditFor(u?.tenant_id || null, 'anonymous', 'password.reset_skipped', { reason: u ? 'mail not configured' : 'unknown email' }); return reply.redirect(done); }
+    const token = newToken();
+    await withSystem(async (c) => {
+      await c.query("INSERT INTO password_resets (token_hash, user_id, tenant_id, expires_at) VALUES ($1,$2,$3, now() + interval '1 hour')", [tokenHash(token), u.id, u.tenant_id]);
+      await auditFor(u.tenant_id, 'anonymous', 'password.reset_requested', { user_id: u.id });
+    });
+    try {
+      await sendMail({ to: email, subject: 'Reset your HI password', text: `Someone asked to reset the HI password for this email. If it was you, open this link within one hour:\n\n${baseUrl()}/reset/${token}\n\nIf it was not you, ignore this email - your password stays the same.`, fetchImpl });
+    } catch { /* mail failure is not shown to the requester; the generic message stands */ }
+    return reply.redirect(done);
+  });
+
+  const resetPage = (t, msg) => `<h1>Choose a new password</h1><form method="post" class="card">
+    <label>New password (12+ characters)</label><input name="password" type="password" required minlength="12" autocomplete="new-password">
+    <p><button>Save password</button></p></form>${msg ? `<p class="mut">${esc(msg)}</p>` : ''}`;
+  const validReset = (t) => withSystem((c) => c.query("SELECT * FROM password_resets WHERE token_hash=$1 AND used_at IS NULL AND expires_at > now()", [tokenHash(String(t || ''))]).then((r) => r.rows[0]));
+  app.get('/reset/:token', async (req, reply) => {
+    const row = await validReset(req.params.token);
+    if (!row) return render(reply, null, 'Reset link', '<h1>That reset link has expired or was already used.</h1><p class="mut"><a href="/forgot">Ask for a new one</a></p>', flashOf(req));
+    return render(reply, null, 'New password', resetPage(req.params.token), flashOf(req));
+  });
+  app.post('/reset/:token', async (req, reply) => {
+    const row = await validReset(req.params.token);
+    if (!row) return render(reply, null, 'Reset link', '<h1>That reset link has expired or was already used.</h1><p class="mut"><a href="/forgot">Ask for a new one</a></p>', flashOf(req));
+    const pw = String(req.body?.password || '');
+    if (pw.length < 12 || pw.length > 200) return render(reply, null, 'New password', resetPage(req.params.token, 'Password must be at least 12 characters.'), flashOf(req));
+    const hash = await hashPassword(pw);
+    await withSystem(async (c) => {
+      await c.query('UPDATE users SET pw_hash=$2 WHERE id=$1', [row.user_id, hash]);
+      await c.query('UPDATE password_resets SET used_at=now() WHERE token_hash=$1', [row.token_hash]);
+      await c.query('DELETE FROM sessions WHERE user_id=$1', [row.user_id]);
+      await auditFor(row.tenant_id, `user:${row.user_id}`, 'password.reset', {});
+    });
+    return reply.redirect('/login?m=' + encodeURIComponent('Password changed. Sign in with the new one.'));
+  });
 
   app.post('/login', async (req, reply) => {
-    const email = String(req.body?.email || '').toLowerCase();
+    const email = String(req.body?.email || '').trim().toLowerCase();
     if (!loginLimit(req.ip + '|' + email)) return reply.code(429).send('Too many attempts. Try again later.');
     const u = (await withSystem((c) => c.query('SELECT id, tenant_id, pw_hash FROM users WHERE email=$1', [email]))).rows[0];
     const ok = u ? await verifyPassword(String(req.body?.password || ''), u.pw_hash) : (await verifyPassword('x', 's1$00$00'), false);
@@ -440,7 +490,6 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   // ---------- Connected integrations (Gmail, Outlook, calendars) ----------
   const oauthState = (u) => `${u.tenant_id}.${require_hash(u.tenant_id + u.csrf + (process.env.SESSION_SECRET || 'dev-only')).slice(0, 32)}`;
   const stateOk = (u, st) => secretEq(String(st || ''), oauthState(u));
-  const baseUrl = () => process.env.PUBLIC_BASE_URL || 'https://nahalabs-hi.onrender.com';
 
   app.get('/app/integrations', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
@@ -530,12 +579,13 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       const msgs = conv ? (await c.query('SELECT role, content, sources, steps, created_at FROM messages WHERE conversation_id=$1 ORDER BY id', [conv.id])).rows : [];
       return { agents, agent, convs, conv, msgs };
     });
-    const thread = d.msgs.map((m) => `<div class="card"><div class="mut">${m.role === 'user' ? 'You' : esc(d.agent.name)}</div><div>${mdLite(m.content)}</div>${m.role === 'assistant' ? srcList(m.sources) : ''}${(m.steps || []).filter((x) => x.type === 'tool').length ? `<div class="mut">Used: ${(m.steps).filter((x) => x.type === 'tool').map((x) => esc(x.name)).join(', ')}</div>` : ''}</div>`).join('');
+    const thread = `<div id="thread">${d.msgs.map((m) => `<div class="card"><div class="mut">${m.role === 'user' ? 'You' : esc(d.agent.name)}</div><div>${mdLite(m.content)}</div>${m.role === 'assistant' ? srcList(m.sources) : ''}${(m.steps || []).filter((x) => x.type === 'tool').length ? `<div class="mut">Used: ${(m.steps).filter((x) => x.type === 'tool').map((x) => esc(x.name)).join(', ')}</div>` : ''}</div>`).join('')}</div>`;
+    const talk = voiceConfigured() ? `<div id="talkbox" data-csrf="${esc(u.csrf)}" data-c="${d.conv ? d.conv.id : ''}" style="margin-top:8px"><button type="button" id="talkbtn" class="sec">Talk</button> <span id="talkstatus" class="mut"></span></div><script src="/talk.js" defer></script>` : '';
     return render(reply, u, 'Agent', `<h1>${esc(d.agent.name)}</h1>
       <p class="mut">${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join(' | ')} ${agentModelEnabled() ? '' : '<span class="bad"> (AI model not configured)</span>'}</p>
       ${thread || '<div class="card mut">Ask me to research something, remember a fact about your business, find tenders, or schedule a recurring job. I draft; you approve anything that leaves your account.</div>'}
       <form method="post" action="/app/agent/message" class="card">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}">
-        <label>Message ${esc(d.agent.name)}</label><textarea name="text" rows="3" maxlength="4000" required></textarea><p><button>Send</button></p></form>
+        <label>Message ${esc(d.agent.name)}</label><textarea name="text" rows="3" maxlength="4000" required></textarea><p><button>Send</button></p>${talk}</form>
       <div class="card"><b>Recent conversations</b><ul>${d.convs.map((x) => `<li><a href="/app/agent?agent=${d.agent.id}&c=${x.id}">${esc(x.title)}</a> <span class="mut">${fdate(x.created_at)}</span></li>`).join('') || '<li class="mut">None yet</li>'}</ul></div>
       <form method="post" action="/app/agent/new" class="card">${csrf(u)}<b>Add another named agent</b><label>Name</label><input name="name" required maxlength="40"><label>What is this agent for?</label><input name="persona" maxlength="300" placeholder="e.g. Handles supplier research and quotes"><p><button class="sec">Create agent</button></p></form>`, flashOf(req));
   });
