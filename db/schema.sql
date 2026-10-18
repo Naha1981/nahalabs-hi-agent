@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   name text NOT NULL,
   paused boolean NOT NULL DEFAULT false,          -- tenant emergency stop
   model_budget_cents_month integer NOT NULL DEFAULT 0,
+  morning_brief_auto boolean NOT NULL DEFAULT false,  -- Settings opt-in: auto-send own morning brief
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
