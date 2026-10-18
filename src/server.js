@@ -17,6 +17,7 @@ import { runAgent, runDueTasks, ensureDefaultAgent } from './agent.js';
 import { chat as defaultChat, agentModelEnabled } from './gateway.js';
 import { registerApi, newApiKey } from './api.js';
 import { ensureBuiltinSkills } from './skills.js';
+import { authUrlFor, connectAccount, providerConfigured, PROVIDERS, integrationsConfigured } from './integrations.js';
 import { createHash as _ch } from 'node:crypto';
 
 const COOKIE = 'hi_session';
@@ -376,6 +377,56 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       await audit(c, u.tenant_id, `user:${u.user_id}`, 'apikey.revoked', { key_id: req.params.id });
     });
     return reply.redirect('/app/api-keys?m=' + encodeURIComponent('Key revoked.'));
+  });
+
+  // ---------- Connected integrations (Gmail, Outlook, calendars) ----------
+  const oauthState = (u) => `${u.tenant_id}.${require_hash(u.tenant_id + u.csrf + (process.env.SESSION_SECRET || 'dev-only')).slice(0, 32)}`;
+  const stateOk = (u, st) => secretEq(String(st || ''), oauthState(u));
+  const baseUrl = () => process.env.PUBLIC_BASE_URL || 'https://nahalabs-hi.onrender.com';
+
+  app.get('/app/integrations', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const rows = await withTenant(u.tenant_id, (c) => c.query('SELECT id, provider, account_email, status, scopes, created_at FROM integrations ORDER BY created_at DESC').then((r) => r.rows));
+    const list = rows.map((r) => `<tr><td><span class="chip">${r.provider === 'google' ? 'Google' : 'Microsoft'}</span></td><td>${esc(r.account_email)}</td><td><span class="chip">${esc(r.status)}</span></td><td>${fdate(r.created_at)}</td><td><form method="post" action="/app/integrations/${r.id}/disconnect" style="margin:0">${csrf(u)}<button class="sec">Disconnect</button></form></td></tr>`).join('');
+    const card = (p, name, what) => {
+      if (!integrationsConfigured()) return `<div class="card"><b>${name}</b><p class="mut">Integrations are being switched on for the platform. Check back shortly.</p></div>`;
+      if (!providerConfigured(p)) return `<div class="card"><b>${name}</b><p class="mut">Not configured yet - the ${name} app registration is pending.</p></div>`;
+      return `<div class="card"><b>${name}</b><p class="mut">${what}</p><p><a class="btn" href="/integrations/${p}/start">Connect ${name}</a></p></div>`;
+    };
+    return render(reply, u, 'Integrations', `
+      <h1>Connect your <b>accounts</b>.</h1>
+      <p class="mut">HI reads your connected Gmail, Outlook and calendars so it can answer with your real context. Reads happen when you ask. Every send or calendar create is drafted first and happens only after you approve it in the Approvals queue. You can disconnect any time - tokens are deleted immediately.</p>
+      ${rows.length ? `<div class="card"><table><tr><th>Provider</th><th>Account</th><th>Status</th><th>Connected</th><th></th></tr>${list}</table></div>` : '<div class="card mut">Nothing connected yet.</div>'}
+      ${card('google', 'Google (Gmail + Calendar)', 'Read Gmail, search your inbox, see upcoming Google Calendar events. Drafts Gmail sends and calendar events for your approval.')}
+      ${card('microsoft', 'Microsoft (Outlook + Calendar)', 'Read Outlook mail, search your inbox, see upcoming Outlook Calendar events. Drafts Outlook sends and calendar events for your approval.')}`, flashOf(req));
+  });
+
+  app.get('/integrations/:provider/start', { preHandler: guard }, async (req, reply) => {
+    const p = String(req.params.provider || '');
+    const url = authUrlFor(p, `${baseUrl()}/integrations/${p}/callback`, oauthState(req.user));
+    if (!url) return reply.redirect('/app/integrations?m=' + encodeURIComponent('That provider is not configured yet.'));
+    return reply.redirect(url);
+  });
+
+  app.get('/integrations/:provider/callback', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, p = String(req.params.provider || '');
+    if (!stateOk(u, String(req.query?.state || ''))) return reply.redirect('/app/integrations?m=' + encodeURIComponent('The connection session did not match. Try again.'));
+    if (req.query?.error) return reply.redirect('/app/integrations?m=' + encodeURIComponent('The provider said: ' + String(req.query.error).slice(0, 100)));
+    const code = String(req.query?.code || '');
+    if (!code) return reply.redirect('/app/integrations?m=' + encodeURIComponent('No code returned. Try connecting again.'));
+    const r = await connectAccount({ tenantId: u.tenant_id, provider: p, code, redirectUri: `${baseUrl()}/integrations/${p}/callback`, fetchImpl });
+    if (r.error) return reply.redirect('/app/integrations?m=' + encodeURIComponent(r.error));
+    return reply.redirect('/app/integrations?m=' + encodeURIComponent('Connected ' + r.account + '.'));
+  });
+
+  app.post('/app/integrations/:id/disconnect', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    if (!/^[0-9a-f-]{36}$/i.test(String(req.params.id || ''))) return reply.redirect('/app/integrations');
+    await withTenant(u.tenant_id, async (c) => {
+      await c.query('DELETE FROM integrations WHERE id=$1', [req.params.id]);
+      await audit(c, u.tenant_id, `user:${u.user_id}`, 'integration.disconnected', { integration_id: req.params.id });
+    });
+    return reply.redirect('/app/integrations?m=' + encodeURIComponent('Disconnected. The stored tokens were deleted.'));
   });
 
   app.get('/app/files', { preHandler: guard }, async (req, reply) => {

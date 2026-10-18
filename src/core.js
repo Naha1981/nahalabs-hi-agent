@@ -2,6 +2,7 @@
 import { withTenant, withSystem, audit } from './db.js';
 import { sendMail } from './mail.js';
 import { applyBrowserDecision } from './browser.js';
+import { executeConnectedApproval } from './integrations.js';
 
 const fmtDate = (d) => d ? new Date(d).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', dateStyle: 'medium', timeStyle: 'short' }) : 'not stated';
 
@@ -86,6 +87,15 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
       const paused0 = (await c.query("SELECT paused FROM tenants WHERE id = current_setting('app.tenant_id')::uuid")).rows[0].paused;
       if (stopped0 || paused0) { await c.query("UPDATE approvals SET status='cancelled' WHERE id=$1", [approvalId]); return { status: 'cancelled', reason: stopped0 ? 'emergency stop is on' : 'tenant is paused' }; }
       return applyBrowserDecision(c, { tenantId, approval: ap, decision: 'approve', fetchImpl });
+    }
+    if (['account_email', 'calendar_event'].includes(ap.kind)) {
+      const stoppedC = (await c.query("SELECT value FROM system_flags WHERE key='emergency_stop'")).rows[0]?.value === 'on';
+      const pausedC = (await c.query('SELECT paused FROM tenants WHERE id = current_setting(\'app.tenant_id\')::uuid')).rows[0].paused;
+      if (stoppedC || pausedC) { await c.query("UPDATE approvals SET status='cancelled' WHERE id=$1", [approvalId]); return { status: 'cancelled', reason: stoppedC ? 'emergency stop is on' : 'tenant is paused' }; }
+      const r = await executeConnectedApproval(c, { tenantId, approval: ap, fetchImpl });
+      if (r.error) { await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]); return { status: 'failed', reason: r.error }; }
+      await c.query("UPDATE approvals SET status='executed' WHERE id=$1", [approvalId]);
+      return { status: 'executed' };
     }
     if (!['send_brief', 'send_email'].includes(ap.kind)) return { status: 'approved' };
     // Execute only after approval. Re-check stops at execution time.

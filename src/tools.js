@@ -4,6 +4,7 @@ import net from 'node:net';
 import { audit } from './db.js';
 import { proposeBrowserJob } from './browser.js';
 import { saveFile } from './files.js';
+import { mailSearch, calendarUpcoming, proposeAccountEmail, proposeCalendarEvent } from './integrations.js';
 
 export function isPrivateIp(ip) {
   if (net.isIPv4(ip)) {
@@ -63,6 +64,10 @@ export const TOOL_SCHEMAS = [
   { name: 'browser_task', description: 'Ask to open a public website in an isolated cloud browser to read it or fill and click through it (forms, searches, pages that need clicking). The customer must approve before it starts, and approves again before any final submit. mode=read only reads and follows links; mode=act can type and click. Cannot use passwords, card numbers or codes.', parameters: { type: 'object', properties: { start_url: { type: 'string' }, goal: { type: 'string' }, mode: { type: 'string', enum: ['read', 'act'] } }, required: ['start_url', 'goal'] } },
   { name: 'browser_results', description: 'Read the results of the most recent browser tasks.', parameters: { type: 'object', properties: {} } },
   { name: 'create_file', description: 'Save a file (csv, md or txt) into the customer account for download, e.g. a tender comparison spreadsheet or a report. Give the full file content.', parameters: { type: 'object', properties: { filename: { type: 'string' }, format: { type: 'string', enum: ['csv', 'md', 'txt'] }, content: { type: 'string' } }, required: ['filename', 'format', 'content'] } },
+  { name: 'mail_search', description: 'Search the customer\'s connected Gmail and Outlook inboxes (read only). Only works after the customer connects an account on the Integrations page.', parameters: { type: 'object', properties: { query: { type: 'string' } } } },
+  { name: 'calendar_upcoming', description: 'List upcoming events from the customer\'s connected Google and Outlook calendars (read only).', parameters: { type: 'object', properties: { days: { type: 'integer' } } } },
+  { name: 'propose_account_email', description: 'Draft an email to send from one of the customer\'s connected Gmail/Outlook accounts. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { integration_id: { type: 'string' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['integration_id', 'to', 'subject', 'body'] } },
+  { name: 'propose_calendar_event', description: 'Propose creating an event on one of the customer\'s connected calendars. It is created only after the customer approves.', parameters: { type: 'object', properties: { integration_id: { type: 'string' }, title: { type: 'string' }, starts_at: { type: 'string' }, ends_at: { type: 'string' }, description: { type: 'string' } }, required: ['integration_id', 'title', 'starts_at', 'ends_at'] } },
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
 ];
 
@@ -146,6 +151,30 @@ export async function runTool(name, args, ctx) {
       const r = await saveFile(c, { tenantId, agentId: ctx.agentId, filename: a.filename, format: a.format, content: a.content, actor: `agent:${ctx.agentName || 'hi'}` });
       if (r.error) return r.error;
       return `Saved as "${r.filename}". The customer can download it from the Files page.`;
+    }
+    case 'mail_search': {
+      try {
+        const rows = await mailSearch(tenantId, { query: clip(a.query, 200), fetchImpl: ctx.fetchImpl });
+        if (!rows.length) return 'No connected accounts. Connect Gmail or Outlook on the Integrations page first.';
+        return UNTRUSTED(rows.map((m) => m.error ? `- [${m.account}] ${m.error}` : `- [${m.provider} ${m.account}] ${m.date} | ${m.from} | ${m.subject} | ${m.snippet}`).join('\n'));
+      } catch (e) { return 'Mail search failed: ' + clip(e.message, 80); }
+    }
+    case 'calendar_upcoming': {
+      try {
+        const rows = await calendarUpcoming(tenantId, { days: a.days, fetchImpl: ctx.fetchImpl });
+        if (!rows.length) return 'No connected calendars. Connect Google or Microsoft on the Integrations page first.';
+        return UNTRUSTED(rows.map((e) => e.error ? `- [${e.account}] ${e.error}` : `- [${e.provider} ${e.account}] ${e.start} -> ${e.end} | ${e.title}${e.location ? ' | ' + e.location : ''}`).join('\n'));
+      } catch (e) { return 'Calendar read failed: ' + clip(e.message, 80); }
+    }
+    case 'propose_account_email': {
+      const r = await proposeAccountEmail(c, { tenantId, integrationId: String(a.integration_id || ''), to: String(a.to || ''), subject: String(a.subject || ''), body: String(a.body || ''), actor: `agent:${ctx.agentName || 'hi'}` });
+      if (r.error) return r.error;
+      return 'Drafted and placed in the approval queue. It will be sent from the connected account only if the customer approves.';
+    }
+    case 'propose_calendar_event': {
+      const r = await proposeCalendarEvent(c, { tenantId, integrationId: String(a.integration_id || ''), title: String(a.title || ''), startsAt: String(a.starts_at || ''), endsAt: String(a.ends_at || ''), description: String(a.description || ''), actor: `agent:${ctx.agentName || 'hi'}` });
+      if (r.error) return r.error;
+      return 'Proposed and placed in the approval queue. The event will be created only if the customer approves.';
     }
     case 'propose_email': {
       const subject = clip(a.subject, 150).trim(), body = clip(a.body, 5000).trim();

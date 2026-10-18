@@ -443,3 +443,25 @@ DROP POLICY IF EXISTS tenant_isolation ON files;
 CREATE POLICY tenant_isolation ON files USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON files TO hi_app;
+
+-- ===== User-connected integrations (phase 4): Gmail, Outlook, Google/Outlook Calendar =====
+CREATE TABLE IF NOT EXISTS integrations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  provider text NOT NULL CHECK (provider IN ('google','microsoft')),
+  account_email text NOT NULL,
+  scopes text NOT NULL DEFAULT '',
+  access_token_enc text,
+  refresh_token_enc text,
+  expires_at timestamptz,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','error','revoked')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, provider, account_email)
+);
+ALTER TABLE integrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integrations FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON integrations;
+CREATE POLICY tenant_isolation ON integrations USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON integrations TO hi_app;
