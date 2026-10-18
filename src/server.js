@@ -598,6 +598,23 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     return reply.send({ transcript, answer: r.answer, conversationId: r.conversationId, status: r.status, audio: wav ? wav.toString('base64') : null, tts: wav ? 'server' : 'client' });
   });
 
+  // Due-task results surface in Drive Mode: the page polls and speaks them.
+  app.get('/app/voice/alerts', { preHandler: voiceGuard }, async (req, reply) => {
+    const u = req.user;
+    const alerts = await withTenant(u.tenant_id, async (c) => {
+      const rows = (await c.query(
+        `SELECT r.id, r.result, t.title FROM runs r JOIN tasks t ON t.id = r.task_id
+         WHERE r.task_id IS NOT NULL AND r.status='done' AND r.surfaced_at IS NULL AND r.result IS NOT NULL
+         ORDER BY r.created_at LIMIT 3`)).rows;
+      if (rows.length) {
+        await c.query('UPDATE runs SET surfaced_at=now() WHERE id = ANY($1::uuid[])', [rows.map((r) => r.id)]);
+        await audit(c, u.tenant_id, `user:${u.user_id}`, 'voice.alerts', { delivered: rows.length });
+      }
+      return rows;
+    });
+    return reply.send({ alerts: alerts.map((r) => ({ id: r.id, title: r.title, text: String(r.result || '').slice(0, 400) })) });
+  });
+
   app.get('/app/tasks', { preHandler: guard }, async (req, reply) => {
     const u = req.user; await ensureDefaultAgent(u.tenant_id);
     const d = await withTenant(u.tenant_id, async (c) => ({

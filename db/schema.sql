@@ -469,3 +469,4 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON integrations TO hi_app;
 
 -- Column additions for existing databases (CREATE TABLE IF NOT EXISTS cannot add columns)
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS morning_brief_auto boolean NOT NULL DEFAULT false;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS surfaced_at timestamptz;

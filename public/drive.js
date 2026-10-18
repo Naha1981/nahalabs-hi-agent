@@ -82,6 +82,22 @@
     else start();
   });
   stopBtn.addEventListener('click', () => { stopSpeech(); stopRecording(); setStatus('Stopped. Tap the button to talk.'); });
+  // Due-reminder loop: results of the agent's scheduled tasks surface and are
+  // spoken while Drive Mode is open (queued server-side until then).
+  async function pollAlerts() {
+    try {
+      const res = await fetch('/app/voice/alerts?csrf=' + encodeURIComponent(csrf));
+      if (!res.ok) return;
+      const j = await res.json().catch(() => ({}));
+      for (const a of j.alerts || []) {
+        addLog('hi', (a.title ? a.title + ': ' : '') + a.text);
+        setStatus('Reminder: ' + (a.title || 'task update'));
+        speakClient(a.text);
+      }
+    } catch { /* offline or not signed in: try again next tick */ }
+  }
+  setInterval(() => { if (!document.hidden && !busy && !speaking) pollAlerts(); }, 25000);
+  pollAlerts();
   document.getElementById('newchat').addEventListener('click', (e) => {
     e.preventDefault();
     conversationId = null;

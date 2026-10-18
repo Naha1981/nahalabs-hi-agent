@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { startDb } from './helpers.js';
 import { withTenant, withSystem } from '../src/db.js';
 import { buildApp } from '../src/server.js';
-import { ensureDefaultAgent } from '../src/agent.js';
+import { ensureDefaultAgent, runDueTasks } from '../src/agent.js';
 
 process.env.HI_INVITE_CODES = 'invite-test-code';
 process.env.SIGNUP_RATE_MAX = '100';
@@ -138,4 +138,30 @@ test('audit log records the voice turn', async () => {
   await voicePost(A);
   const rows = await withTenant(A.tenantId, (c) => c.query("SELECT * FROM audit_log WHERE action='voice.turn' ORDER BY id DESC LIMIT 1").then((x) => x.rows));
   assert.equal(rows.length, 1);
+});
+
+test('drive alerts: due task result surfaces once, only for its tenant', async () => {
+  await withTenant(A.tenantId, (c) => c.query(
+    "INSERT INTO tasks (tenant_id, agent_id, title, instruction, next_run_at) VALUES (current_setting('app.tenant_id')::uuid,$1,'Phone the school','Remind Thabiso to phone the school at 3pm', now() - interval '1 minute')", [A.agentId]));
+  script = [say('Time to phone the school. It is almost 3pm.')];
+  const out = await runDueTasks({ llm, fetchImpl: fakeFetch, lookup });
+  assert.equal(out.filter((r) => r.status === 'done').length >= 1, true, 'due task ran');
+
+  const first = await app.inject({ url: `/app/voice/alerts?csrf=${A.csrf}`, headers: { cookie: A.cookie } });
+  assert.equal(first.statusCode, 200);
+  const alerts = JSON.parse(first.body).alerts;
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].title, 'Phone the school');
+  assert.ok(alerts[0].text.includes('phone the school'));
+
+  const second = await app.inject({ url: `/app/voice/alerts?csrf=${A.csrf}`, headers: { cookie: A.cookie } });
+  assert.deepEqual(JSON.parse(second.body).alerts, [], 'surfaced once only');
+
+  const other = await app.inject({ url: `/app/voice/alerts?csrf=${B.csrf}`, headers: { cookie: B.cookie } });
+  assert.deepEqual(JSON.parse(other.body).alerts, [], 'tenant isolated');
+});
+
+test('drive alerts need a session and csrf', async () => {
+  assert.equal((await app.inject({ url: '/app/voice/alerts?csrf=x' })).statusCode, 401);
+  assert.equal((await app.inject({ url: '/app/voice/alerts?csrf=wrong', headers: { cookie: A.cookie } })).statusCode, 403);
 });
