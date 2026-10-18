@@ -291,7 +291,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     return render(reply, u, t.title, `<h1>${esc(t.title)}</h1>
       <div class="card"><div class="mut">Bid no ${esc(t.tender_no)} | ${esc(t.buyer)} | ${esc(t.category)} | ${esc(t.method)}</div>
       <p>Opens ${fdate(t.opens_at)}<br>Closes <b>${fdate(t.closes_at)}</b></p><p>${esc(t.description)}</p>
-      <p class="mut">Source: <a href="${safeUrl(t.source_url)}" rel="noopener noreferrer" target="_blank">National Treasury eTenders OCDS record</a> (fetched ${fdate(t.fetched_at)})</p></div>
+      <p class="mut">Source: <a href="${safeUrl(t.source_url)}" rel="noopener noreferrer" target="_blank">official tender record</a> (fetched ${fdate(t.fetched_at)})</p></div>
       ${d.m ? `<div class="card"><b>Why it matched (score ${d.m.score}/100)</b><ul>${d.m.reasons.map((r) => `<li>${esc(r.text)} (${r.points > 0 ? '+' : ''}${r.points})</li>`).join('')}</ul>${d.m.ai_note ? `<p class="mut">AI note, unverified: ${esc(d.m.ai_note)}</p>` : ''}</div>` : ''}
       <div class="card"><b>Bid documents (official)</b><ul>${bids}</ul></div>
       <div class="card"><b>Your documents</b><p class="mut">Typical requirements. Always confirm in the bid pack.</p><ul>${checklist}</ul></div>
@@ -408,7 +408,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       <form method="post" action="/app/settings/pause">${csrf(u)}<button name="paused" value="${u.paused ? 'false' : 'true'}" class="${u.paused ? '' : 'danger'}">${u.paused ? 'Resume' : 'Pause my account'}</button></form></div>
       <div class="card"><b>Morning brief</b><p class="mut">HI drafts you a short brief every morning (calendar, inbox highlights, new tender matches, approvals waiting). ${u.morning_brief_auto ? 'It is emailed to your own address automatically.' : 'It waits in Approvals for you each morning until you switch on auto-send.'}</p>
       <form method="post" action="/app/settings/morning-brief">${csrf(u)}<button name="on" value="${u.morning_brief_auto ? 'false' : 'true'}" class="sec">${u.morning_brief_auto ? 'Switch off auto-send' : 'Auto-send my morning brief to my own address'}</button></form></div>
-      <div class="card"><b>Connections</b><ul><li>eTenders (National Treasury open data): active</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
+      <div class="card"><b>Connections</b><ul><li>Official tender open data: active</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
   });
   app.post('/app/settings/morning-brief', { preHandler: guard }, async (req, reply) => {
     const u = req.user, on = req.body?.on === 'true';

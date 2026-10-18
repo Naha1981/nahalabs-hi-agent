@@ -35,9 +35,9 @@ export async function explainFit({ tenantId, profile, tender, fetchImpl = fetch 
   const j = await res.json();
   const text = cleanModelText(j.choices?.[0]?.message?.content);
   await withTenant(tenantId, async (c) => {
-    await c.query("INSERT INTO model_usage (tenant_id, provider, model, prompt_tokens, completion_tokens) VALUES (current_setting('app.tenant_id')::uuid,'groq',$1,$2,$3)",
+    await c.query("INSERT INTO model_usage (tenant_id, provider, model, prompt_tokens, completion_tokens) VALUES (current_setting('app.tenant_id')::uuid,'ai',$1,$2,$3)",
       [model, j.usage?.prompt_tokens || 0, j.usage?.completion_tokens || 0]);
-    await audit(c, tenantId, 'agent:matcher', 'model.call', { provider: 'groq', model, ocid: tender.ocid });
+    await audit(c, tenantId, 'agent:matcher', 'model.call', { provider: 'ai', ocid: tender.ocid });
   });
   return text || null;
 }
