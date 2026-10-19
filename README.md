@@ -7,6 +7,7 @@ HI is NahaLabs' multi-tenant AI employee platform. The Opportunity Desk module f
 - Reads National Treasury eTenders OCDS open data (licence: Open Data Commons PDDL 1.0). Deterministic, explainable scoring; every item links to its official source and bid documents.
 - Customer-connected Gmail/Outlook/Calendar over OAuth: the agent can search mail, list upcoming events, and draft emails and events. Sends and creates execute only after approval in the queue.
 - Controlled browser jobs on isolated GitHub Actions runners: read or click through public sites; passwords/cards/codes refused, risky clicks wait for approval, one-job tokens, same-site only.
+- Phone bridge (opt-in): the agent can propose tasks for a paired Android phone - open apps, read the screen, tap and type. Every task waits in the approval queue; the bridge app on the customer's own machine runs only approved tasks and reports back.
 - WhatsApp connector (engine-agnostic): reply-only to saved contacts, caps, no outbound-first messages.
 - Voice turns (Drive Companion slice 1): the Drive page records speech, transcribes it (Groq Whisper), runs it through the shared agent with a hands-free driving policy, and speaks the answer (Groq Orpheus TTS with browser-speech fallback). Approvals stay in the queue.
 - Agent file generation (csv, md, txt and genuine xlsx workbooks) with downloads and API reads.

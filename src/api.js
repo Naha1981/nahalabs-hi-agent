@@ -174,6 +174,30 @@ export function registerApi(app, { llm, fetchImpl, lookup } = {}) {
     return { file: { ...f, encoding: f.mime === XLSX_MIME ? 'base64' : 'utf8' } };
   });
 
+  // --- Phone bridge (paired Android via the customer's own bridge app) ---
+  app.get('/v1/phone/tasks', async (req) => {
+    const tasks = await withTenant(req.apiKey.tenantId, (c) => c.query(
+      "SELECT id, summary, payload, created_at FROM approvals WHERE kind='phone_task' AND status='approved' ORDER BY created_at LIMIT 10").then((r) => r.rows));
+    return { tasks };
+  });
+
+  app.post('/v1/phone/tasks/:id/result', async (req, reply) => {
+    if (!uuidOk(req.params.id)) return reply.code(400).send({ error: 'invalid task id.' });
+    const status = req.body?.status === 'failed' ? 'failed' : 'executed';
+    const note = clip(req.body?.summary, 500);
+    const r = await withTenant(req.apiKey.tenantId, async (c) => {
+      const ap = (await c.query("SELECT id, status FROM approvals WHERE id=$1 AND kind='phone_task' FOR UPDATE", [req.params.id])).rows[0];
+      if (!ap) return null;
+      if (ap.status !== 'approved') return { error: `task is ${ap.status}, not awaiting execution` };
+      await c.query("UPDATE approvals SET status=$2, payload = payload || $3::jsonb WHERE id=$1", [req.params.id, status, JSON.stringify({ result: { at: new Date().toISOString(), summary: note } })]);
+      await audit(c, req.apiKey.tenantId, 'bridge', status === 'executed' ? 'phone.executed' : 'phone.failed', { approval_id: req.params.id });
+      return { ok: true };
+    });
+    if (!r) return reply.code(404).send({ error: 'Task not found.' });
+    if (r.error) return reply.code(409).send(r);
+    return r;
+  });
+
   // --- Plans (multi-agent) ---
   app.post('/v1/plans', async (req, reply) => {
     const goal = clip(req.body?.goal, 1500).trim();

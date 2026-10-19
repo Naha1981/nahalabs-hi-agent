@@ -178,6 +178,41 @@ test('agent xlsx deliverable: invalid sheet JSON is rejected with guidance', asy
   assert.ok(!list.files.some((f) => f.filename.startsWith('broken')), 'no file stored for invalid xlsx');
 });
 
+test('phone bridge: propose, approve, bridge picks up and reports back', async () => {
+  script = [call('phone_task', { instruction: 'Open Settings and read the battery percentage' }), say('Proposed a phone task.')];
+  const r = await api(keyA, 'POST', '/v1/chat', { message: 'Check the battery on my phone' });
+  assert.equal(r.statusCode, 200);
+  // nothing reaches the bridge before approval
+  assert.equal(JSON.parse((await api(keyA, 'GET', '/v1/phone/tasks')).body).tasks.length, 0);
+  const ap = await withTenant(A.tenantId, (c) => c.query("SELECT id, status FROM approvals WHERE kind='phone_task' ORDER BY created_at DESC LIMIT 1").then((x) => x.rows[0]));
+  assert.equal(ap.status, 'proposed');
+  // the customer approves in the queue
+  const ok = await app.inject({ method: 'POST', url: `/app/approvals/${ap.id}`, headers: { ...H, cookie: A.cookie }, payload: form({ csrf: A.csrf, decision: 'approve' }) });
+  assert.equal(ok.statusCode, 302);
+  // the bridge polls with the tenant API key and sees exactly that task
+  const tasks = JSON.parse((await api(keyA, 'GET', '/v1/phone/tasks')).body).tasks;
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].payload.instruction, 'Open Settings and read the battery percentage');
+  // tenant B's bridge sees nothing
+  assert.equal(JSON.parse((await api(keyB, 'GET', '/v1/phone/tasks')).body).tasks.length, 0);
+  // the bridge reports the result back
+  const done = await api(keyA, 'POST', `/v1/phone/tasks/${tasks[0].id}/result`, { status: 'executed', summary: 'Battery is at 84%.' });
+  assert.equal(done.statusCode, 200);
+  const after = await withTenant(A.tenantId, (c) => c.query("SELECT status, payload->'result'->>'summary' AS rs FROM approvals WHERE id=$1", [ap.id]).then((x) => x.rows[0]));
+  assert.equal(after.status, 'executed');
+  assert.equal(after.rs, 'Battery is at 84%.');
+  const log = await withTenant(A.tenantId, (c) => c.query("SELECT action FROM audit_log WHERE action LIKE 'phone.%' ORDER BY id").then((x) => x.rows.map((y) => y.action)));
+  assert.deepEqual(log, ['phone.proposed', 'phone.executed']);
+});
+
+test('phone bridge: refuses secrets in instructions', async () => {
+  script = [call('phone_task', { instruction: 'Type my password into the banking app' }), say('I cannot do that.')];
+  const r = await api(keyA, 'POST', '/v1/chat', { message: 'Type my password into the banking app' });
+  assert.equal(r.statusCode, 200);
+  const n = await withTenant(A.tenantId, (c) => c.query("SELECT count(*)::int n FROM approvals WHERE kind='phone_task' AND payload->>'instruction' ILIKE '%password%'").then((x) => x.rows[0].n));
+  assert.equal(n, 0);
+});
+
 test('revoked keys stop working', async () => {
   const keys = await withTenant(A.tenantId, (c) => c.query("SELECT id FROM api_keys WHERE name='CargoIQ'").then((r) => r.rows));
   await withTenant(A.tenantId, (c) => c.query("UPDATE api_keys SET status='revoked' WHERE id=$1", [keys[0].id]));

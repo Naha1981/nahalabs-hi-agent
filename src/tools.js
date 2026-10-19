@@ -3,6 +3,7 @@ import dns from 'node:dns/promises';
 import net from 'node:net';
 import { audit } from './db.js';
 import { proposeBrowserJob } from './browser.js';
+import { proposePhoneTask } from './phone.js';
 import { saveFile } from './files.js';
 import { mailSearch, calendarUpcoming, proposeAccountEmail, proposeCalendarEvent } from './integrations.js';
 
@@ -74,6 +75,8 @@ export const TOOL_SCHEMAS = [
   { name: 'browser_task', description: 'Ask to open a public website in an isolated cloud browser to read it or fill and click through it (forms, searches, pages that need clicking). The customer must approve before it starts, and approves again before any final submit. mode=read only reads and follows links; mode=act can type and click. Cannot use passwords, card numbers or codes.', parameters: { type: 'object', properties: { start_url: { type: 'string' }, goal: { type: 'string' }, mode: { type: 'string', enum: ['read', 'act'] } }, required: ['start_url', 'goal'] } },
   { name: 'browser_results', description: 'Read the results of the most recent browser tasks.', parameters: { type: 'object', properties: {} } },
   { name: 'create_file', description: 'Save a file (csv, md, txt or a genuine xlsx workbook) into the customer account for download, e.g. a tender comparison spreadsheet or a report. For xlsx, content must be JSON: {"sheets":[{"name":"Sheet1","rows":[["Heading 1","Heading 2"],["value",1]]}]}. For csv, md and txt give the full file content.', parameters: { type: 'object', properties: { filename: { type: 'string' }, format: { type: 'string', enum: ['csv', 'md', 'txt', 'xlsx'] }, content: { type: 'string' } }, required: ['filename', 'format', 'content'] } },
+  { name: 'phone_task', description: 'Ask to run a task on the customer\'s paired Android phone: open apps, read what is on screen, tap and type. Nothing runs until the customer approves it in the queue, and anything that sends a message or pays always needs that approval first. The phone must be paired through the customer\'s own bridge app.', parameters: { type: 'object', properties: { instruction: { type: 'string' } }, required: ['instruction'] } },
+  { name: 'phone_results', description: 'Check the status and results of recent phone tasks.', parameters: { type: 'object', properties: {} } },
   { name: 'mail_search', description: 'Search the customer\'s connected Gmail and Outlook inboxes (read only). Only works after the customer connects an account on the Integrations page.', parameters: { type: 'object', properties: { query: { type: 'string' } } } },
   { name: 'calendar_upcoming', description: 'List upcoming events from the customer\'s connected Google and Outlook calendars (read only).', parameters: { type: 'object', properties: { days: { type: 'integer' } } } },
   { name: 'propose_account_email', description: 'Draft an email to send from one of the customer\'s connected Gmail/Outlook accounts. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'] } },
@@ -156,6 +159,16 @@ export async function runTool(name, args, ctx) {
     case 'browser_results': {
       const r = await c.query("SELECT start_url, goal, status, result, created_at FROM browser_jobs ORDER BY created_at DESC LIMIT 3");
       return UNTRUSTED(r.rowCount ? r.rows.map((j) => `- [${j.status}] ${j.goal.slice(0, 120)} (${new URL(j.start_url).hostname}): ${clip(j.result || 'no result yet', 600)}`).join('\n') : 'No browser tasks yet.');
+    }
+    case 'phone_task': {
+      if (ctx.mode === 'task') return 'Unattended runs cannot propose phone tasks.';
+      const r = await proposePhoneTask(c, { tenantId, agentName: ctx.agentName || 'hi', instruction: clip(a.instruction, 800) });
+      if (r.error) return r.error;
+      return 'Phone task proposed and waiting in the approval queue. Nothing runs on the phone until the customer approves it. Check back with phone_results.';
+    }
+    case 'phone_results': {
+      const r = await c.query("SELECT summary, status, payload FROM approvals WHERE kind='phone_task' ORDER BY created_at DESC LIMIT 3");
+      return UNTRUSTED(r.rowCount ? r.rows.map((x) => `- [${x.status}] ${x.summary.slice(0, 120)}${x.payload?.result?.summary ? `: ${clip(x.payload.result.summary, 400)}` : ''}`).join('\n') : 'No phone tasks yet.');
     }
     case 'create_file': {
       const r = await saveFile(c, { tenantId, agentId: ctx.agentId, filename: a.filename, format: a.format, content: a.content, actor: `agent:${ctx.agentName || 'hi'}` });
