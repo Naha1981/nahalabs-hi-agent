@@ -20,9 +20,9 @@
   const addCard = (who, text) => {
     if (!thread) return;
     const d = document.createElement('div');
-    d.className = 'card';
+    d.className = 'msg ' + (who === 'me' ? 'me' : 'hi');
     const head = document.createElement('div');
-    head.className = 'mut';
+    head.className = 'who';
     head.textContent = who === 'me' ? 'You (voice)' : 'HI (voice)';
     const body = document.createElement('div');
     body.textContent = text;
