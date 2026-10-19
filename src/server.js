@@ -31,6 +31,8 @@ const STATIC = {
   '/manifest.webmanifest': ['public/manifest.webmanifest', 'application/manifest+json; charset=utf-8'],
   '/sw.js': ['public/sw.js', 'text/javascript; charset=utf-8'],
   '/drive.js': ['public/drive.js', 'text/javascript; charset=utf-8'],
+  '/talk.js': ['public/talk.js', 'text/javascript; charset=utf-8'],
+  '/boot.js': ['public/boot.js', 'text/javascript; charset=utf-8'],
   '/apple-touch-icon.png': ['public/apple-touch-icon.png', 'image/png'],
   '/home-app.jpg': ['public/home-app.jpg', 'image/jpeg'],
   '/icons/icon-192.png': ['public/icons/icon-192.png', 'image/png'],
@@ -524,7 +526,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     if (req.query?._h) return;
     const qs = new URLSearchParams({ ...req.query, _h: '1' }).toString();
     const target = `/integrations/${encodeURIComponent(String(req.params.provider || ''))}/callback?${qs}`;
-    return reply.type('text/html').send(`<!doctype html><meta charset="utf-8"><title>Connecting...</title><p>Connecting your account...</p><script>location.replace(${JSON.stringify(target)})</script><noscript><a href="${esc(target)}">Continue</a></noscript>`);
+    return reply.type('text/html').send(`<!doctype html><meta charset="utf-8"><title>Connecting...</title><p>Connecting your account...</p><meta http-equiv="refresh" content="0;url=${esc(target)}"><noscript><a href="${esc(target)}">Continue</a></noscript>`);
   };
   app.get('/integrations/:provider/callback', { preHandler: [hop, guard] }, async (req, reply) => {
     const u = req.user, p = String(req.params.provider || '');

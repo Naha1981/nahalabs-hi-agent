@@ -132,7 +132,7 @@ test('OAuth callback without the same-site hop bounces through an HTML redirect 
   const app = await buildApp({ fetchImpl: async () => ({ ok: true, json: async () => ({}) }) });
   const r = await app.inject({ url: '/integrations/google/callback?code=x&state=y' });
   assert.equal(r.statusCode, 200);
-  assert.match(r.body, /location\.replace/);
+  assert.match(r.body, /http-equiv="refresh"/); // meta refresh, not inline JS: the app CSP blocks inline scripts
   assert.match(r.body, /_h=1/);
   await app.close();
 });

@@ -78,7 +78,7 @@ const tabs = TABS.map(([n, h]) => `<a href="${h}">${n}</a>`).join('');
 
 export function page({ title, user, body, flash }) {
   const head = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#ffffff"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="HI"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><title>${esc(title)} - HI by NahaLabs</title><style>${CSS}</style></head>`;
-  const sw = `<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{})}</script>`;
+  const sw = `<script src="/boot.js" defer></script>`;
   if (!user) {
     return `${head}<body><header class="pub-h"><a class="brand" href="/">HI<small>by NahaLabs</small></a><a class="btn sec" href="/login">Sign in</a></header><main class="pub-m">${flash ? `<div class="flash">${esc(flash)}</div>` : ''}${body}</main>
 <footer class="pub-f"><p style="margin:0 0 8px"><a href="/developers">Developers</a> &middot; <a href="/developers">API</a></p>HI by NahaLabs (Pty) Ltd. Honest limits: HI researches, remembers, matches, drafts and schedules. It never sends, buys, books or submits anything without your approval, and it can be wrong - check the sources it cites.</footer>${sw}</body></html>`;
