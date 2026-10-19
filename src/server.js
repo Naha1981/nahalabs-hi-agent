@@ -120,12 +120,12 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   });
 
   app.get('/signup', async (req, reply) => render(reply, null, 'Create account', `
-    <h1>Create your account</h1><form method="post" class="card">
+    <div class="auth"><h1>Create your account</h1><form method="post" class="card">
     <label>Company name</label><input name="company" required maxlength="120">
     <label>Email</label><input name="email" type="email" required>
     <label>Password (12+ characters)</label><input name="password" type="password" minlength="12" required autocomplete="new-password">
     <input name="website" type="text" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px" aria-hidden="true">
-    <p><button>Create account</button></p></form>`, flashOf(req)));
+    <p><button>Create account</button></p></form><p class="mut" style="text-align:center">Already have an account? <a href="/login">Sign in</a></p></div>`, flashOf(req)));
 
   app.post('/signup', async (req, reply) => {
     if (!signupLimit(req.ip)) return reply.code(429).send('Too many attempts');
@@ -154,10 +154,10 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   });
 
   app.get('/login', async (req, reply) => render(reply, null, 'Sign in', `
-    <h1>Sign in</h1><form method="post" class="card">
+    <div class="auth"><h1>Sign in</h1><form method="post" class="card">
     <label>Email</label><input name="email" type="email" required autocomplete="username">
     <label>Password</label><input name="password" type="password" required autocomplete="current-password">
-    <p><button>Sign in</button></p><p class="mut"><a href="/forgot">Forgot your password?</a></p></form>`, flashOf(req)));
+    <p><button>Sign in</button></p><p class="mut"><a href="/forgot">Forgot your password?</a></p></form><p class="mut" style="text-align:center">New to HI? <a href="/signup">Start free</a></p></div>`, flashOf(req)));
 
   const baseUrl = () => (process.env.PUBLIC_BASE_URL || 'https://hi.nahalabs.co.za').replace(/\/$/, '');
   app.get('/forgot', async (req, reply) => render(reply, null, 'Forgot password', `
@@ -249,7 +249,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const cards = data.rows.map((r) => `<div class="card"><div class="row"><a href="/app/opportunity/${encodeURIComponent(r.ocid)}"><b>${esc(r.title)}</b></a><span class="score">${r.score}</span></div>
       <div class="mut">${esc(r.tender_no)} | ${esc(r.buyer)} | closes ${fdate(r.closes_at)}</div>
       <div class="mut">${r.reasons.map((x) => esc(x.text)).join(' - ')}</div></div>`).join('');
-    const empty = !data.prof?.keywords?.length ? `<div class="card">Set your keywords first so HI knows what to look for. <a class="btn" href="/app/profile">Set up profile</a></div>` : (!data.rows.length ? '<div class="card mut">No opportunities here yet. HI checks for new tenders daily.</div>' : '');
+    const empty = !data.prof?.keywords?.length ? `<div class="card empty"><p style="font-size:17px;color:var(--text)"><b>No keywords yet.</b></p><p>Set your keywords first so HI knows what to look for.</p><p><a class="btn" href="/app/profile">Set up profile</a></p></div>` : (!data.rows.length ? '<div class="card empty">No opportunities here yet. HI checks for new tenders daily.</div>' : '');
     const warn = [u.paused ? '<div class="flash">Your account is paused. Nothing will be sent.</div>' : '', data.pend ? `<div class="flash">${data.pend} item(s) waiting for your approval. <a href="/app/approvals">Review</a></div>` : '', data.alerts.length ? `<div class="flash">${data.alerts.length} document(s) expired or expiring within 30 days. <a href="/app/documents">Review</a></div>` : ''].join('');
     return render(reply, u, 'Opportunities', `<h1>Opportunities for ${esc(u.tenant_name)}</h1>${warn}<p>${tabs} ${exportLink}</p>${cards}${empty}`, flashOf(req));
   });
@@ -378,7 +378,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT a.*, b.body_text, (SELECT j.screenshots->-1->>\'img\' FROM browser_jobs j WHERE j.id = (a.payload->>\'job_id\')::uuid) shot FROM approvals a LEFT JOIN briefs b ON b.id = (a.payload->>\'brief_id\')::uuid ORDER BY a.created_at DESC LIMIT 50'))).rows;
     const html = rows.map((a) => `<div class="card"><div class="row"><b>${esc(a.summary)}</b><span class="tag">${esc(a.status)}</span></div><div class="mut">Proposed by ${esc(a.proposed_by)} on ${fdate(a.created_at)}</div>
       ${a.shot && /^[A-Za-z0-9+/=]+$/.test(a.shot) ? `<img alt="What the browser sees now" style="max-width:100%;border:1px solid var(--line);border-radius:8px" src="data:image/jpeg;base64,${a.shot}">` : ''}${(a.body_text || a.payload?.body || a.payload?.instruction) ? `<pre>${esc(a.body_text || a.payload?.body || a.payload?.instruction)}</pre>` : ''}${a.status === 'proposed' ? `<form method="post" action="/app/approvals/${a.id}">${csrf(u)}<p>${a.kind.startsWith('browser_') ? 'Approving lets the isolated browser continue.' : a.kind === 'phone_task' ? 'Approving lets your paired phone run this task. Nothing else runs on it.' : `This will email the text above to <b>${esc(u.email)}</b> only.`}</p><button name="decision" value="approve">${a.kind === 'phone_task' ? 'Approve and run' : 'Approve and send'}</button> <button name="decision" value="reject" class="sec">Reject</button></form>` : ''}</div>`).join('');
-    return render(reply, u, 'Approvals', `<h1>Approval queue</h1><p class="mut">HI proposes. You decide. Nothing leaves your account without your approval here.</p>${html || '<div class="card mut">Nothing waiting.</div>'}`, flashOf(req));
+    return render(reply, u, 'Approvals', `<h1>Approval queue</h1><p class="mut">HI proposes. You decide. Nothing leaves your account without your approval here.</p>${html || '<div class="card empty">Nothing waiting. When HI drafts something that needs your decision, it lands here.</div>'}`, flashOf(req));
   });
   app.post('/app/approvals/:id', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
@@ -571,6 +571,15 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   const srcList = (src) => (src || []).length ? `<div class="mut">Sources: ${(src).map((x, i) => `[${i + 1}] <a href="${safeUrl(x.url)}" rel="noopener noreferrer" target="_blank">${esc(String(x.title || x.url).slice(0, 80))}</a>`).join(' &nbsp; ')}</div>` : '';
   const uuidOk = (x) => /^[0-9a-f-]{36}$/i.test(String(x || ''));
 
+  app.get('/app/menu', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const grp = (g, items) => `<div class="card"><b>${g}</b><p style="margin:10px 0 2px">${items.map(([n, h]) => `<a class="chip" style="padding:8px 14px;margin:4px 6px 4px 0" href="${h}">${n}</a>`).join('')}</p></div>`;
+    return render(reply, u, 'Menu', `<h1>All sections</h1>
+      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Tasks', '/app/tasks']])}
+      ${grp('Work', [['Browser', '/app/browser'], ['Drive', '/app/drive'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents']])}
+      ${grp('Account', [['Memory', '/app/memory'], ['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']])}`, flashOf(req));
+  });
+
   app.get('/app/agent', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
     await ensureDefaultAgent(u.tenant_id);
@@ -582,15 +591,17 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       const msgs = conv ? (await c.query('SELECT role, content, sources, steps, created_at FROM messages WHERE conversation_id=$1 ORDER BY id', [conv.id])).rows : [];
       return { agents, agent, convs, conv, msgs };
     });
-    const thread = `<div id="thread">${d.msgs.map((m) => `<div class="card"><div class="mut">${m.role === 'user' ? 'You' : esc(d.agent.name)}</div><div>${mdLite(m.content)}</div>${m.role === 'assistant' ? srcList(m.sources) : ''}${(m.steps || []).filter((x) => x.type === 'tool').length ? `<div class="mut">Used: ${(m.steps).filter((x) => x.type === 'tool').map((x) => esc(x.name)).join(', ')}</div>` : ''}</div>`).join('')}</div>`;
+    const thread = `<div id="thread">${d.msgs.map((m) => `<div class="msg ${m.role === 'user' ? 'me' : 'hi'}"><div class="who">${m.role === 'user' ? 'You' : esc(d.agent.name)}</div><div>${mdLite(m.content)}</div>${m.role === 'assistant' ? srcList(m.sources) : ''}${(m.steps || []).filter((x) => x.type === 'tool').length ? `<div class="mut">Used: ${(m.steps).filter((x) => x.type === 'tool').map((x) => esc(x.name)).join(', ')}</div>` : ''}</div>`).join('')}</div>`;
     const talk = voiceConfigured() ? `<div id="talkbox" data-csrf="${esc(u.csrf)}" data-c="${d.conv ? d.conv.id : ''}" style="margin-top:8px"><button type="button" id="talkbtn" class="sec">Talk</button> <span id="talkstatus" class="mut"></span></div><script src="/talk.js" defer></script>` : '';
-    return render(reply, u, 'Agent', `<h1>${esc(d.agent.name)}</h1>
-      <p class="mut">${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join(' | ')} ${agentModelEnabled() ? '' : '<span class="bad"> (AI model not configured)</span>'}</p>
-      ${thread || '<div class="card mut">Ask me to research something, remember a fact about your business, find tenders, or schedule a recurring job. I draft; you approve anything that leaves your account.</div>'}
+    const switcher = d.agents.length > 1 ? `<span class="mut small">${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join(' &middot; ')}</span>` : '';
+    const starters = ['Any new tenders worth bidding for this week?', 'Draft my Monday morning brief', 'Research a supplier and cite your sources'];
+    const emptyChat = `<div class="card empty"><p style="font-size:18px;color:var(--text)"><b>Ask HI anything.</b></p><p>Research with cited sources, remember a fact about your business, find tenders, schedule a job. HI drafts - you approve anything that leaves your account.</p>${starters.map((q) => `<form method="post" action="/app/agent/message" class="ask">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="text" value="${esc(q)}"><button class="sec">${esc(q)}</button></form>`).join('')}</div>`;
+    return render(reply, u, 'Agent', `<div class="row" style="margin-bottom:2px"><h1 style="margin:0">Agent</h1><span>${switcher} ${agentModelEnabled() ? '' : '<span class="bad small">AI model not configured</span>'}</span></div>
+      ${d.msgs.length ? '' : emptyChat}${thread}
       <form method="post" action="/app/agent/message" class="card">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}">
         <label>Message ${esc(d.agent.name)}</label><textarea name="text" rows="3" maxlength="4000" required></textarea><p><button>Send</button></p>${talk}</form>
       <div class="card"><b>Recent conversations</b><ul>${d.convs.map((x) => `<li><a href="/app/agent?agent=${d.agent.id}&c=${x.id}">${esc(x.title)}</a> <span class="mut">${fdate(x.created_at)}</span></li>`).join('') || '<li class="mut">None yet</li>'}</ul></div>
-      <form method="post" action="/app/agent/new" class="card">${csrf(u)}<b>Add another named agent</b><label>Name</label><input name="name" required maxlength="40"><label>What is this agent for?</label><input name="persona" maxlength="300" placeholder="e.g. Handles supplier research and quotes"><p><button class="sec">Create agent</button></p></form>`, flashOf(req));
+      <details class="card"><summary style="cursor:pointer"><b>Add another named agent</b></summary><form method="post" action="/app/agent/new">${csrf(u)}<label>Name</label><input name="name" required maxlength="40"><label>What is this agent for?</label><input name="persona" maxlength="300" placeholder="e.g. Handles supplier research and quotes"><p><button class="sec">Create agent</button></p></form></details>`, flashOf(req));
   });
   const msgLimit = makeLimiter(30, 60 * 60 * 1000);
   app.post('/app/agent/message', { preHandler: guard }, async (req, reply) => {
