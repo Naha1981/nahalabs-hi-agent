@@ -10,7 +10,7 @@ const CSS = `
 a{color:var(--ink)}
 h1{font-size:28px;line-height:1.2;margin:.1em 0 .5em;letter-spacing:-.02em}h2{font-size:19px;margin:1.4em 0 .5em;letter-spacing:-.01em}
 .mut{color:var(--mut);font-size:15px}.small{font-size:13px}.bad{color:var(--bad)}.ok{color:var(--ok)}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:12px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:12px 0;box-shadow:0 1px 2px rgba(0,0,0,.03);overflow-x:auto}
 .row{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .chip,.tag{display:inline-block;background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:2px 12px;font-size:13px;color:var(--text);margin:1px 2px;text-decoration:none}
 .tag{color:var(--mut)}
@@ -22,7 +22,7 @@ button,.btn{background:var(--ink);color:#fff;border:1px solid var(--ink);border-
 button:hover,.btn:hover{background:#000}button.sec,.btn.sec{background:#fff;color:var(--text);border:1px solid var(--line)}button.sec:hover,.btn.sec:hover{background:var(--soft)}
 button.danger,button.sec.danger{background:#fff;color:var(--bad);border:1px solid var(--bad)}button.danger:hover{background:var(--bad);color:#fff}
 pre{white-space:pre-wrap;background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:14px;font-size:14px;overflow:auto}
-table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid var(--line);padding:10px 9px;text-align:left;font-size:15px;vertical-align:top}
+table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid var(--line);padding:10px 9px;text-align:left;font-size:15px;vertical-align:top;overflow-wrap:break-word}
 .flash{background:#fffbeb;border:1px solid #fcd34d;color:#78350f;padding:12px 16px;border-radius:10px;margin:12px 0;font-size:15px}
 code{background:var(--chip);border-radius:6px;padding:1px 6px;font-size:14px}
 /* public pages */
@@ -39,6 +39,7 @@ code{background:var(--chip);border-radius:6px;padding:1px 6px;font-size:14px}
 .feat .card{margin:0;padding:14px 18px}
 @media(min-width:700px){.feat{grid-template-columns:1fr 1fr}}
 .auth{max-width:400px;margin:32px auto}
+.auth .card{overflow-x:visible}
 .auth h1{text-align:center}
 /* signed-in shell */
 .topbar{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--line);background:#fff;position:sticky;top:0;z-index:20}
