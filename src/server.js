@@ -32,6 +32,7 @@ const STATIC = {
   '/sw.js': ['public/sw.js', 'text/javascript; charset=utf-8'],
   '/drive.js': ['public/drive.js', 'text/javascript; charset=utf-8'],
   '/apple-touch-icon.png': ['public/apple-touch-icon.png', 'image/png'],
+  '/home-app.jpg': ['public/home-app.jpg', 'image/jpeg'],
   '/icons/icon-192.png': ['public/icons/icon-192.png', 'image/png'],
   '/icons/icon-512.png': ['public/icons/icon-512.png', 'image/png'],
   '/icons/maskable-512.png': ['public/icons/maskable-512.png', 'image/png'],
@@ -102,19 +103,20 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   app.get('/', async (req, reply) => {
     const s = await sessionOf(req);
     if (s) return reply.redirect('/app/agent');
-    return render(reply, null, 'The AI employee', `
-      <h1>Hire HI: the <b>AI employee</b> for your business.</h1>
-      <p style="font-size:20px">HI <b>researches</b> with cited sources, <b>remembers</b> what matters about your business, <b>finds tenders</b> worth bidding for, <b>drafts emails</b>, <b>browses the web</b> on your say-so and runs <b>scheduled work</b> while you sleep. Your next action: sign in and give it its first job.</p>
-      <div class="card"><b>What it does today</b><ul>
-        <li><span class="chip">Agent</span> A persistent AI employee with long-term memory, chat and multi-step plans</li>
-        <li><span class="chip">Opportunity Desk</span> Daily matching of open South African public tenders to your business, with the reasons shown</li>
-        <li><span class="chip">Browser</span> Reads and clicks through websites in an isolated browser - you approve before it starts and again before any final submit</li>
-        <li><span class="chip">WhatsApp</span> Replies to your saved contacts on your business number (engine connects when your number is linked)</li>
-        <li><span class="chip">Scheduled work</span> Recurring jobs that report back, plus daily briefs you approve before they send</li>
-        <li><span class="chip">API</span> Powers other NahaLabs products - see the <a href="/developers">developer docs</a></li>
-      </ul></div>
-      <p><a class="btn" href="/login">Sign in</a> <a href="/signup">Create an account</a></p>
-      <p class="mut">Honest limits: HI drafts and proposes - you approve everything that leaves your account. It does not submit bids, make payments or send messages on its own, and it tells you when it cannot verify something. Tender data: National Treasury eTender Publication Portal, published under the Open Data Commons PDDL.</p>`);
+    return render(reply, null, 'HI - the app that does the desk work', `
+      <section class="hero">
+        <h1>HI does the desk work.</h1>
+        <p class="lede">It finds tenders worth bidding for, drafts your emails, remembers your business and works on a schedule. You approve everything before anything goes out.</p>
+        <p class="cta"><a class="btn" href="/signup">Start free</a> <a class="btn sec" href="/login">Sign in</a></p>
+        <div class="shot"><img src="/home-app.jpg" alt="The HI app answering: three new tenders matched to a cleaning business, each with a closing date, fit reason and source"></div>
+      </section>
+      <section class="feat">
+        <div class="card"><b>Finds work</b><br>New tenders matched to your business, each with the fit reasons and the source link.</div>
+        <div class="card"><b>Drafts for you</b><br>Emails, briefs and replies, ready to check. Nothing sends without your approval.</div>
+        <div class="card"><b>Remembers</b><br>Your clients, your pricing, your documents - it keeps what matters and uses it.</div>
+        <div class="card"><b>Works on schedule</b><br>Recurring jobs and a morning brief, reported back to you.</div>
+      </section>
+      <p class="mut" style="text-align:center;max-width:560px;margin:22px auto 0">Honest limits: HI drafts and proposes - you approve everything that leaves your account. It can be wrong, and it says so when it cannot verify something. Tender data: National Treasury eTender Publication Portal (Open Data Commons PDDL).</p>`);
   });
 
   app.get('/signup', async (req, reply) => render(reply, null, 'Create account', `

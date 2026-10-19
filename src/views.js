@@ -25,13 +25,22 @@ table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid var(--li
 footer{padding:26px;text-align:center;color:var(--mut);font-size:14px}
 .flash{background:#fdf3d7;border:1px solid var(--gold);padding:12px 16px;border-radius:12px;margin:12px 0}
 code{background:var(--chip);border-radius:6px;padding:1px 6px;font-size:14px}
+.hero{text-align:center;padding:8px 0 4px}.hero h1{font-size:38px;margin:.1em 0 .3em}
+.lede{font-size:19px;max-width:560px;margin:0 auto 18px;color:var(--text)}
+.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:18px 0 22px}
+.cta .btn{padding:13px 34px;font-size:18px}
+.btn.sec{background:transparent;color:var(--text);border:1px solid var(--ink)}
+.shot{margin:0 auto;max-width:340px}.shot img{width:100%;display:block;border:1px solid var(--line);border-radius:18px;box-shadow:0 2px 10px rgba(28,26,21,.08)}
+.feat{display:grid;grid-template-columns:1fr;gap:10px;max-width:640px;margin:22px auto 0;text-align:left}
+.feat .card{margin:0;padding:14px 18px}
+@media(min-width:700px){.feat{grid-template-columns:1fr 1fr}}
 `;
 
 export function page({ title, user, body, flash }) {
-  const nav = user ? `<nav><a href="/app/drive">Drive</a><a href="/app/agent">Agent</a><a href="/app/tasks">Tasks</a><a href="/app/browser">Browser</a><a href="/app/whatsapp">WhatsApp</a><a href="/app/memory">Memory</a><a href="/app">Opportunities</a><a href="/app/profile">Profile</a><a href="/app/documents">Documents</a><a href="/app/approvals">Approvals</a><a href="/app/briefs">Briefs</a><a href="/app/files">Files</a><a href="/app/integrations">Integrations</a><a href="/app/api-keys">API keys</a><a href="/app/audit">Audit log</a><a href="/app/settings">Settings</a></nav><form method="post" action="/logout"><input type="hidden" name="csrf" value="${esc(user.csrf)}"><button class="sec">Sign out</button></form>` : '<nav><a href="/developers">API</a><a href="/login">Sign in</a></nav>';
+  const nav = user ? `<nav><a href="/app/drive">Drive</a><a href="/app/agent">Agent</a><a href="/app/tasks">Tasks</a><a href="/app/browser">Browser</a><a href="/app/whatsapp">WhatsApp</a><a href="/app/memory">Memory</a><a href="/app">Opportunities</a><a href="/app/profile">Profile</a><a href="/app/documents">Documents</a><a href="/app/approvals">Approvals</a><a href="/app/briefs">Briefs</a><a href="/app/files">Files</a><a href="/app/integrations">Integrations</a><a href="/app/api-keys">API keys</a><a href="/app/audit">Audit log</a><a href="/app/settings">Settings</a></nav><form method="post" action="/logout"><input type="hidden" name="csrf" value="${esc(user.csrf)}"><button class="sec">Sign out</button></form>` : '<nav></nav><a class="btn sec" style="padding:6px 18px" href="/login">Sign in</a>';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#f7f3ea"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="HI"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><title>${esc(title)} - HI by NahaLabs</title><style>${CSS}</style></head><body>
-<header><a class="brand" href="/">HI<small>the AI employee by NahaLabs</small></a>${nav}</header><main>${flash ? `<div class="flash">${esc(flash)}</div>` : ''}${body}</main>
-<footer>HI by NahaLabs (Pty) Ltd. Honest limits: HI researches, remembers, matches, drafts and schedules. It never sends, buys, books or submits anything without your approval, and it can be wrong - check the sources it cites.</footer><script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{})}</script></body></html>`;
+<header><a class="brand" href="/">HI<small>by NahaLabs</small></a>${nav}</header><main>${flash ? `<div class="flash">${esc(flash)}</div>` : ''}${body}</main>
+<footer><p style="margin:0 0 8px"><a href="/developers">Developers</a> · <a href="/developers">API</a></p>HI by NahaLabs (Pty) Ltd. Honest limits: HI researches, remembers, matches, drafts and schedules. It never sends, buys, books or submits anything without your approval, and it can be wrong - check the sources it cites.</footer><script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{})}</script></body></html>`;
 }
 
 // Drive Mode: minimal phone-first voice page. Script and styles are self-hosted (CSP 'self').
