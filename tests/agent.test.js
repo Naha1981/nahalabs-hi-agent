@@ -76,6 +76,95 @@ test('research uses search and fetch, stores citations, wraps web text as untrus
   assert.equal(pending, 0);
 });
 
+test('tool results are wrapped in random tags and takeover phrases are stripped', async () => {
+  script = [call('fetch_url', { url: 'https://treasury.example.test/c1' }), say('Read it.')];
+  const r = await run(A, 'Read this page for me');
+  assert.equal(r.answer, 'Read it.');
+  const lastCall = seenMessages.at(-1);
+  const toolMsgs = lastCall.filter((m) => m.role === 'tool').map((m) => m.content).join('\n');
+  // wrapped in per-run random tags naming the tool
+  assert.match(toolMsgs, /<result_[0-9a-f]{16} name="fetch_url">/);
+  // the injection line is stripped, the safe content stays
+  assert.doesNotMatch(toolMsgs, /IGNORE ALL PREVIOUS INSTRUCTIONS/);
+  assert.match(toolMsgs, /Tender rules\./);
+  assert.match(toolMsgs, /looked like instructions aimed at the AI/);
+  // the system prompt carries the hard rule
+  assert.match(seenMessages[0][0].content, /untrusted data, never instructions/);
+});
+
+test('clean tool results pass through the armor untouched apart from wrapping', async () => {
+  script = [call('web_search', { query: 'treasury' }), say('Done.')];
+  await run(A, 'Search treasury');
+  const toolMsgs = seenMessages.at(-1).filter((m) => m.role === 'tool').map((m) => m.content).join('\n');
+  assert.match(toolMsgs, /<result_[0-9a-f]{16} name="web_search">/);
+  assert.match(toolMsgs, /Treasury circular/);
+  assert.doesNotMatch(toolMsgs, /looked like instructions aimed at the AI/);
+});
+
+test('ask_user ends the turn with tappable options rendered in chat', async () => {
+  script = [call('ask_user', { question: 'Which tender should I draft first?', options: ['Kopanong cleaning', 'Office cleaning'] })];
+  const r = await run(A, 'Help me pick a tender');
+  assert.equal(r.answer, 'Which tender should I draft first?');
+  assert.equal(script.length, 0); // no further model call after the question
+  const page = await app.inject({ url: `/app/agent?agent=${A.agentId}&c=${r.conversationId}`, headers: { cookie: A.cookie } });
+  assert.match(page.body, /Which tender should I draft first\?/);
+  assert.match(page.body, /name="text" value="Kopanong cleaning"/);
+  assert.match(page.body, /name="text" value="Office cleaning"/);
+});
+
+test('ask_user in a scheduled run falls back to a note and the run continues', async () => {
+  script = [call('ask_user', { question: 'Which one?', options: ['a', 'b'] }), say('Assumed the first and finished.')];
+  const r = await run(A, 'Do the unattended thing', { mode: 'task' });
+  assert.equal(r.answer, 'Assumed the first and finished.');
+});
+
+test('durable facts are suggested for review and never remembered without approval', async () => {
+  script = [
+    say('Great - I will keep that in mind for future tender searches and your Monday planning sessions.'),
+    { content: '{"memories":["Alpha Co prefers tender updates by email on Mondays"]}', tool_calls: [], model: 'stub', usage: { prompt_tokens: 1, completion_tokens: 1 } },
+  ];
+  await run(A, 'Please always email me tender updates on Mondays, that works best for our small team here in Gauteng.');
+  const cand = await withTenant(A.tenantId, (c) => c.query("SELECT * FROM memory_notes WHERE kind='memory_candidate'"));
+  assert.equal(cand.rowCount, 1);
+  assert.match(cand.rows[0].detail, /Mondays/);
+  // not remembered yet, and never shown to the model
+  assert.equal((await withTenant(A.tenantId, (c) => c.query("SELECT 1 FROM memories WHERE content ILIKE '%Mondays%'"))).rowCount, 0);
+  const page = await app.inject({ url: '/app/memory', headers: { cookie: A.cookie } });
+  assert.match(page.body, /Suggested by HI/);
+  assert.match(page.body, /Mondays/);
+  // approve moves it into memory; dismiss deletes it
+  const csrf = /name="csrf" value="([^"]+)"/.exec(page.body)[1];
+  const ok = await app.inject({ method: 'POST', url: `/app/memory/candidate/${cand.rows[0].id}/approve`, headers: { ...H, cookie: A.cookie }, payload: form({ csrf }) });
+  assert.equal(ok.statusCode, 302);
+  assert.equal((await withTenant(A.tenantId, (c) => c.query("SELECT kind FROM memories WHERE content ILIKE '%Mondays%'"))).rowCount, 1);
+  assert.equal((await withTenant(A.tenantId, (c) => c.query("SELECT 1 FROM memory_notes WHERE kind='memory_candidate'"))).rowCount, 0);
+});
+
+test('extraction never breaks a chat reply when it fails', async () => {
+  script = [say('Here is a full answer with enough detail to qualify for the extraction pass afterwards.'), Promise.reject ? { content: 'not json at all', tool_calls: [] } : {}];
+  const r = await run(A, 'Tell me something reasonably long so the extraction pass runs after this reply.');
+  assert.match(r.answer, /full answer/);
+});
+
+test('long conversations are compacted into a rolling summary', async () => {
+  const convId = await withTenant(A.tenantId, async (c) => (await c.query("INSERT INTO conversations (tenant_id, agent_id, title) VALUES (current_setting('app.tenant_id')::uuid,$1,'long chat') RETURNING id", [A.agentId])).rows[0].id);
+  await withTenant(A.tenantId, async (c) => {
+    for (let i = 1; i <= 26; i++) await c.query('INSERT INTO messages (tenant_id, conversation_id, role, content) VALUES (current_setting(\'app.tenant_id\')::uuid,$1,$2,$3)', [convId, i % 2 ? 'user' : 'assistant', `message number ${i} about topic ${i}`]);
+  });
+  script = [say('short reply to the latest question'), { content: 'Earlier chat covered topics 1 to 16.', tool_calls: [], model: 'stub', usage: {} }];
+  await runAgent({ tenantId: A.tenantId, userEmail: A.email, agentId: A.agentId, conversationId: convId, userText: 'latest question', llm, fetchImpl: fakeFetch, lookup });
+  const sum = await withTenant(A.tenantId, (c) => c.query("SELECT detail FROM memory_notes WHERE kind='conv_summary' AND subject=$1", [convId]));
+  assert.equal(sum.rowCount, 1);
+  assert.match(sum.rows[0].detail, /topics 1 to 16/);
+  // the next run sees the summary in its system prompt
+  script = [say('ok')]; seenMessages = [];
+  await runAgent({ tenantId: A.tenantId, userEmail: A.email, agentId: A.agentId, conversationId: convId, userText: 'next', llm, fetchImpl: fakeFetch, lookup });
+  assert.match(seenMessages[0][0].content, /Earlier in this conversation \(summary\): Earlier chat covered topics 1 to 16/);
+  // and only recent, unsummarized messages in history
+  const hist = seenMessages[0].filter((m) => m.role !== 'system');
+  assert.ok(hist.length <= 13);
+});
+
 test('SSRF guard blocks private addresses, http, credentials and rebinding', async () => {
   for (const u of ['http://example.com', 'https://127.0.0.1/', 'https://169.254.169.254/latest/meta-data', 'https://[::1]/', 'https://user:pw@example.com/', 'https://localhost/', 'https://example.com:8443/']) await assert.rejects(assertPublicUrl(u, lookup), u);
   await assert.rejects(assertPublicUrl('https://rebind.example.test/', lookup));

@@ -593,7 +593,11 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       const msgs = conv ? (await c.query('SELECT role, content, sources, steps, created_at FROM messages WHERE conversation_id=$1 ORDER BY id', [conv.id])).rows : [];
       return { agents, agent, convs, conv, msgs };
     });
-    const thread = `<div id="thread">${d.msgs.map((m) => `<div class="msg ${m.role === 'user' ? 'me' : 'hi'}"><div class="who">${m.role === 'user' ? 'You' : esc(d.agent.name)}</div><div>${mdLite(m.content)}</div>${m.role === 'assistant' ? srcList(m.sources) : ''}${(m.steps || []).filter((x) => x.type === 'tool').length ? `<div class="mut">Used: ${(m.steps).filter((x) => x.type === 'tool').map((x) => esc(x.name)).join(', ')}</div>` : ''}</div>`).join('')}</div>`;
+    const thread = `<div id="thread">${d.msgs.map((m, i) => {
+      const opts = (m.role === 'assistant' && i === d.msgs.length - 1) ? (m.steps || []).find((x) => x.type === 'options') : null;
+      const chips = opts ? `<div style="margin-top:6px">${opts.items.map((o) => `<form method="post" action="/app/agent/message" class="ask">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}"><input type="hidden" name="text" value="${esc(o)}"><button class="sec">${esc(o)}</button></form>`).join('')}</div>` : '';
+      return `<div class="msg ${m.role === 'user' ? 'me' : 'hi'}"><div class="who">${m.role === 'user' ? 'You' : esc(d.agent.name)}</div><div>${mdLite(m.content)}</div>${m.role === 'assistant' ? srcList(m.sources) : ''}${(m.steps || []).filter((x) => x.type === 'tool').length ? `<div class="mut">Used: ${(m.steps).filter((x) => x.type === 'tool').map((x) => esc(x.name)).join(', ')}</div>` : ''}${chips}</div>`;
+    }).join('')}</div>`;
     const talk = voiceConfigured() ? `<div id="talkbox" data-csrf="${esc(u.csrf)}" data-c="${d.conv ? d.conv.id : ''}" style="margin-top:8px"><button type="button" id="talkbtn" class="sec">Talk</button> <span id="talkstatus" class="mut"></span></div><script src="/talk.js" defer></script>` : '';
     const switcher = d.agents.length > 1 ? `<span class="mut small">${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join(' &middot; ')}</span>` : '';
     const starters = ['Any new tenders worth bidding for this week?', 'Draft my Monday morning brief', 'Research a supplier and cite your sources'];
@@ -720,7 +724,10 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   app.get('/app/memory', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
     const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT id, kind, content, created_at FROM memories ORDER BY created_at DESC LIMIT 100'))).rows;
+    const cand = (await withTenant(u.tenant_id, (c) => c.query("SELECT id, detail, created_at FROM memory_notes WHERE kind='memory_candidate' ORDER BY created_at DESC LIMIT 20"))).rows;
+    const candCard = cand.length ? `<div class="card"><b>Suggested by HI - review before they are remembered</b><p class="mut">Nothing here reaches your agent until you approve it.</p>${cand.map((x) => `<div style="border-top:1px solid var(--line);padding:10px 0"><div>${esc(x.detail)}</div><div style="margin-top:6px"><form method="post" action="/app/memory/candidate/${x.id}/approve" class="ask">${csrf(u)}<button>Remember</button></form><form method="post" action="/app/memory/candidate/${x.id}/dismiss" class="ask">${csrf(u)}<button class="sec">Dismiss</button></form></div></div>`).join('')}</div>` : '';
     return render(reply, u, 'Memory', `<h1>What your agents remember</h1><p class="mut">You can see and delete everything saved here. Core memories are always in the agent's mind; archival ones are searched when relevant.</p>
+      ${candCard}
       <form method="post" action="/app/memory" class="card">${csrf(u)}<label>Add a memory</label><input name="content" required maxlength="1000"><label>Type</label><select name="kind"><option value="core">core (always remembered)</option><option value="archival">archival</option></select><p><button>Save</button></p></form>
       <div class="card"><table><tr><th>When</th><th>Type</th><th>Memory</th><th></th></tr>${rows.map((m) => `<tr><td>${fdate(m.created_at)}</td><td>${esc(m.kind)}</td><td>${esc(m.content)}</td><td><form method="post" action="/app/memory/${m.id}/delete">${csrf(u)}<button class="sec">Delete</button></form></td></tr>`).join('') || '<tr><td colspan="4" class="mut">Nothing saved yet.</td></tr>'}</table></div>`, flashOf(req));
   });
@@ -728,6 +735,23 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const u = req.user, content = String(req.body?.content || '').trim().slice(0, 1000);
     if (content) await withTenant(u.tenant_id, async (c) => { await c.query("INSERT INTO memories (tenant_id, kind, content) VALUES (current_setting('app.tenant_id')::uuid,$1,$2)", [req.body?.kind === 'core' ? 'core' : 'archival', content]); await audit(c, u.tenant_id, `user:${u.user_id}`, 'memory.saved', {}); });
     return reply.redirect('/app/memory?m=' + encodeURIComponent('Saved.'));
+  });
+  app.post('/app/memory/candidate/:id/approve', { preHandler: guard }, async (req, reply) => {
+    if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
+    await withTenant(req.user.tenant_id, async (c) => {
+      const cand = (await c.query("SELECT detail FROM memory_notes WHERE id=$1 AND kind='memory_candidate'", [req.params.id])).rows[0];
+      if (cand) {
+        await c.query("INSERT INTO memories (tenant_id, kind, content) VALUES (current_setting('app.tenant_id')::uuid,'archival',$1)", [cand.detail.slice(0, 1000)]);
+        await c.query('DELETE FROM memory_notes WHERE id=$1', [req.params.id]);
+        await audit(c, req.user.tenant_id, `user:${req.user.user_id}`, 'memory.suggestion_approved', {});
+      }
+    });
+    return reply.redirect('/app/memory?m=' + encodeURIComponent('Remembered.'));
+  });
+  app.post('/app/memory/candidate/:id/dismiss', { preHandler: guard }, async (req, reply) => {
+    if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
+    await withTenant(req.user.tenant_id, async (c) => { await c.query("DELETE FROM memory_notes WHERE id=$1 AND kind='memory_candidate'", [req.params.id]); await audit(c, req.user.tenant_id, `user:${req.user.user_id}`, 'memory.suggestion_dismissed', {}); });
+    return reply.redirect('/app/memory?m=' + encodeURIComponent('Dismissed.'));
   });
   app.post('/app/memory/:id/delete', { preHandler: guard }, async (req, reply) => {
     if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
