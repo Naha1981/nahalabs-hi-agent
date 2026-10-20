@@ -27,6 +27,62 @@ export function wrapToolResult(nonce, name, result) {
   return `<${tag} name="${name}">\n${text.replaceAll(`</${tag}`, `<\\/${tag}`)}\n</${tag}>`;
 }
 
+// Customer-facing labels for the "Used:" line in chat. Never show raw tool names.
+const TOOL_LABELS = {
+  remember: 'Saved a memory',
+  recall: 'Checked memory',
+  web_search: 'Searched the web',
+  fetch_url: 'Read a web page',
+  find_tenders: 'Searched tenders',
+  run_plan: 'Ran a multi-step job',
+  ask_user: 'Asked you a question',
+  plan: 'Planned the steps',
+  schedule_task: 'Scheduled a task',
+  browser_task: 'Prepared a browser task',
+  browser_results: 'Read browser results',
+  create_file: 'Created a file',
+  phone_task: 'Prepared a phone task',
+  phone_results: 'Checked phone results',
+  mail_search: 'Searched your email',
+  calendar_upcoming: 'Checked your calendar',
+  propose_account_email: 'Drafted an email',
+  propose_calendar_event: 'Proposed a calendar event',
+  propose_email: 'Drafted an email',
+};
+export function toolLabel(name) {
+  if (TOOL_LABELS[name]) return TOOL_LABELS[name];
+  const pretty = String(name || '').replace(/_/g, ' ').trim();
+  return pretty ? pretty[0].toUpperCase() + pretty.slice(1) : '';
+}
+
+// Fuzzy duplicate check for memory suggestions: exact, containment either way,
+// or sentence-level token overlap. Normalizes case and punctuation so
+// "QA Co does cleaning in Johannesburg." matches inside a longer saved memory.
+const normFact = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+const factTokens = (t) => new Set(normFact(t).split(' ').filter((w) => w.length > 2));
+const jaccard = (a, b) => {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const w of a) if (b.has(w)) inter++;
+  return inter / (a.size + b.size - inter);
+};
+export function isDupeFact(item, existingTexts) {
+  const ni = normFact(item);
+  if (!ni) return false;
+  const ti = factTokens(item);
+  for (const raw of existingTexts || []) {
+    const ne = normFact(raw);
+    if (!ne) continue;
+    if (ne === ni || ne.includes(ni) || ni.includes(ne)) return true;
+    if (jaccard(ti, factTokens(raw)) >= 0.8) return true;
+    for (const sent of String(raw).split(/[.!?\n]+/)) {
+      const ns = normFact(sent);
+      if (ns.length > 10 && (ns.includes(ni) || ni.includes(ns) || jaccard(ti, factTokens(sent)) >= 0.8)) return true;
+    }
+  }
+  return false;
+}
+
 export async function ensureDefaultAgent(tenantId) {
   return withTenant(tenantId, async (c) => {
     let a = (await c.query('SELECT * FROM agents ORDER BY created_at LIMIT 1')).rows[0];
@@ -177,11 +233,15 @@ ${r.answer}`)
     try {
       const { items, usage, model } = await extractMemoryCandidates({ llm, company: ctxInfo.company, userText, answer });
       if (usage) await withTenant(tenantId, (c) => c.query("INSERT INTO model_usage (tenant_id, provider, model, prompt_tokens, completion_tokens) VALUES (current_setting('app.tenant_id')::uuid,'agent',$1,$2,$3)", [model || 'unknown', usage?.prompt_tokens || 0, usage?.completion_tokens || 0]));
+      const existing = await withTenant(tenantId, async (c) => {
+        const mems = (await c.query('SELECT content FROM memories')).rows.map((r) => r.content);
+        const cands = (await c.query("SELECT detail FROM memory_notes WHERE kind='memory_candidate'")).rows.map((r) => r.detail);
+        return [...mems, ...cands];
+      });
       for (const item of items) {
+        if (isDupeFact(item, existing)) continue;
+        existing.push(item);
         await withTenant(tenantId, async (c) => {
-          const dupe = (await c.query('SELECT 1 FROM memories WHERE content=$1 LIMIT 1', [item])).rowCount
-            || (await c.query("SELECT 1 FROM memory_notes WHERE kind='memory_candidate' AND detail=$1 LIMIT 1", [item])).rowCount;
-          if (dupe) return;
           await c.query("INSERT INTO memory_notes (tenant_id, kind, subject, detail) VALUES (current_setting('app.tenant_id')::uuid,'memory_candidate',$1,$2)", [item.slice(0, 60), item]);
           await audit(c, tenantId, `agent:${agent.name}`, 'memory.suggested', { chars: item.length });
         });

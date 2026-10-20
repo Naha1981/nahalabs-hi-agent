@@ -265,3 +265,36 @@ test('model gateway retries on 429 then falls back to the smaller model', async 
   assert.equal(out.content, 'hello'); assert.deepEqual(used, ['openai/gpt-oss-120b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b']);
   delete process.env.GROQ_API_KEY;
 });
+
+test('chat shows friendly tool labels, never raw tool names', async () => {
+  const { toolLabel } = await import('../src/agent.js');
+  assert.equal(toolLabel('ask_user'), 'Asked you a question');
+  assert.equal(toolLabel('web_search'), 'Searched the web');
+  assert.equal(toolLabel('some_new_tool'), 'Some new tool');
+  script = [call('ask_user', { question: 'Pick a focus?', options: ['Tenders', 'Marketing'] })];
+  const r = await run(A, 'Give me a choice please');
+  const page = await app.inject({ url: `/app/agent?agent=${A.agentId}&c=${r.conversationId}`, headers: { cookie: A.cookie } });
+  assert.match(page.body, /Asked you a question/);
+  assert.doesNotMatch(page.body, /ask_user/);
+});
+
+test('isDupeFact catches exact, contained and near-duplicate facts only', async () => {
+  const { isDupeFact } = await import('../src/agent.js');
+  const existing = ['QA Co Live is a small commercial cleaning company in Johannesburg. Prefers WhatsApp updates on Friday afternoons.'];
+  assert.equal(isDupeFact('QA Co Live is a small commercial cleaning company in Johannesburg', existing), true);
+  assert.equal(isDupeFact('qa co live is a small commercial cleaning company in johannesburg!', existing), true);
+  assert.equal(isDupeFact('Prefers WhatsApp updates on Friday afternoons', existing), true);
+  assert.equal(isDupeFact('Biggest client requires invoices before the 25th of each month', existing), false);
+});
+
+test('memory suggestions skip facts already saved inside a longer memory', async () => {
+  await withTenant(A.tenantId, (c) => c.query("INSERT INTO memories (tenant_id, kind, content) VALUES (current_setting('app.tenant_id')::uuid,'core','Alpha Co is a small commercial cleaning company in Johannesburg. Prefers WhatsApp updates on Friday afternoons. Never schedules work on Sundays.')"));
+  script = [
+    say('Noted, I will keep those working preferences in mind for all future planning and scheduling work.'),
+    { content: '{"memories":["Alpha Co is a small commercial cleaning company in Johannesburg","Alpha Co prefers WhatsApp updates on Friday afternoons","Biggest client needs invoices before the 25th"]}', tool_calls: [] },
+  ];
+  await run(A, 'Here are our working preferences to remember for scheduling and client admin going forward.');
+  const cand = await withTenant(A.tenantId, (c) => c.query("SELECT detail FROM memory_notes WHERE kind='memory_candidate' ORDER BY id"));
+  assert.equal(cand.rowCount, 1);
+  assert.match(cand.rows[0].detail, /25th/);
+});

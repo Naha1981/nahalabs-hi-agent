@@ -13,7 +13,7 @@ import { explainFit, modelEnabled } from './gateway.js';
 import { mailConfigured, sendMail } from './mail.js';
 import { handleInbound, makeAdapter, normalisePhone, parseMetaWebhook } from './whatsapp.js';
 import { browserStep, browserPoll } from './browser.js';
-import { runAgent, runDueTasks, ensureDefaultAgent } from './agent.js';
+import { runAgent, runDueTasks, ensureDefaultAgent, toolLabel } from './agent.js';
 import { buildMorningBriefs } from './brief.js';
 import { chat as defaultChat, agentModelEnabled } from './gateway.js';
 import { registerApi, newApiKey } from './api.js';
@@ -596,7 +596,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const thread = `<div id="thread">${d.msgs.map((m, i) => {
       const opts = (m.role === 'assistant' && i === d.msgs.length - 1) ? (m.steps || []).find((x) => x.type === 'options') : null;
       const chips = opts ? `<div style="margin-top:6px">${opts.items.map((o) => `<form method="post" action="/app/agent/message" class="ask">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}"><input type="hidden" name="text" value="${esc(o)}"><button class="sec">${esc(o)}</button></form>`).join('')}</div>` : '';
-      return `<div class="msg ${m.role === 'user' ? 'me' : 'hi'}"><div class="who">${m.role === 'user' ? 'You' : esc(d.agent.name)}</div><div>${mdLite(m.content)}</div>${m.role === 'assistant' ? srcList(m.sources) : ''}${(m.steps || []).filter((x) => x.type === 'tool').length ? `<div class="mut">Used: ${(m.steps).filter((x) => x.type === 'tool').map((x) => esc(x.name)).join(', ')}</div>` : ''}${chips}</div>`;
+      return `<div class="msg ${m.role === 'user' ? 'me' : 'hi'}"><div class="who">${m.role === 'user' ? 'You' : esc(d.agent.name)}</div><div>${mdLite(m.content)}</div>${m.role === 'assistant' ? srcList(m.sources) : ''}${(m.steps || []).filter((x) => x.type === 'tool').length ? `<div class="mut">Used: ${(m.steps).filter((x) => x.type === 'tool').map((x) => esc(toolLabel(x.name))).filter(Boolean).join(', ')}</div>` : ''}${chips}</div>`;
     }).join('')}</div>`;
     const talk = voiceConfigured() ? `<div id="talkbox" data-csrf="${esc(u.csrf)}" data-c="${d.conv ? d.conv.id : ''}" style="margin-top:8px"><button type="button" id="talkbtn" class="sec">Talk</button> <span id="talkstatus" class="mut"></span></div><script src="/talk.js" defer></script>` : '';
     const switcher = d.agents.length > 1 ? `<span class="mut small">${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join(' &middot; ')}</span>` : '';
