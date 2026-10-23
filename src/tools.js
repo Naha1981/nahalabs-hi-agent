@@ -83,7 +83,7 @@ export const TOOL_SCHEMAS = [
   { name: 'propose_account_email', description: 'Draft an email to send from one of the customer\'s connected Gmail/Outlook accounts. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'] } },
   { name: 'propose_calendar_event', description: 'Propose creating an event on one of the customer\'s connected calendars. It is created only after the customer approves.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, title: { type: 'string' }, starts_at: { type: 'string' }, ends_at: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'starts_at', 'ends_at'] } },
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
-  { name: 'estate_add_contact', description: 'Real estate: save a contact such as a buyer, seller, landlord or tenant.', parameters: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['buyer', 'seller', 'landlord', 'tenant', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, notes: { type: 'string' } }, required: ['name'] } },
+  { name: 'estate_add_contact', description: 'Real estate: save a contact such as a buyer, seller, landlord or tenant. Existing contacts with the same email are merged rather than duplicated.', parameters: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['buyer', 'seller', 'landlord', 'tenant', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, notes: { type: 'string' } }, required: ['name'] } },
   { name: 'estate_add_property', description: 'Real estate: save a property or listing.', parameters: { type: 'object', properties: { title: { type: 'string', description: 'Address or short name, e.g. "12 Oak Street, Sandton"' }, asking_price: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, notes: { type: 'string' } }, required: ['title'] } },
   { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, note: { type: 'string' } } } },
@@ -103,11 +103,18 @@ const ESTATE_OPEN = ESTATE_STAGES.slice(0, 6);
 const estateSAST = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(d instanceof Date ? d : new Date(d)).replace(',', '') + ' SAST';
 const estateDateFmt = (d) => { const x = d instanceof Date ? d : new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 const estateDate = (v) => { const s = String(v ?? '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null; };
+// A date-time without an explicit offset is interpreted as South African Standard Time (UTC+02:00).
+export function parseEstateDateTime(value) {
+  const s = String(value ?? '').trim();
+  const local = s.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::(\d{2})(\.\d+)?)?$/);
+  const normalized = local ? `${local[1]}T${local[2]}:${local[3] || '00'}${local[4] || ''}+02:00` : s;
+  return new Date(normalized);
+}
 
 export const ESTATE_WATCH_TITLE = 'Enquiry watch';
 export const ESTATE_WATCH_INSTRUCTION = [
   'Enquiry watch for the estate agency. Search the connected inboxes with mail_search for new property enquiries from the last day, with queries like: newer_than:1d (viewing OR offer OR property OR listing OR "for sale" OR "to rent").',
-  'For each genuine new enquiry: 1) check estate_list contacts for the sender email address first - never create duplicates; 2) save new senders with estate_add_contact (role buyer or tenant, include their email); 3) if a specific property is mentioned, start a deal with estate_add_deal at stage enquiry, next_action "Reply to enquiry", next_action_date tomorrow; 4) draft a reply with propose_account_email: thank them, answer only from facts on record (never invent price, levies, rates or availability - say the agent will confirm), and ask the qualifying questions: budget, bond pre-approval, timeframe, and whether they want a viewing.',
+  'For each genuine new enquiry: use the sender email as the contact identity and call estate_add_contact (role buyer or tenant); that tool merges existing contacts by email so do not create a second record. If a specific property is mentioned, start a deal with estate_add_deal at stage enquiry, next_action "Reply to enquiry", next_action_date tomorrow; duplicate property/contact/stage enquiries are safely ignored. Draft a reply with propose_account_email: thank them, answer only from facts on record (never invent price, levies, rates or availability - say the agent will confirm), and ask the qualifying questions: budget, bond pre-approval, timeframe, and whether they want a viewing.',
   'Nothing sends without the customer approval. End with a short report: enquiries found, contacts and deals created, drafts waiting for approval. If no inbox is connected or nothing is found, say so plainly.',
 ].join(' ');
 
@@ -236,9 +243,20 @@ export async function runTool(name, args, ctx) {
     }
     case 'mail_search': {
       try {
-        const rows = await mailSearch(tenantId, { query: clip(a.query, 200), fetchImpl: ctx.fetchImpl });
-        if (!rows.length) return 'No connected accounts. Connect Gmail or Outlook on the Integrations page first.';
-        return UNTRUSTED(rows.map((m) => m.error ? `- [${m.account}] ${m.error}` : `- [${m.provider} ${m.account}] ${m.date} | ${m.from} | ${m.subject} | ${m.snippet}`).join('\n'));
+        const track = ctx.trackMailMessages && Array.isArray(ctx.mailMessagesSeen);
+        const processed = track ? (await c.query("SELECT provider, account_email, message_id FROM estate_processed_mail WHERE processed_at > now() - interval '14 days'")).rows : [];
+        const processedKeys = new Set(processed.map((m) => `${m.provider}\u0000${String(m.account_email).toLowerCase()}\u0000${m.message_id}`));
+        const rows = await mailSearch(tenantId, { query: clip(a.query, 200), max: track ? 100 : 25, fetchImpl: ctx.fetchImpl });
+        const fresh = rows.filter((m) => !track || !m.id || !processedKeys.has(`${m.provider}\u0000${String(m.account).toLowerCase()}\u0000${m.id}`));
+        if (track) {
+          for (const m of fresh) if (m.id && !m.error) ctx.mailMessagesSeen.push({ provider: m.provider, account_email: m.account, message_id: m.id });
+        }
+        if (!fresh.length) {
+          const connected = (await c.query("SELECT count(*)::int n FROM integrations WHERE status IN ('active','error')")).rows[0].n;
+          if (!connected) return 'No connected accounts. Connect Gmail or Outlook on the Integrations page first.';
+          return track ? 'No new matching messages. Matching messages already processed by the enquiry watch are skipped.' : 'No matching messages found.';
+        }
+        return UNTRUSTED(fresh.map((m) => m.error ? `- [${m.account}] ${m.error}` : `- [${m.provider} ${m.account}] message_id=${m.id || 'unavailable'} | ${m.date} | ${m.from} | ${m.subject} | ${m.snippet}`).join('\n'));
       } catch (e) { return 'Mail search failed: ' + clip(e.message, 80); }
     }
     case 'calendar_upcoming': {
@@ -275,9 +293,20 @@ export async function runTool(name, args, ctx) {
       const name = clip(a.name, 120).trim();
       if (!name) return 'A contact needs a name.';
       const role = ['buyer', 'seller', 'landlord', 'tenant', 'other'].includes(a.role) ? a.role : 'other';
+      const phone = clip(a.phone, 40).trim();
+      const email = clip(a.email, 120).trim();
+      const notes = clip(a.notes, 1000).trim();
+      if (email) {
+        const existing = (await c.query("SELECT id, name, role FROM re_contacts WHERE lower(btrim(email))=lower($1) ORDER BY created_at LIMIT 1", [email])).rows[0];
+        if (existing) {
+          await c.query("UPDATE re_contacts SET phone=CASE WHEN phone='' AND $2<>'' THEN $2 ELSE phone END, role=CASE WHEN role='other' AND $3<>'other' THEN $3 ELSE role END, notes=CASE WHEN notes='' AND $4<>'' THEN $4 ELSE notes END, updated_at=now() WHERE id=$1", [existing.id, phone, role, notes]);
+          await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contact_deduplicated', { contact_id: existing.id });
+          return `Contact already exists as ${existing.name}; kept the existing contact record and filled any missing details.`;
+        }
+      }
       const r = await c.query(
         "INSERT INTO re_contacts (tenant_id, name, role, phone, email, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5) RETURNING id",
-        [name, role, clip(a.phone, 40), clip(a.email, 120), clip(a.notes, 1000)]);
+        [name, role, phone, email, notes]);
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contact_saved', { contact_id: r.rows[0].id });
       return `Saved ${name} as a ${role}.`;
     }
@@ -302,6 +331,8 @@ export async function runTool(name, args, ctx) {
       }
       const stage = ESTATE_STAGES.includes(a.stage) ? a.stage : 'enquiry';
       if (a.next_action_date && !estateDate(a.next_action_date)) return 'Next action date must be YYYY-MM-DD.';
+      const duplicate = (await c.query("SELECT id FROM re_deals WHERE property_id=$1 AND contact_id IS NOT DISTINCT FROM $2::uuid AND stage=$3 ORDER BY created_at DESC LIMIT 1", [prop.row.id, contactId, stage])).rows[0];
+      if (duplicate) return `Deal already tracked for ${prop.row.title}${contactName ? ` with ${contactName}` : ''} at stage ${ESTATE_STAGE_LABEL[stage]}; no duplicate was created.`;
       const r = await c.query(
         "INSERT INTO re_deals (tenant_id, property_id, contact_id, stage, next_action, next_action_date, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6) RETURNING id",
         [prop.row.id, contactId, stage, clip(a.next_action, 200), estateDate(a.next_action_date), clip(a.notes, 2000)]);
@@ -338,8 +369,8 @@ export async function runTool(name, args, ctx) {
       return `Deal on ${deal.title} updated${a.stage ? ` - now at ${ESTATE_STAGE_LABEL[a.stage]}` : ''}.`;
     }
     case 'estate_add_viewing': {
-      const when = new Date(String(a.starts_at ?? ''));
-      if (Number.isNaN(when.getTime())) return 'Give the viewing time as an ISO date-time, e.g. 2026-10-24T14:00.';
+      const when = parseEstateDateTime(a.starts_at);
+      if (Number.isNaN(when.getTime())) return 'Give the viewing time as an ISO date-time, e.g. 2026-10-24T14:00. Times without a timezone use South African time (SAST).';
       const prop = await estateGetOrCreateProperty(c, a.property, clip);
       if (prop.error) return prop.error;
       let contactId = null, contactName = '';
@@ -358,11 +389,13 @@ export async function runTool(name, args, ctx) {
       let viewing = null;
       const vid = String(a.viewing_id ?? '').trim();
       if (vid && /^[0-9a-f-]{36}$/i.test(vid)) {
-        viewing = (await c.query('SELECT v.id, p.title FROM re_viewings v JOIN re_properties p ON p.id=v.property_id WHERE v.id=$1', [vid])).rows[0];
+        viewing = (await c.query("SELECT v.id, p.title FROM re_viewings v JOIN re_properties p ON p.id=v.property_id WHERE v.id=$1 AND v.status='scheduled'", [vid])).rows[0];
       } else if (String(a.property ?? '').trim()) {
-        viewing = (await c.query(
-          "SELECT v.id, p.title FROM re_viewings v JOIN re_properties p ON p.id=v.property_id WHERE p.title ILIKE '%' || $1 || '%' AND v.status='scheduled' ORDER BY v.starts_at DESC LIMIT 1",
-          [clip(a.property, 200).replace(/[%_]/g, '')])).rows[0];
+        const matches = (await c.query(
+          "SELECT v.id, v.starts_at, p.title FROM re_viewings v JOIN re_properties p ON p.id=v.property_id WHERE p.title ILIKE '%' || $1 || '%' AND v.status='scheduled' ORDER BY v.starts_at DESC LIMIT 3",
+          [clip(a.property, 200).replace(/[%_]/g, '')])).rows;
+        if (matches.length > 1) return `Several scheduled viewings match. Specify viewing_id: ${matches.map((v) => `${v.id} (${v.title}, ${estateSAST(v.starts_at)})`).join('; ')}.`;
+        viewing = matches[0];
       }
       if (!viewing) return 'No matching scheduled viewing found. Give the property name or viewing id.';
       await c.query('UPDATE re_viewings SET status=$1, feedback=$2, updated_at=now() WHERE id=$3', [a.status, clip(a.feedback, 1000), viewing.id]);
@@ -393,10 +426,10 @@ export async function runTool(name, args, ctx) {
       }
       if (a.what === 'viewings') {
         const r = await c.query(
-          `SELECT v.starts_at, v.status, p.title AS property, co.name AS contact
+          `SELECT v.id, v.starts_at, v.status, p.title AS property, co.name AS contact
            FROM re_viewings v JOIN re_properties p ON p.id=v.property_id LEFT JOIN re_contacts co ON co.id=v.contact_id
            WHERE v.status='scheduled' AND v.starts_at > now() - interval '1 day' ORDER BY v.starts_at LIMIT 20`);
-        return r.rowCount ? r.rows.map((x) => `- ${estateSAST(x.starts_at)} | ${x.property}${x.contact ? ` | ${x.contact}` : ''}`).join('\n') : 'No upcoming viewings.';
+        return r.rowCount ? r.rows.map((x) => `- viewing_id=${x.id} | ${estateSAST(x.starts_at)} | ${x.property}${x.contact ? ` | ${x.contact}` : ''}`).join('\n') : 'No upcoming viewings.';
       }
       if (a.what === 'contacts') {
         const r = await c.query('SELECT name, role, phone, email FROM re_contacts ORDER BY created_at DESC LIMIT 20');
@@ -413,8 +446,8 @@ export async function runTool(name, args, ctx) {
       const existing = (await c.query("SELECT id, status FROM tasks WHERE title=$1 AND status='active'", [ESTATE_WATCH_TITLE])).rows[0];
       if (a.action === 'enable') {
         if (existing) return 'The enquiry watch is already on.';
-        const ri = await resolveIntegration(c, '');
-        if (ri.error) return 'Connect Gmail or Outlook on the Integrations page first, then ask me to start the watch again.';
+        const connected = (await c.query("SELECT count(*)::int n FROM integrations WHERE status IN ('active','error') AND provider IN ('google','microsoft')")).rows[0].n;
+        if (!connected) return 'Connect Gmail or Outlook on the Integrations page first, then ask me to start the watch again.';
         const active = (await c.query("SELECT count(*)::int n FROM tasks WHERE status='active'")).rows[0].n;
         if (active >= 10) return 'Limit reached: 10 active tasks. Pause one first.';
         const every = Math.max(60, Math.min(60 * 24, Number(a.every_minutes) || 120));
@@ -440,9 +473,13 @@ export async function runTool(name, args, ctx) {
         `SELECT v.starts_at, v.status, v.feedback, co.name AS contact
          FROM re_viewings v LEFT JOIN re_contacts co ON co.id=v.contact_id WHERE v.property_id=$1 ORDER BY v.starts_at DESC`, [prop.row.id])).rows;
       const today = new Date().toISOString().slice(0, 10);
+      const activeDeals = deals.filter((d) => ESTATE_OPEN.includes(d.stage));
+      const closedDeals = deals.filter((d) => !ESTATE_OPEN.includes(d.stage));
+      const describeDeal = (d) => `- Stage: ${ESTATE_STAGE_LABEL[d.stage]}${d.contact ? ` | ${d.contact}` : ''} (since ${String(d.created_at).slice(0, 10)})${d.next_action ? `\n  Next: ${d.next_action}${d.next_action_date ? ` by ${String(d.next_action_date).slice(0, 10)}` : ''}` : ''}`;
       const lines = [
         `# Seller report: ${prop.row.title}`, `Date: ${today}`, '',
-        deals.length ? `## Interest and deals\n` + deals.map((d) => `- Stage: ${ESTATE_STAGE_LABEL[d.stage]}${d.contact ? ` | ${d.contact}` : ''} (since ${String(d.created_at).slice(0, 10)})${d.next_action ? `\n  Next: ${d.next_action}${d.next_action_date ? ` by ${String(d.next_action_date).slice(0, 10)}` : ''}` : ''}`).join('\n') : '## Interest and deals\nNo active deals on record.',
+        activeDeals.length ? `## Current interest and deals\n` + activeDeals.map(describeDeal).join('\n') : '## Current interest and deals\nNo active deals on record.',
+        ...(closedDeals.length ? ['', `## Closed outcomes\n` + closedDeals.map(describeDeal).join('\n')] : []),
         '',
         viewings.length ? `## Viewings\n` + viewings.map((v) => `- ${new Date(v.starts_at).toISOString().slice(0, 10)}: ${v.status.replace('_', '-')}${v.contact ? ` | ${v.contact}` : ''}${v.feedback ? `\n  Feedback: ${v.feedback}` : ''}`).join('\n') : '## Viewings\nNo viewings recorded.',
       ];
