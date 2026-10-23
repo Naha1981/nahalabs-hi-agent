@@ -219,12 +219,8 @@ ${r.answer}`)
   await withTenant(tenantId, async (c) => {
     await c.query("INSERT INTO messages (tenant_id, conversation_id, role, content, sources, steps) VALUES (current_setting('app.tenant_id')::uuid,$1,'assistant',$2,$3,$4)", [convId, answer, JSON.stringify(sources), JSON.stringify(steps)]);
     await c.query('UPDATE runs SET status=$2, result=$3, steps=$4, sources=$5 WHERE id=$1', [runId, status, answer, JSON.stringify(steps), JSON.stringify(sources)]);
-    // Persist message IDs only after a complete successful watch run, so a failed model run can retry.
-    if (trackMailMessages && status === 'done' && mailMessagesSeen.length) {
-      const unique = new Map(mailMessagesSeen.map((m) => [String(m.provider) + '\\u0000' + String(m.account_email).toLowerCase() + '\\u0000' + m.message_id, m]));
-      for (const m of unique.values()) await c.query("INSERT INTO estate_processed_mail (tenant_id, provider, account_email, message_id) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3) ON CONFLICT (tenant_id, provider, account_email, message_id) DO NOTHING", [m.provider, m.account_email, m.message_id]);
-      await c.query("DELETE FROM estate_processed_mail WHERE processed_at < now() - interval '14 days'");
-    }
+    // Enquiry-watch messages are persisted individually by estate_mark_message_processed
+    // after their contact/deal/reply-draft work is complete. Unmarked messages are retried.
     await audit(c, tenantId, `agent:${agent.name}`, mode === 'task' ? 'task.run' : 'chat.reply', { run_id: runId, status, tools: steps.filter((s) => s.type === 'tool').map((s) => s.name) });
   });
   // Conversation compaction: fold older messages into a rolling summary so long chats keep their context.
