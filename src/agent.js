@@ -55,6 +55,7 @@ const TOOL_LABELS = {
   estate_add_viewing: 'Booked a viewing',
   estate_log_viewing: 'Logged viewing feedback',
   estate_list: 'Checked your estate records',
+  estate_enquiry_watch: 'Set up the enquiry watch',
   estate_seller_report: 'Created a seller report',
 };
 export function toolLabel(name) {

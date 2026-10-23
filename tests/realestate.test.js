@@ -83,3 +83,20 @@ test('estate tools never invent dates: missing fields stay empty', async () => {
   assert.equal(row.next_action, '');
   assert.equal(row.next_action_date, null);
 });
+
+test('estate enquiry watch: needs an inbox, enables once, disables', async () => {
+  // Tenant B has no connected inbox
+  assert.match(await call(B, 'estate_enquiry_watch', { action: 'enable' }), /Connect Gmail or Outlook/);
+  // Give tenant A a connected google integration
+  await withTenant(A, (c) => c.query("INSERT INTO integrations (tenant_id, provider, account_email) VALUES (current_setting('app.tenant_id')::uuid,'google','agent@harbourview.test')"));
+  assert.match(await call(A, 'estate_enquiry_watch', { action: 'enable', every_minutes: 180 }), /Enquiry watch on\. Every 180 minutes/);
+  const task = await withTenant(A, (c) => c.query("SELECT title, interval_minutes, status, instruction FROM tasks WHERE title='Enquiry watch'").then((r) => r.rows[0]));
+  assert.equal(task.interval_minutes, 180);
+  assert.equal(task.status, 'active');
+  assert.match(task.instruction, /never invent price, levies, rates or availability/);
+  assert.match(task.instruction, /never create duplicates/);
+  assert.match(await call(A, 'estate_enquiry_watch', { action: 'enable' }), /already on/);
+  assert.match(await call(A, 'estate_enquiry_watch', { action: 'disable' }), /Enquiry watch off/);
+  assert.equal(await withTenant(A, (c) => c.query("SELECT status FROM tasks WHERE title='Enquiry watch'").then((r) => r.rows[0].status)), 'paused');
+  assert.match(await call(A, 'estate_enquiry_watch', { action: 'disable' }), /not on/);
+});

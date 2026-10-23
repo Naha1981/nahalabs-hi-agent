@@ -90,6 +90,7 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
   { name: 'estate_log_viewing', description: 'Real estate: record the outcome and feedback of a viewing (done, no_show or cancelled).', parameters: { type: 'object', properties: { property: { type: 'string' }, viewing_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'no_show', 'cancelled'] }, feedback: { type: 'string' } }, required: ['status'] } },
   { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts or properties.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties'] } }, required: ['what'] } },
+  { name: 'estate_enquiry_watch', description: 'Real estate: turn the enquiry watch on or off. When on, a scheduled task scans the connected inboxes for new property enquiries, saves contacts, starts deals and drafts approval-gated replies.', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['enable', 'disable'] }, every_minutes: { type: 'integer', description: 'How often to scan, minimum 60. Default 120.' } }, required: ['action'] } },
   { name: 'estate_seller_report', description: 'Real estate: create a seller progress report for a property as a downloadable markdown file.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
 ];
 
@@ -102,6 +103,13 @@ const ESTATE_OPEN = ESTATE_STAGES.slice(0, 6);
 const estateSAST = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(d instanceof Date ? d : new Date(d)).replace(',', '') + ' SAST';
 const estateDateFmt = (d) => { const x = d instanceof Date ? d : new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 const estateDate = (v) => { const s = String(v ?? '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null; };
+
+export const ESTATE_WATCH_TITLE = 'Enquiry watch';
+export const ESTATE_WATCH_INSTRUCTION = [
+  'Enquiry watch for the estate agency. Search the connected inboxes with mail_search for new property enquiries from the last day, with queries like: newer_than:1d (viewing OR offer OR property OR listing OR "for sale" OR "to rent").',
+  'For each genuine new enquiry: 1) check estate_list contacts for the sender email address first - never create duplicates; 2) save new senders with estate_add_contact (role buyer or tenant, include their email); 3) if a specific property is mentioned, start a deal with estate_add_deal at stage enquiry, next_action "Reply to enquiry", next_action_date tomorrow; 4) draft a reply with propose_account_email: thank them, answer only from facts on record (never invent price, levies, rates or availability - say the agent will confirm), and ask the qualifying questions: budget, bond pre-approval, timeframe, and whether they want a viewing.',
+  'Nothing sends without the customer approval. End with a short report: enquiries found, contacts and deals created, drafts waiting for approval. If no inbox is connected or nothing is found, say so plainly.',
+].join(' ');
 
 async function estateFindProperty(c, ref, clip) {
   const text = clip(ref, 200).trim();
@@ -399,6 +407,27 @@ export async function runTool(name, args, ctx) {
         return r.rowCount ? r.rows.map((x) => `- ${x.title}${x.asking_price ? ` | ${x.asking_price}` : ''} | ${x.status.replace('_', ' ')}`).join('\n') : 'No properties yet.';
       }
       return 'Choose what to list: pipeline, due, viewings, contacts or properties.';
+    }
+    case 'estate_enquiry_watch': {
+      if (ctx.mode === 'task') return 'Scheduled runs cannot change the enquiry watch. Ask in chat.';
+      const existing = (await c.query("SELECT id, status FROM tasks WHERE title=$1 AND status='active'", [ESTATE_WATCH_TITLE])).rows[0];
+      if (a.action === 'enable') {
+        if (existing) return 'The enquiry watch is already on.';
+        const ri = await resolveIntegration(c, '');
+        if (ri.error) return 'Connect Gmail or Outlook on the Integrations page first, then ask me to start the watch again.';
+        const active = (await c.query("SELECT count(*)::int n FROM tasks WHERE status='active'")).rows[0].n;
+        if (active >= 10) return 'Limit reached: 10 active tasks. Pause one first.';
+        const every = Math.max(60, Math.min(60 * 24, Number(a.every_minutes) || 120));
+        await c.query(
+          "INSERT INTO tasks (tenant_id, agent_id, title, instruction, interval_minutes, next_run_at, created_by) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4, now() + ($5 || ' minutes')::interval, $6)",
+          [ctx.agentId, ESTATE_WATCH_TITLE, ESTATE_WATCH_INSTRUCTION, every, String(every), `agent:${ctx.agentName || 'hi'}`]);
+        await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.watch_enabled', { every_minutes: every });
+        return `Enquiry watch on. Every ${every} minutes I will scan the connected inbox for new property enquiries, save contacts, start deals and draft replies for your approval. Nothing sends on its own.`;
+      }
+      if (!existing) return 'The enquiry watch is not on.';
+      await c.query("UPDATE tasks SET status='paused' WHERE id=$1", [existing.id]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.watch_disabled', {});
+      return 'Enquiry watch off. You can turn it back on any time.';
     }
     case 'estate_seller_report': {
       const prop = await estateFindProperty(c, a.property, clip);
