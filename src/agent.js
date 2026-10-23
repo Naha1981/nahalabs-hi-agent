@@ -273,13 +273,25 @@ export async function runDueTasks({ llm = chat, fetchImpl = fetch, lookup, now =
   const due = await withSystem((c) => c.query('SELECT id FROM tenants WHERE NOT paused').then((r) => r.rows.map((x) => x.id)));
   const out = [];
   for (const tenantId of due) {
+    // Claim due jobs with row locks and update their next-run time in the same transaction.
+    // Parallel cron invocations skip rows already claimed instead of executing the same task twice.
     const tasks = await withTenant(tenantId, (c) => c.query(
-      "SELECT t.*, (SELECT email FROM users WHERE tenant_id=t.tenant_id ORDER BY created_at LIMIT 1) email FROM tasks t WHERE status='active' AND next_run_at <= $1 ORDER BY next_run_at LIMIT $2", [now, limitPerTick])).then((r) => r.rows);
+      `WITH due AS (
+         SELECT id, next_run_at AS due_at FROM tasks
+         WHERE status='active' AND next_run_at <= $1
+         ORDER BY next_run_at LIMIT $2 FOR UPDATE SKIP LOCKED
+       ), claimed AS (
+         UPDATE tasks t
+         SET last_run_at=$1,
+             next_run_at=CASE WHEN t.interval_minutes IS NULL THEN NULL ELSE $1::timestamptz + (t.interval_minutes::text || ' minutes')::interval END,
+             status=CASE WHEN t.interval_minutes IS NULL THEN 'done' ELSE t.status END
+         FROM due d WHERE t.id=d.id
+         RETURNING t.id
+       )
+       SELECT t.*, d.due_at, (SELECT email FROM users WHERE tenant_id=t.tenant_id ORDER BY created_at LIMIT 1) email
+       FROM tasks t JOIN claimed c ON c.id=t.id JOIN due d ON d.id=t.id ORDER BY d.due_at`,
+      [now, limitPerTick])).then((r) => r.rows);
     for (const t of tasks) {
-      // advance first so a crash or slow run cannot trigger a double run
-      await withTenant(tenantId, (c) => t.interval_minutes
-        ? c.query("UPDATE tasks SET last_run_at=$2, next_run_at=$2::timestamptz + ($3 || ' minutes')::interval WHERE id=$1", [t.id, now, String(t.interval_minutes)])
-        : c.query("UPDATE tasks SET last_run_at=$2, status='done', next_run_at=NULL WHERE id=$1", [t.id, now]));
       const r = await runAgent({ tenantId, userEmail: t.email, agentId: t.agent_id, conversationId: null, userText: `Scheduled task "${t.title}": ${t.instruction}`, mode: 'task', taskId: t.id, llm, fetchImpl, lookup, now });
       out.push({ tenant: tenantId, task: t.id, status: r.status || r.error });
     }
