@@ -85,7 +85,7 @@ export const TOOL_SCHEMAS = [
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
   { name: 'estate_add_contact', description: 'Real estate: save a contact such as a buyer, seller, landlord or tenant. Existing contacts with the same email are merged rather than duplicated.', parameters: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['buyer', 'seller', 'landlord', 'tenant', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, notes: { type: 'string' } }, required: ['name'] } },
   { name: 'estate_add_property', description: 'Real estate: save a property or listing.', parameters: { type: 'object', properties: { title: { type: 'string', description: 'Address or short name, e.g. "12 Oak Street, Sandton"' }, asking_price: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, notes: { type: 'string' } }, required: ['title'] } },
-  { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
+  { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, contact_email: { type: 'string', description: 'Email address used to match an existing contact without making duplicates' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, note: { type: 'string' } } } },
   { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
   { name: 'estate_log_viewing', description: 'Real estate: record the outcome and feedback of a viewing (done, no_show or cancelled).', parameters: { type: 'object', properties: { property: { type: 'string' }, viewing_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'no_show', 'cancelled'] }, feedback: { type: 'string' } }, required: ['status'] } },
@@ -114,7 +114,7 @@ export function parseEstateDateTime(value) {
 export const ESTATE_WATCH_TITLE = 'Enquiry watch';
 export const ESTATE_WATCH_INSTRUCTION = [
   'Enquiry watch for the estate agency. Search the connected inboxes with mail_search for new property enquiries from the last day, with queries like: newer_than:1d (viewing OR offer OR property OR listing OR "for sale" OR "to rent").',
-  'For each genuine new enquiry: use the sender email as the contact identity and call estate_add_contact (role buyer or tenant); that tool merges existing contacts by email so do not create a second record. If a specific property is mentioned, start a deal with estate_add_deal at stage enquiry, next_action "Reply to enquiry", next_action_date tomorrow; duplicate property/contact/stage enquiries are safely ignored. Draft a reply with propose_account_email: thank them, answer only from facts on record (never invent price, levies, rates or availability - say the agent will confirm), and ask the qualifying questions: budget, bond pre-approval, timeframe, and whether they want a viewing.',
+  'For each genuine new enquiry: use the sender email as the contact identity and call estate_add_contact (role buyer or tenant); that tool merges existing contacts by email so do not create a second record. If a specific property is mentioned, start a deal with estate_add_deal at stage enquiry and pass both the contact name returned by estate_add_contact and contact_email from the message, next_action "Reply to enquiry", next_action_date tomorrow; duplicate property/contact/stage enquiries are safely ignored. Draft a reply with propose_account_email: thank them, answer only from facts on record (never invent price, levies, rates or availability - say the agent will confirm), and ask the qualifying questions: budget, bond pre-approval, timeframe, and whether they want a viewing.',
   'Nothing sends without the customer approval. End with a short report: enquiries found, contacts and deals created, drafts waiting for approval. If no inbox is connected or nothing is found, say so plainly.',
 ].join(' ');
 
@@ -247,6 +247,7 @@ export async function runTool(name, args, ctx) {
         const processed = track ? (await c.query("SELECT provider, account_email, message_id FROM estate_processed_mail WHERE processed_at > now() - interval '14 days'")).rows : [];
         const processedKeys = new Set(processed.map((m) => `${m.provider}\u0000${String(m.account_email).toLowerCase()}\u0000${m.message_id}`));
         const rows = await mailSearch(tenantId, { query: clip(a.query, 200), max: track ? 100 : 25, fetchImpl: ctx.fetchImpl });
+        for (const m of (ctx.mailMessagesSeen || [])) processedKeys.add(`${m.provider}\u0000${String(m.account_email).toLowerCase()}\u0000${m.message_id}`);
         const fresh = rows.filter((m) => !track || !m.id || !processedKeys.has(`${m.provider}\u0000${String(m.account).toLowerCase()}\u0000${m.id}`));
         if (track) {
           for (const m of fresh) if (m.id && !m.error) ctx.mailMessagesSeen.push({ provider: m.provider, account_email: m.account, message_id: m.id });
@@ -324,7 +325,16 @@ export async function runTool(name, args, ctx) {
       const prop = await estateGetOrCreateProperty(c, a.property, clip);
       if (prop.error) return prop.error;
       let contactId = null, contactName = '', contactCreated = false;
-      if (String(a.contact ?? '').trim()) {
+      const contactEmail = clip(a.contact_email, 120).trim();
+      if (contactEmail) {
+        let con = (await c.query("SELECT id, name FROM re_contacts WHERE lower(btrim(email))=lower($1) ORDER BY created_at LIMIT 1", [contactEmail])).rows[0];
+        if (!con) {
+          const contactDisplayName = clip(a.contact, 120).trim() || contactEmail;
+          con = (await c.query("INSERT INTO re_contacts (tenant_id, name, role, email) VALUES (current_setting('app.tenant_id')::uuid,$1,'buyer',$2) RETURNING id, name", [contactDisplayName, contactEmail])).rows[0];
+          contactCreated = true;
+        }
+        contactId = con.id; contactName = con.name;
+      } else if (String(a.contact ?? '').trim()) {
         const con = await estateGetOrCreateContact(c, a.contact, 'buyer', clip);
         if (con.error) return con.error;
         contactId = con.row.id; contactName = con.row.name; contactCreated = !!con.created;
