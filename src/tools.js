@@ -247,8 +247,8 @@ export async function runTool(name, args, ctx) {
         const track = ctx.trackMailMessages && Array.isArray(ctx.mailMessagesSeen);
         const processed = track ? (await c.query("SELECT provider, account_email, message_id FROM estate_processed_mail WHERE processed_at > now() - interval '14 days'")).rows : [];
         const processedKeys = new Set(processed.map((m) => `${m.provider}\u0000${String(m.account_email).toLowerCase()}\u0000${m.message_id}`));
-        const rows = await mailSearch(tenantId, { query: clip(a.query, 200), max: track ? 10 : 25, excludeKeys: processedKeys, fetchImpl: ctx.fetchImpl });
         for (const m of (ctx.mailMessagesSeen || [])) processedKeys.add(`${m.provider}\u0000${String(m.account_email).toLowerCase()}\u0000${m.message_id}`);
+        const rows = await mailSearch(tenantId, { query: clip(a.query, 200), max: track ? 10 : 25, excludeKeys: processedKeys, fetchImpl: ctx.fetchImpl });
         const fresh = rows.filter((m) => !track || !m.id || !processedKeys.has(`${m.provider}\u0000${String(m.account).toLowerCase()}\u0000${m.id}`));
         if (track) {
           for (const m of fresh) if (m.id && !m.error) ctx.mailMessagesSeen.push({ provider: m.provider, account_email: m.account, message_id: m.id });
