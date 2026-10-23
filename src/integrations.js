@@ -136,23 +136,62 @@ const g = async (url, token, fetchImpl) => {
 };
 
 // ---- reads ----
-export async function mailSearch(tenantId, { query = '', max = 5, fetchImpl = fetch } = {}) {
+// Convert the watch's Gmail-like time filter to Microsoft Graph OData. Graph does not understand
+// Gmail's newer_than: syntax, so remove it from $search and express it as receivedDateTime.
+export function outlookMailListUrl(query = '', max = 25, now = new Date()) {
+  const params = new URLSearchParams();
+  params.set('$top', String(Math.max(1, Math.min(50, Number(max) || 25))));
+  params.set('$select', 'id,subject,from,receivedDateTime,bodyPreview');
+  const age = String(query).match(/\\bnewer_than:(\\d+)([dhm])/i);
+  if (age) {
+    const unit = age[2].toLowerCase();
+    const multiplier = unit === 'd' ? 86400000 : unit === 'h' ? 3600000 : 60000;
+    params.set('$filter', `receivedDateTime ge ${new Date(now.getTime() - Number(age[1]) * multiplier).toISOString()}`);
+    params.set('$orderby', 'receivedDateTime desc');
+  }
+  const search = String(query).replace(/\\bnewer_than:\\d+[dhm]\\b/ig, ' ').replace(/[()]/g, ' ').replace(/\\s+/g, ' ').trim();
+  if (search) params.set('$search', `"${search}"`);
+  return `https://graph.microsoft.com/v1.0/me/messages?${params.toString()}`;
+}
+
+export async function mailSearch(tenantId, { query = '', max = 25, fetchImpl = fetch } = {}) {
+  max = Math.max(1, Math.min(100, Number(max) || 25));
+  const pageSize = Math.min(50, max);
   return withLiveIntegrations(tenantId, fetchImpl, async (c, live) => {
     const out = [];
     for (const acc of live) {
       try {
         if (acc.provider === 'google') {
-          const list = await g(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${max}${query ? '&q=' + encodeURIComponent(query) : ''}`, acc.token, fetchImpl);
-          for (const m of (list.messages || []).slice(0, max)) {
-            const msg = await g(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`, acc.token, fetchImpl);
-            const h = Object.fromEntries((msg.payload?.headers || []).map((x) => [x.name.toLowerCase(), x.value]));
-            out.push({ account: acc.account, provider: 'gmail', from: String(h.from || '').slice(0, 120), subject: String(h.subject || '').slice(0, 160), date: String(h.date || '').slice(0, 40), snippet: String(msg.snippet || '').slice(0, 200) });
+          let url = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${pageSize}${query ? '&q=' + encodeURIComponent(query) : ''}`;
+          let pages = 0;
+          while (url && out.filter((m) => m.account === acc.account && m.id).length < max && pages < 5) {
+            const list = await g(url, acc.token, fetchImpl);
+            for (const m of (list.messages || [])) {
+              if (out.filter((x) => x.account === acc.account && x.id).length >= max) break;
+              const msg = await g(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`, acc.token, fetchImpl);
+              const h = Object.fromEntries((msg.payload?.headers || []).map((x) => [String(x.name).toLowerCase(), x.value]));
+              out.push({ id: String(m.id), account: acc.account, provider: 'gmail', from: String(h.from || '').slice(0, 120), subject: String(h.subject || '').slice(0, 160), date: String(h.date || '').slice(0, 40), snippet: String(msg.snippet || '').slice(0, 500) });
+            }
+            pages++;
+            url = list.nextPageToken && out.filter((m) => m.account === acc.account && m.id).length < max
+              ? `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${pageSize}${query ? '&q=' + encodeURIComponent(query) : ''}&pageToken=${encodeURIComponent(list.nextPageToken)}`
+              : null;
           }
         } else {
-          const j = await g(`https://graph.microsoft.com/v1.0/me/messages?$top=${max}&$select=subject,from,receivedDateTime,bodyPreview${query ? '&$search="' + encodeURIComponent(query) + '"' : ''}`, acc.token, fetchImpl);
-          for (const m of j.value || []) out.push({ account: acc.account, provider: 'outlook', from: String(m.from?.emailAddress?.address || '').slice(0, 120), subject: String(m.subject || '').slice(0, 160), date: String(m.receivedDateTime || '').slice(0, 40), snippet: String(m.bodyPreview || '').slice(0, 200) });
+          let url = outlookMailListUrl(query, pageSize);
+          let pages = 0, count = 0;
+          while (url && count < max && pages < 5) {
+            const j = await g(url, acc.token, fetchImpl);
+            for (const m of (j.value || [])) {
+              if (count >= max) break;
+              out.push({ id: String(m.id || ''), account: acc.account, provider: 'outlook', from: String(m.from?.emailAddress?.address || '').slice(0, 120), subject: String(m.subject || '').slice(0, 160), date: String(m.receivedDateTime || '').slice(0, 40), snippet: String(m.bodyPreview || '').slice(0, 500) });
+              count++;
+            }
+            pages++;
+            url = j['@odata.nextLink'] && count < max ? j['@odata.nextLink'] : null;
+          }
         }
-      } catch (e) { out.push({ account: acc.account, provider: acc.provider, error: String(e.message).slice(0, 80) }); }
+      } catch (e) { out.push({ account: acc.account, provider: acc.provider === 'google' ? 'gmail' : 'outlook', error: String(e.message).slice(0, 80) }); }
     }
     return out;
   });
