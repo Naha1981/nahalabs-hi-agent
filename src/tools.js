@@ -99,6 +99,7 @@ const clip = (s, n) => String(s ?? '').slice(0, n);
 export const ESTATE_STAGES = ['enquiry', 'viewing', 'offer', 'otp_signed', 'bond_pending', 'transfer_attorneys', 'registered', 'fallen_through'];
 export const ESTATE_STAGE_LABEL = { enquiry: 'Enquiry', viewing: 'Viewing', offer: 'Offer', otp_signed: 'OTP signed', bond_pending: 'Bond pending', transfer_attorneys: 'Transfer attorneys', registered: 'Registered', fallen_through: 'Fallen through' };
 const ESTATE_OPEN = ESTATE_STAGES.slice(0, 6);
+const estateSAST = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(d instanceof Date ? d : new Date(d)).replace(',', '') + ' SAST';
 const estateDateFmt = (d) => { const x = d instanceof Date ? d : new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 const estateDate = (v) => { const s = String(v ?? '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null; };
 
@@ -343,7 +344,7 @@ export async function runTool(name, args, ctx) {
         "INSERT INTO re_viewings (tenant_id, property_id, contact_id, starts_at, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4) RETURNING id",
         [prop.row.id, contactId, when.toISOString(), clip(a.notes, 500)]);
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.viewing_booked', { viewing_id: r.rows[0].id });
-      return `Viewing of ${prop.row.title} booked for ${when.toISOString().slice(0, 16).replace('T', ' ')} UTC${contactName ? ` with ${contactName}` : ''}.`;
+      return `Viewing of ${prop.row.title} booked for ${estateSAST(when)}${contactName ? ` with ${contactName}` : ''}.`;
     }
     case 'estate_log_viewing': {
       let viewing = null;
@@ -387,7 +388,7 @@ export async function runTool(name, args, ctx) {
           `SELECT v.starts_at, v.status, p.title AS property, co.name AS contact
            FROM re_viewings v JOIN re_properties p ON p.id=v.property_id LEFT JOIN re_contacts co ON co.id=v.contact_id
            WHERE v.status='scheduled' AND v.starts_at > now() - interval '1 day' ORDER BY v.starts_at LIMIT 20`);
-        return r.rowCount ? r.rows.map((x) => `- ${new Date(x.starts_at).toISOString().slice(0, 16).replace('T', ' ')} UTC | ${x.property}${x.contact ? ` | ${x.contact}` : ''}`).join('\n') : 'No upcoming viewings.';
+        return r.rowCount ? r.rows.map((x) => `- ${estateSAST(x.starts_at)} | ${x.property}${x.contact ? ` | ${x.contact}` : ''}`).join('\n') : 'No upcoming viewings.';
       }
       if (a.what === 'contacts') {
         const r = await c.query('SELECT name, role, phone, email FROM re_contacts ORDER BY created_at DESC LIMIT 20');

@@ -68,12 +68,12 @@ a.nl:hover{background:var(--soft)}
 `;
 
 const GROUPS = [
-  ['', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Tasks', '/app/tasks']]],
+  ['', [['Agent', '/app/agent'], ['Estate', '/app/estate'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Tasks', '/app/tasks']]],
   ['Work', [['Browser', '/app/browser'], ['Drive', '/app/drive'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents']]],
   ['Account', [['Memory', '/app/memory'], ['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']]],
 ];
 const sideNav = GROUPS.map(([g, links]) => `${g ? `<div class="grp">${g}</div>` : ''}${links.map(([n, h]) => `<a class="nl" href="${h}">${n}</a>`).join('')}`).join('');
-const TABS = [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Tasks', '/app/tasks'], ['More', '/app/menu']];
+const TABS = [['Agent', '/app/agent'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Tasks', '/app/tasks'], ['More', '/app/menu']];
 const tabs = TABS.map(([n, h]) => `<a href="${h}">${n}</a>`).join('');
 
 export function page({ title, user, body, flash }) {

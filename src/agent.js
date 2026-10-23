@@ -48,6 +48,14 @@ const TOOL_LABELS = {
   propose_account_email: 'Drafted an email',
   propose_calendar_event: 'Proposed a calendar event',
   propose_email: 'Drafted an email',
+  estate_add_contact: 'Saved a contact',
+  estate_add_property: 'Saved a property',
+  estate_add_deal: 'Started a deal',
+  estate_update_deal: 'Updated a deal',
+  estate_add_viewing: 'Booked a viewing',
+  estate_log_viewing: 'Logged viewing feedback',
+  estate_list: 'Checked your estate records',
+  estate_seller_report: 'Created a seller report',
 };
 export function toolLabel(name) {
   if (TOOL_LABELS[name]) return TOOL_LABELS[name];

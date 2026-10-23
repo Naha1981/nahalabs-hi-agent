@@ -108,12 +108,12 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     return render(reply, null, 'HI - the app that does the desk work', `
       <section class="hero">
         <h1>HI does the desk work.</h1>
-        <p class="lede">It finds tenders worth bidding for, drafts your emails, remembers your business and works on a schedule. You approve everything before anything goes out.</p>
+        <p class="lede">Built for South African estate agencies: it tracks your deals, viewings and follow-ups, drafts your client emails, remembers your business and works on a schedule. You approve everything before anything goes out.</p>
         <p class="cta"><a class="btn" href="/signup">Start free</a> <a class="btn sec" href="/login">Sign in</a></p>
         <div class="shot"><img src="/home-app.jpg" alt="The HI app answering: three new tenders matched to a cleaning business, each with a closing date, fit reason and source"></div>
       </section>
       <section class="feat">
-        <div class="card"><b>Finds work</b><br>New tenders matched to your business, each with the fit reasons and the source link.</div>
+        <div class="card"><b>Tracks deals</b><br>Properties, contacts, viewings and deal stages with next actions, so no follow-up slips.</div>
         <div class="card"><b>Drafts for you</b><br>Emails, briefs and replies, ready to check. Nothing sends without your approval.</div>
         <div class="card"><b>Remembers</b><br>Your clients, your pricing, your documents - it keeps what matters and uses it.</div>
         <div class="card"><b>Works on schedule</b><br>Recurring jobs and a morning brief, reported back to you.</div>
@@ -589,7 +589,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       return `<div class="card"><b>${label}</b> <span class="chip">${rows.length}</span><table style="margin-top:8px">${rows.map((d) => `<tr><td>${esc(d.property)}</td><td>${esc(d.contact || '')}</td><td>${esc(d.next_action || '')}${d.next_action_date ? ` <span class="mut">${fd(d.next_action_date)}</span>` : ''}</td></tr>`).join('')}</table></div>`;
     }).join('');
     const dueRows = due.map((d) => `<tr><td>${fd(d.next_action_date)}</td><td>${esc(d.property)}</td><td>${esc(d.contact || '')}</td><td>${esc(d.next_action)}</td></tr>`).join('');
-    const viewRows = data.viewings.map((v) => `<tr><td>${new Date(v.starts_at).toISOString().slice(0, 16).replace('T', ' ')} UTC</td><td>${esc(v.property)}</td><td>${esc(v.contact || '')}</td></tr>`).join('');
+    const viewRows = data.viewings.map((v) => `<tr><td>${new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(v.starts_at)).replace(',', '')} SAST</td><td>${esc(v.property)}</td><td>${esc(v.contact || '')}</td></tr>`).join('');
     const empty = !data.deals.length && !data.viewings.length;
     return render(reply, u, 'Estate', `
       <h1><b>Estate</b> your deals, viewings and follow-ups.</h1>
@@ -632,7 +632,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     }).join('')}</div>`;
     const talk = voiceConfigured() ? `<div id="talkbox" data-csrf="${esc(u.csrf)}" data-c="${d.conv ? d.conv.id : ''}" style="margin-top:8px"><button type="button" id="talkbtn" class="sec">Talk</button> <span id="talkstatus" class="mut"></span></div><script src="/talk.js" defer></script>` : '';
     const switcher = d.agents.length > 1 ? `<span class="mut small">${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join(' &middot; ')}</span>` : '';
-    const starters = ['Any new tenders worth bidding for this week?', 'Draft my Monday morning brief', 'Research a supplier and cite your sources'];
+    const starters = ['Add a deal for 12 Oak Street with buyer Sipho, offer stage', 'What follow-ups are due this week?', 'Seller report for 12 Oak Street'];
     const emptyChat = `<div class="card empty"><p style="font-size:18px;color:var(--text)"><b>Ask HI anything.</b></p><p>Research with cited sources, remember a fact about your business, find tenders, schedule a job. HI drafts - you approve anything that leaves your account.</p>${starters.map((q) => `<form method="post" action="/app/agent/message" class="ask">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="text" value="${esc(q)}"><button class="sec">${esc(q)}</button></form>`).join('')}</div>`;
     return render(reply, u, 'Agent', `<div class="row" style="margin-bottom:2px"><h1 style="margin:0">Agent</h1><span>${switcher} ${agentModelEnabled() ? '' : '<span class="bad small">AI model not configured</span>'}</span></div>
       ${d.msgs.length ? '' : emptyChat}${thread}
