@@ -150,7 +150,7 @@ export function outlookMailListUrl(query = '', max = 25, now = new Date()) {
     params.set('$orderby', 'receivedDateTime desc');
   }
   const search = String(query).replace(/\bnewer_than:\d+[dhm]\b/ig, ' ').replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (search) params.set('$search', `"${search}"`);
+  if (search) params.set('$search', '"' + search.replace(/"/g, String.fromCharCode(92) + '"') + '"');
   return `https://graph.microsoft.com/v1.0/me/messages?${params.toString()}`;
 }
 
