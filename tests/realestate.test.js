@@ -60,7 +60,7 @@ test('estate flow: contact, property, deal, update, viewing, report', async () =
   assert.match(file.content, /Stage: OTP signed \| Sipho Dube/);
   assert.match(file.content, /## Current interest and deals/);
   assert.match(file.content, /## Closed outcomes/);
-  assert.match(file.content, /Stage: Fallen through \\| Sipho Dube/);
+  assert.match(file.content, /Stage: Fallen through \| Sipho Dube/);
   assert.match(file.content, /Loved the garden/);
 });
 
