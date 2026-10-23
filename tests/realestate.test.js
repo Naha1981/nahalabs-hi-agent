@@ -123,6 +123,7 @@ test('estate enquiry watch: needs an inbox, enables once, disables', async () =>
   assert.match(await call(B, 'estate_enquiry_watch', { action: 'enable' }), /Connect Gmail or Outlook/);
   // Give tenant A a connected google integration
   await withTenant(A, (c) => c.query("INSERT INTO integrations (tenant_id, provider, account_email) VALUES (current_setting('app.tenant_id')::uuid,'google','agent@harbourview.test')"));
+  await withTenant(A, (c) => c.query("INSERT INTO integrations (tenant_id, provider, account_email) VALUES (current_setting('app.tenant_id')::uuid,'microsoft','agent-outlook@harbourview.test')"));
   assert.match(await call(A, 'estate_enquiry_watch', { action: 'enable', every_minutes: 180 }), /Enquiry watch on\. Every 180 minutes/);
   const task = await withTenant(A, (c) => c.query("SELECT title, interval_minutes, status, instruction FROM tasks WHERE title='Enquiry watch'").then((r) => r.rows[0]));
   assert.equal(task.interval_minutes, 180);
