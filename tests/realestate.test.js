@@ -100,3 +100,23 @@ test('estate enquiry watch: needs an inbox, enables once, disables', async () =>
   assert.equal(await withTenant(A, (c) => c.query("SELECT status FROM tasks WHERE title='Enquiry watch'").then((r) => r.rows[0].status)), 'paused');
   assert.match(await call(A, 'estate_enquiry_watch', { action: 'disable' }), /not on/);
 });
+
+test('enquiry watch is inert for existing tenants: no task, nothing runs', async () => {
+  // Fresh tenant C, as an existing tenant after deploy: zero estate-related rows, zero tasks.
+  const o = owner(db.ownerUrl); await o.connect();
+  const C = (await o.query("INSERT INTO tenants (name) VALUES ('Gamma') RETURNING id")).rows[0].id;
+  await o.end();
+  const counts = await withTenant(C, async (c) => ({
+    tasks: (await c.query('SELECT count(*)::int n FROM tasks')).rows[0].n,
+    contacts: (await c.query('SELECT count(*)::int n FROM re_contacts')).rows[0].n,
+    deals: (await c.query('SELECT count(*)::int n FROM re_deals')).rows[0].n,
+    approvals: (await c.query('SELECT count(*)::int n FROM approvals')).rows[0].n,
+  }));
+  assert.deepEqual(counts, { tasks: 0, contacts: 0, deals: 0, approvals: 0 });
+  // The scheduler finds nothing to run for C.
+  const { runDueTasks } = await import('../src/agent.js');
+  const ran = await runDueTasks({ llm: async () => ({ content: 'x', tool_calls: [] }), fetchImpl: async () => { throw new Error('no network'); }, lookup: async () => [{ address: '93.184.216.34' }] });
+  assert.equal(ran.filter((x) => String(x.tenant) === C).length, 0);
+  // And in unattended mode the watch cannot be switched on or modified.
+  assert.match(await withTenant(C, (c) => runTool('estate_enquiry_watch', { action: 'enable' }, { c, tenantId: C, agentId: AGENT, agentName: 'hi', userEmail: 'c@d.e', sources: [], steps: [], mode: 'task' })), /cannot change the enquiry watch/);
+});
