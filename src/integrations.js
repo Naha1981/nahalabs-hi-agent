@@ -142,14 +142,14 @@ export function outlookMailListUrl(query = '', max = 25, now = new Date()) {
   const params = new URLSearchParams();
   params.set('$top', String(Math.max(1, Math.min(50, Number(max) || 25))));
   params.set('$select', 'id,subject,from,receivedDateTime,bodyPreview');
-  const age = String(query).match(/\\bnewer_than:(\\d+)([dhm])/i);
+  const age = String(query).match(/\bnewer_than:(\d+)([dhm])/i);
   if (age) {
     const unit = age[2].toLowerCase();
     const multiplier = unit === 'd' ? 86400000 : unit === 'h' ? 3600000 : 60000;
     params.set('$filter', `receivedDateTime ge ${new Date(now.getTime() - Number(age[1]) * multiplier).toISOString()}`);
     params.set('$orderby', 'receivedDateTime desc');
   }
-  const search = String(query).replace(/\\bnewer_than:\\d+[dhm]\\b/ig, ' ').replace(/[()]/g, ' ').replace(/\\s+/g, ' ').trim();
+  const search = String(query).replace(/\bnewer_than:\d+[dhm]\b/ig, ' ').replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
   if (search) params.set('$search', `"${search}"`);
   return `https://graph.microsoft.com/v1.0/me/messages?${params.toString()}`;
 }
