@@ -161,7 +161,8 @@ export async function runAgent({ tenantId, userEmail, agentId, conversationId, u
   if (ctxInfo.missing) return { error: 'Agent not found.' };
   const { agent, convId, runId } = ctxInfo;
 
-  const sources = [], steps = [];
+  const sources = [], steps = [], mailMessagesSeen = [];
+  const trackMailMessages = mode === 'task' && userText.startsWith('Scheduled task \"Enquiry watch\":');
   const nonce = randomBytes(8).toString('hex');
   let answer = '', status = 'done', used = ctxInfo.used;
   const msgs = [{ role: 'system', content: systemPrompt({ agent, company: ctxInfo.company, core: ctxInfo.core, recalled: ctxInfo.recalled, mode, now, skill, voice, summary: ctxInfo.convSummary }) },
@@ -205,7 +206,7 @@ ${r.answer}`)
             msgs.push({ role: 'tool', tool_call_id: t.id, content: wrapToolResult(nonce, 'run_plan', String(planResult).slice(0, 8000)) });
             continue;
           }
-          const result = await withTenant(tenantId, (c) => runTool(t.name, t.args, { c, tenantId, userEmail, agentId, agentName: agent.name, fetchImpl, lookup, sources, steps, mode })).catch((e) => 'Tool error: ' + String(e.message).slice(0, 120));
+          const result = await withTenant(tenantId, (c) => runTool(t.name, t.args, { c, tenantId, userEmail, agentId, agentName: agent.name, fetchImpl, lookup, sources, steps, mode, taskId, trackMailMessages, mailMessagesSeen })).catch((e) => 'Tool error: ' + String(e.message).slice(0, 120));
           steps.push({ type: 'tool', name: t.name, args: JSON.stringify(t.args || {}).slice(0, 200) });
           msgs.push({ role: 'tool', tool_call_id: t.id, content: wrapToolResult(nonce, t.name, String(result).slice(0, 8000)) });
         }
@@ -218,6 +219,12 @@ ${r.answer}`)
   await withTenant(tenantId, async (c) => {
     await c.query("INSERT INTO messages (tenant_id, conversation_id, role, content, sources, steps) VALUES (current_setting('app.tenant_id')::uuid,$1,'assistant',$2,$3,$4)", [convId, answer, JSON.stringify(sources), JSON.stringify(steps)]);
     await c.query('UPDATE runs SET status=$2, result=$3, steps=$4, sources=$5 WHERE id=$1', [runId, status, answer, JSON.stringify(steps), JSON.stringify(sources)]);
+    // Persist message IDs only after a complete successful watch run, so a failed model run can retry.
+    if (trackMailMessages && status === 'done' && mailMessagesSeen.length) {
+      const unique = new Map(mailMessagesSeen.map((m) => [String(m.provider) + '\\u0000' + String(m.account_email).toLowerCase() + '\\u0000' + m.message_id, m]));
+      for (const m of unique.values()) await c.query("INSERT INTO estate_processed_mail (tenant_id, provider, account_email, message_id) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3) ON CONFLICT (tenant_id, provider, account_email, message_id) DO NOTHING", [m.provider, m.account_email, m.message_id]);
+      await c.query("DELETE FROM estate_processed_mail WHERE processed_at < now() - interval '14 days'");
+    }
     await audit(c, tenantId, `agent:${agent.name}`, mode === 'task' ? 'task.run' : 'chat.reply', { run_id: runId, status, tools: steps.filter((s) => s.type === 'tool').map((s) => s.name) });
   });
   // Conversation compaction: fold older messages into a rolling summary so long chats keep their context.
