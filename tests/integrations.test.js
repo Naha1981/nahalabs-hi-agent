@@ -5,7 +5,8 @@ import { withTenant, withSystem } from '../src/db.js';
 import { buildApp } from '../src/server.js';
 import { ensureDefaultAgent } from '../src/agent.js';
 import { decideApproval } from '../src/core.js';
-import { mailSearch, calendarUpcoming } from '../src/integrations.js';
+import { mailSearch, calendarUpcoming, outlookMailListUrl } from '../src/integrations.js';
+import { runTool } from '../src/tools.js';
 
 process.env.HI_INVITE_CODES = 'invite-test-code';
 process.env.SIGNUP_RATE_MAX = '100';
@@ -86,6 +87,47 @@ test('mail search and upcoming calendar read the connected account', async () =>
   assert.equal(cal[0].title, 'Site visit');
   // tenant B has no connections
   assert.deepEqual(await mailSearch(B.tenantId, { fetchImpl: fakeFetch }), []);
+});
+
+
+test('Gmail message search follows pagination and returns stable message IDs', async () => {
+  const pagingFetch = async (url) => {
+    url = String(url);
+    const json = (j) => ({ ok: true, status: 200, json: async () => j });
+    if (url.includes('/messages?')) {
+      const page = new URL(url).searchParams.get('pageToken');
+      return page ? json({ messages: [{ id: 'm2' }] }) : json({ messages: [{ id: 'm1' }], nextPageToken: 'p2' });
+    }
+    if (url.includes('/messages/m1?')) return json({ snippet: 'first enquiry', payload: { headers: [{ name: 'Subject', value: 'Property viewing' }, { name: 'From', value: 'one@example.test' }, { name: 'Date', value: 'Fri, 23 Oct 2026' }] } });
+    if (url.includes('/messages/m2?')) return json({ snippet: 'second enquiry', payload: { headers: [{ name: 'Subject', value: 'Offer enquiry' }, { name: 'From', value: 'two@example.test' }, { name: 'Date', value: 'Fri, 23 Oct 2026' }] } });
+    throw new Error('unexpected paging request ' + url);
+  };
+  const rows = await mailSearch(A.tenantId, { query: 'quote', max: 2, fetchImpl: pagingFetch });
+  assert.deepEqual(rows.map((m) => m.id), ['m1', 'm2']);
+  assert.equal(rows[1].subject, 'Offer enquiry');
+});
+
+test('Outlook watcher search converts Gmail newer_than syntax to a Graph date filter', () => {
+  const query = 'newer_than:1d (viewing OR offer OR property OR listing OR "for sale" OR "to rent")';
+  const url = new URL(outlookMailListUrl(query, 50, new Date('2026-10-23T12:00:00.000Z')));
+  assert.equal(url.searchParams.get('$top'), '50');
+  assert.equal(url.searchParams.get('$filter'), 'receivedDateTime ge 2026-10-22T12:00:00.000Z');
+  assert.ok(!url.searchParams.get('$search').includes('newer_than:'));
+  assert.match(url.searchParams.get('$search'), /viewing OR offer OR property/);
+});
+
+test('scheduled enquiry watch suppresses message IDs already committed as processed', async () => {
+  const id = 'm1';
+  await withTenant(A.tenantId, (c) => c.query("INSERT INTO estate_processed_mail (tenant_id, provider, account_email, message_id) VALUES (current_setting('app.tenant_id')::uuid,'gmail','alpha@gmail.test',$1) ON CONFLICT DO NOTHING", [id]));
+  const collected = [];
+  const result = await withTenant(A.tenantId, (c) => runTool('mail_search', { query: 'quote' }, {
+    c, tenantId: A.tenantId, agentId: null, agentName: 'hi', userEmail: A.email,
+    fetchImpl: fakeFetch, sources: [], steps: [], mode: 'task', taskId: 'watch',
+    trackMailMessages: true, mailMessagesSeen: collected,
+  }));
+  assert.match(result, /already processed by the enquiry watch/);
+  assert.deepEqual(collected, []);
+  await withTenant(A.tenantId, (c) => c.query("DELETE FROM estate_processed_mail WHERE tenant_id=current_setting('app.tenant_id')::uuid AND provider='gmail' AND account_email='alpha@gmail.test' AND message_id=$1", [id]));
 });
 
 test('connected-account email send is approval-gated and executes from the connected Gmail', async () => {
