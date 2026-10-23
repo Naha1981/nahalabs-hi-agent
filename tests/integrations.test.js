@@ -130,6 +130,38 @@ test('scheduled enquiry watch suppresses message IDs already committed as proces
   await withTenant(A.tenantId, (c) => c.query("DELETE FROM estate_processed_mail WHERE tenant_id=current_setting('app.tenant_id')::uuid AND provider='gmail' AND account_email='alpha@gmail.test' AND message_id=$1", [id]));
 });
 
+
+test('enquiry watch paginates past already processed messages', async () => {
+  const pagingFetch = async (url) => {
+    url = String(url);
+    const json = (j) => ({ ok: true, status: 200, json: async () => j });
+    if (url.includes('/messages?')) {
+      const page = new URL(url).searchParams.get('pageToken');
+      return page ? json({ messages: [{ id: 'm2' }] }) : json({ messages: [{ id: 'm1' }], nextPageToken: 'p2' });
+    }
+    if (url.includes('/messages/m2?')) return json({ snippet: 'second enquiry', payload: { headers: [{ name: 'Subject', value: 'Offer enquiry' }, { name: 'From', value: 'two@example.test' }, { name: 'Date', value: 'Fri, 23 Oct 2026' }] } });
+    throw new Error('unexpected paging request ' + url);
+  };
+  const excludeKeys = new Set(['gmail' + String.fromCharCode(0) + 'alpha@gmail.test' + String.fromCharCode(0) + 'm1']);
+  const rows = await mailSearch(A.tenantId, { query: 'quote', max: 1, excludeKeys, fetchImpl: pagingFetch });
+  assert.deepEqual(rows.map((m) => m.id), ['m2']);
+});
+
+test('enquiry watch only marks message IDs returned by this run as processed', async () => {
+  const rows = await mailSearch(A.tenantId, { query: 'quote', max: 10, fetchImpl: fakeFetch });
+  const message = rows.find((m) => m.id === 'm1');
+  assert.ok(message, 'the fixture inbox message should be returned');
+  const seen = [{ provider: message.provider, account_email: message.account, message_id: message.id }];
+  const ctx = { tenantId: A.tenantId, agentId: null, agentName: 'hi', userEmail: A.email, fetchImpl: fakeFetch, sources: [], steps: [], mode: 'task', trackMailMessages: true, mailMessagesSeen: seen };
+  const result = await withTenant(A.tenantId, (c) => runTool('estate_mark_message_processed', { provider: message.provider, account_email: message.account, message_id: message.id }, { ...ctx, c }));
+  assert.match(result, /Marked the reviewed message/);
+  const saved = await withTenant(A.tenantId, (c) => c.query("SELECT count(*)::int n FROM estate_processed_mail WHERE provider='gmail' AND account_email='alpha@gmail.test' AND message_id='m1'").then((r) => r.rows[0].n));
+  assert.equal(saved, 1);
+  const refused = await withTenant(A.tenantId, (c) => runTool('estate_mark_message_processed', { provider: message.provider, account_email: message.account, message_id: message.id }, { ...ctx, c, mailMessagesSeen: [] }));
+  assert.match(refused, /was not returned by mail_search/);
+  await withTenant(A.tenantId, (c) => c.query("DELETE FROM estate_processed_mail WHERE provider='gmail' AND account_email='alpha@gmail.test' AND message_id='m1'"));
+});
+
 test('connected-account email send is approval-gated and executes from the connected Gmail', async () => {
   const integ = await withTenant(A.tenantId, (c) => c.query('SELECT id FROM integrations').then((r) => r.rows[0]));
   const { proposeAccountEmail } = await import('../src/integrations.js');
