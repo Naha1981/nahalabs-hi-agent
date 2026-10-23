@@ -154,7 +154,7 @@ export function outlookMailListUrl(query = '', max = 25, now = new Date()) {
   return `https://graph.microsoft.com/v1.0/me/messages?${params.toString()}`;
 }
 
-export async function mailSearch(tenantId, { query = '', max = 25, fetchImpl = fetch } = {}) {
+export async function mailSearch(tenantId, { query = '', max = 25, excludeKeys = new Set(), fetchImpl = fetch } = {}) {
   max = Math.max(1, Math.min(100, Number(max) || 25));
   const pageSize = Math.min(50, max);
   return withLiveIntegrations(tenantId, fetchImpl, async (c, live) => {
@@ -164,27 +164,34 @@ export async function mailSearch(tenantId, { query = '', max = 25, fetchImpl = f
         if (acc.provider === 'google') {
           let url = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${pageSize}${query ? '&q=' + encodeURIComponent(query) : ''}`;
           let pages = 0;
-          while (url && out.filter((m) => m.account === acc.account && m.id).length < max && pages < 5) {
+          const provider = 'gmail';
+          const seenCount = () => out.filter((m) => m.account === acc.account && m.id).length;
+          while (url && seenCount() < max && pages < 20) {
             const list = await g(url, acc.token, fetchImpl);
             for (const m of (list.messages || [])) {
-              if (out.filter((x) => x.account === acc.account && x.id).length >= max) break;
-              const msg = await g(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`, acc.token, fetchImpl);
+              if (seenCount() >= max) break;
+              const messageId = String(m.id || '');
+              if (!messageId || excludeKeys.has(`${provider}\u0000${String(acc.account).toLowerCase()}\u0000${messageId}`)) continue;
+              const msg = await g(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`, acc.token, fetchImpl);
               const h = Object.fromEntries((msg.payload?.headers || []).map((x) => [String(x.name).toLowerCase(), x.value]));
-              out.push({ id: String(m.id), account: acc.account, provider: 'gmail', from: String(h.from || '').slice(0, 120), subject: String(h.subject || '').slice(0, 160), date: String(h.date || '').slice(0, 40), snippet: String(msg.snippet || '').slice(0, 500) });
+              out.push({ id: messageId, account: acc.account, provider: 'gmail', from: String(h.from || '').slice(0, 120), subject: String(h.subject || '').slice(0, 160), date: String(h.date || '').slice(0, 40), snippet: String(msg.snippet || '').slice(0, 500) });
             }
             pages++;
-            url = list.nextPageToken && out.filter((m) => m.account === acc.account && m.id).length < max
+            url = list.nextPageToken && seenCount() < max
               ? `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${pageSize}${query ? '&q=' + encodeURIComponent(query) : ''}&pageToken=${encodeURIComponent(list.nextPageToken)}`
               : null;
           }
         } else {
           let url = outlookMailListUrl(query, pageSize);
+          const provider = 'outlook';
           let pages = 0, count = 0;
-          while (url && count < max && pages < 5) {
+          while (url && count < max && pages < 20) {
             const j = await g(url, acc.token, fetchImpl);
             for (const m of (j.value || [])) {
               if (count >= max) break;
-              out.push({ id: String(m.id || ''), account: acc.account, provider: 'outlook', from: String(m.from?.emailAddress?.address || '').slice(0, 120), subject: String(m.subject || '').slice(0, 160), date: String(m.receivedDateTime || '').slice(0, 40), snippet: String(m.bodyPreview || '').slice(0, 500) });
+              const messageId = String(m.id || '');
+              if (!messageId || excludeKeys.has(`${provider}\u0000${String(acc.account).toLowerCase()}\u0000${messageId}`)) continue;
+              out.push({ id: messageId, account: acc.account, provider: 'outlook', from: String(m.from?.emailAddress?.address || '').slice(0, 120), subject: String(m.subject || '').slice(0, 160), date: String(m.receivedDateTime || '').slice(0, 40), snippet: String(m.bodyPreview || '').slice(0, 500) });
               count++;
             }
             pages++;
