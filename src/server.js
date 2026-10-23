@@ -35,6 +35,7 @@ const STATIC = {
   '/boot.js': ['public/boot.js', 'text/javascript; charset=utf-8'],
   '/apple-touch-icon.png': ['public/apple-touch-icon.png', 'image/png'],
   '/home-app.jpg': ['public/home-app.jpg', 'image/jpeg'],
+  '/home-estate.jpg': ['public/home-estate.jpg', 'image/jpeg'],
   '/icons/icon-192.png': ['public/icons/icon-192.png', 'image/png'],
   '/icons/icon-512.png': ['public/icons/icon-512.png', 'image/png'],
   '/icons/maskable-512.png': ['public/icons/maskable-512.png', 'image/png'],
@@ -110,15 +111,15 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
         <h1>HI does the desk work.</h1>
         <p class="lede">Built for South African estate agencies: it tracks your deals, viewings and follow-ups, drafts your client emails, remembers your business and works on a schedule. You approve everything before anything goes out.</p>
         <p class="cta"><a class="btn" href="/signup">Start free</a> <a class="btn sec" href="/login">Sign in</a></p>
-        <div class="shot"><img src="/home-app.jpg" alt="The HI app answering: three new tenders matched to a cleaning business, each with a closing date, fit reason and source"></div>
+        <div class="shot"><img src="/home-estate.jpg" alt="The HI Estate page with sample deals, viewings and follow-ups for an estate agency - sample data"></div>
       </section>
       <section class="feat">
-        <div class="card"><b>Tracks deals</b><br>Properties, contacts, viewings and deal stages with next actions, so no follow-up slips.</div>
+        <div class="card"><b>Tracks deals</b><br>Properties, contacts, viewings and deal stages, with next actions kept in view.</div>
         <div class="card"><b>Drafts for you</b><br>Emails, briefs and replies, ready to check. Nothing sends without your approval.</div>
         <div class="card"><b>Remembers</b><br>Your clients, your pricing, your documents - it keeps what matters and uses it.</div>
         <div class="card"><b>Works on schedule</b><br>Recurring jobs and a morning brief, reported back to you.</div>
       </section>
-      <p class="mut" style="text-align:center;max-width:560px;margin:22px auto 0">Honest limits: HI drafts and proposes - you approve everything that leaves your account. It can be wrong, and it says so when it cannot verify something. Tender data: National Treasury eTender Publication Portal (Open Data Commons PDDL).</p>`);
+      <p class="mut" style="text-align:center;max-width:560px;margin:22px auto 0">Honest limits: HI drafts and proposes - you approve everything that leaves your account. It can be wrong, and it says so when it cannot verify something.</p>`);
   });
 
   app.get('/signup', async (req, reply) => render(reply, null, 'Create account', `
@@ -253,7 +254,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       <div class="mut">${r.reasons.map((x) => esc(x.text)).join(' - ')}</div></div>`).join('');
     const empty = !data.prof?.keywords?.length ? `<div class="card empty"><p style="font-size:17px;color:var(--text)"><b>No keywords yet.</b></p><p>Set your keywords first so HI knows what to look for.</p><p><a class="btn" href="/app/profile">Set up profile</a></p></div>` : (!data.rows.length ? '<div class="card empty">No opportunities here yet. HI checks for new tenders daily.</div>' : '');
     const warn = [u.paused ? '<div class="flash">Your account is paused. Nothing will be sent.</div>' : '', data.pend ? `<div class="flash">${data.pend} item(s) waiting for your approval. <a href="/app/approvals">Review</a></div>` : '', data.alerts.length ? `<div class="flash">${data.alerts.length} document(s) expired or expiring within 30 days. <a href="/app/documents">Review</a></div>` : ''].join('');
-    return render(reply, u, 'Opportunities', `<h1>Opportunities for ${esc(u.tenant_name)}</h1>${warn}<p>${tabs} ${exportLink}</p>${cards}${empty}`, flashOf(req));
+    return render(reply, u, 'Opportunities', `<h1>Opportunities for ${esc(u.tenant_name)}</h1>${warn}<p>${tabs} ${exportLink}</p>${cards}${empty}<p class="mut">Opportunity Desk tender data: National Treasury eTender Publication Portal (Open Data Commons PDDL).</p>`, flashOf(req));
   });
 
 

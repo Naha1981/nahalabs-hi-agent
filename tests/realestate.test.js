@@ -76,3 +76,10 @@ test('ACCEPTANCE tenant isolation: tenant B cannot see or touch tenant A real-es
   const still = await withTenant(A, (c) => c.query('SELECT stage FROM re_deals WHERE id=$1', [dealId]).then((r) => r.rows[0].stage));
   assert.equal(still, 'otp_signed');
 });
+
+test('estate tools never invent dates: missing fields stay empty', async () => {
+  assert.match(await call(A, 'estate_add_deal', { property: '9 Vine Close', stage: 'otp_signed' }), /Deal started/);
+  const row = await withTenant(A, (c) => c.query("SELECT d.next_action, d.next_action_date FROM re_deals d JOIN re_properties p ON p.id=d.property_id WHERE p.title='9 Vine Close'").then((r) => r.rows[0]));
+  assert.equal(row.next_action, '');
+  assert.equal(row.next_action_date, null);
+});
