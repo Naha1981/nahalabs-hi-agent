@@ -78,7 +78,8 @@ export const TOOL_SCHEMAS = [
   { name: 'create_file', description: 'Save a file (csv, md, txt or a genuine xlsx workbook) into the customer account for download, e.g. a tender comparison spreadsheet or a report. For xlsx, content must be JSON: {"sheets":[{"name":"Sheet1","rows":[["Heading 1","Heading 2"],["value",1]]}]}. For csv, md and txt give the full file content.', parameters: { type: 'object', properties: { filename: { type: 'string' }, format: { type: 'string', enum: ['csv', 'md', 'txt', 'xlsx'] }, content: { type: 'string' } }, required: ['filename', 'format', 'content'] } },
   { name: 'phone_task', description: 'Ask to run a task on the customer\'s paired Android phone: open apps, read what is on screen, tap and type. Nothing runs until the customer approves it in the queue, and anything that sends a message or pays always needs that approval first. The phone must be paired through the customer\'s own bridge app.', parameters: { type: 'object', properties: { instruction: { type: 'string' } }, required: ['instruction'] } },
   { name: 'phone_results', description: 'Check the status and results of recent phone tasks.', parameters: { type: 'object', properties: {} } },
-  { name: 'mail_search', description: 'Search the customer\'s connected Gmail and Outlook inboxes (read only). Only works after the customer connects an account on the Integrations page.', parameters: { type: 'object', properties: { query: { type: 'string' } } } },
+  { name: 'mail_search', description: 'Search connected Gmail and Outlook inboxes (read only). During the scheduled estate enquiry watch, results include provider, account email and message ID.', parameters: { type: 'object', properties: { query: { type: 'string' } } } },
+  { name: 'estate_mark_message_processed', description: 'During the scheduled estate enquiry watch, mark one current mail_search result reviewed. Call only after applicable contact, deal and reply-draft work is complete; also mark reviewed non-enquiries. Use the provider, account email and message ID exactly as returned by mail_search.', parameters: { type: 'object', properties: { provider: { type: 'string', enum: ['gmail', 'outlook'] }, account_email: { type: 'string' }, message_id: { type: 'string' } }, required: ['provider', 'account_email', 'message_id'] } },
   { name: 'calendar_upcoming', description: 'List upcoming events from the customer\'s connected Google and Outlook calendars (read only).', parameters: { type: 'object', properties: { days: { type: 'integer' } } } },
   { name: 'propose_account_email', description: 'Draft an email to send from one of the customer\'s connected Gmail/Outlook accounts. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'] } },
   { name: 'propose_calendar_event', description: 'Propose creating an event on one of the customer\'s connected calendars. It is created only after the customer approves.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, title: { type: 'string' }, starts_at: { type: 'string' }, ends_at: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'starts_at', 'ends_at'] } },
@@ -113,9 +114,9 @@ export function parseEstateDateTime(value) {
 
 export const ESTATE_WATCH_TITLE = 'Enquiry watch';
 export const ESTATE_WATCH_INSTRUCTION = [
-  'Enquiry watch for the estate agency. Search the connected inboxes with mail_search for new property enquiries from the last day, with queries like: newer_than:1d (viewing OR offer OR property OR listing OR "for sale" OR "to rent").',
-  'For each genuine new enquiry: use the sender email as the contact identity and call estate_add_contact (role buyer or tenant); that tool merges existing contacts by email so do not create a second record. If a specific property is mentioned, start a deal with estate_add_deal at stage enquiry and pass both the contact name returned by estate_add_contact and contact_email from the message, next_action "Reply to enquiry", next_action_date tomorrow; duplicate property/contact/stage enquiries are safely ignored. Draft a reply with propose_account_email: thank them, answer only from facts on record (never invent price, levies, rates or availability - say the agent will confirm), and ask the qualifying questions: budget, bond pre-approval, timeframe, and whether they want a viewing.',
-  'Nothing sends without the customer approval. End with a short report: enquiries found, contacts and deals created, drafts waiting for approval. If no inbox is connected or nothing is found, say so plainly.',
+  'Enquiry watch for the estate agency. Search connected inboxes with mail_search for recent property enquiries: newer_than:1d (viewing OR offer OR property OR listing OR "for sale" OR "to rent").',
+  'Review each returned message individually. For a genuine enquiry, use the sender email as the contact identity and call estate_add_contact (role buyer or tenant); email deduplication keeps the existing contact. If a specific property is mentioned, call estate_add_deal with the contact name and contact_email from that same message, stage enquiry, next_action "Reply to enquiry", next_action_date tomorrow; duplicate property/contact/stage deals are ignored. Draft a reply with propose_account_email; use only recorded facts (never invent price, levies, rates or availability) and ask about budget, bond pre-approval, timeframe and viewing preference.',
+  'Only AFTER all applicable contact/deal/reply-draft work is complete—or you determine the message is not a genuine enquiry—call estate_mark_message_processed with the exact provider, account_email and message_id from mail_search. Mark reviewed messages one by one; never mark unseen or unfinished messages. Anything left unfinished will be retried. Nothing sends without customer approval. End with a short report of enquiries, records created and drafts waiting for approval.',
 ].join(' ');
 
 async function estateFindProperty(c, ref, clip) {
@@ -246,7 +247,7 @@ export async function runTool(name, args, ctx) {
         const track = ctx.trackMailMessages && Array.isArray(ctx.mailMessagesSeen);
         const processed = track ? (await c.query("SELECT provider, account_email, message_id FROM estate_processed_mail WHERE processed_at > now() - interval '14 days'")).rows : [];
         const processedKeys = new Set(processed.map((m) => `${m.provider}\u0000${String(m.account_email).toLowerCase()}\u0000${m.message_id}`));
-        const rows = await mailSearch(tenantId, { query: clip(a.query, 200), max: track ? 100 : 25, fetchImpl: ctx.fetchImpl });
+        const rows = await mailSearch(tenantId, { query: clip(a.query, 200), max: track ? 10 : 25, excludeKeys: processedKeys, fetchImpl: ctx.fetchImpl });
         for (const m of (ctx.mailMessagesSeen || [])) processedKeys.add(`${m.provider}\u0000${String(m.account_email).toLowerCase()}\u0000${m.message_id}`);
         const fresh = rows.filter((m) => !track || !m.id || !processedKeys.has(`${m.provider}\u0000${String(m.account).toLowerCase()}\u0000${m.id}`));
         if (track) {
@@ -259,6 +260,20 @@ export async function runTool(name, args, ctx) {
         }
         return UNTRUSTED(fresh.map((m) => m.error ? `- [${m.account}] ${m.error}` : `- [${m.provider} ${m.account}] message_id=${m.id || 'unavailable'} | ${m.date} | ${m.from} | ${m.subject} | ${m.snippet}`).join('\n'));
       } catch (e) { return 'Mail search failed: ' + clip(e.message, 80); }
+    }
+    case 'estate_mark_message_processed': {
+      if (!ctx.trackMailMessages || !Array.isArray(ctx.mailMessagesSeen)) return 'This action is available only during the scheduled Enquiry Watch.';
+      const provider = ['gmail', 'outlook'].includes(a.provider) ? a.provider : '';
+      const accountEmail = clip(a.account_email, 200).trim();
+      const messageId = clip(a.message_id, 500).trim();
+      if (!provider || !accountEmail || !messageId) return 'Provider, account email and message ID are required.';
+      const seen = ctx.mailMessagesSeen.some((m) => m.provider === provider && String(m.account_email).toLowerCase() === accountEmail.toLowerCase() && m.message_id === messageId);
+      if (!seen) return 'That message was not returned by mail_search in this scheduled run; it was not marked processed.';
+      await c.query(
+        "INSERT INTO estate_processed_mail (tenant_id, provider, account_email, message_id) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3) ON CONFLICT (tenant_id, provider, account_email, message_id) DO UPDATE SET processed_at=now()",
+        [provider, accountEmail, messageId]);
+      await c.query("DELETE FROM estate_processed_mail WHERE processed_at < now() - interval '14 days'");
+      return 'Marked the reviewed message from ' + accountEmail + ' as processed. It will be skipped on future watch runs.';
     }
     case 'calendar_upcoming': {
       try {
