@@ -3,7 +3,7 @@ import formbody from '@fastify/formbody';
 import cookie from '@fastify/cookie';
 import { timingSafeEqual, createHash, createHmac } from 'node:crypto';
 const require_hash = (t) => createHash('sha256').update(String(t || '')).digest('hex');
-import { withTenant, withSystem, audit, auditFor, closePool } from './db.js';
+import { withTenant, withSystem, audit, auditFor, closePool, assertSchemaReady } from './db.js';
 import { hashPassword, verifyPassword, newToken, tokenHash, makeLimiter } from './auth.js';
 import { page, esc, fdate, safeUrl, drivePage } from './views.js';
 import { ingest } from './ingest.js';
@@ -131,29 +131,35 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     <p><button>Create account</button></p></form><p class="mut" style="text-align:center">Already have an account? <a href="/login">Sign in</a></p></div>`, flashOf(req)));
 
   app.post('/signup', async (req, reply) => {
-    if (!signupLimit(req.ip)) return reply.code(429).send('Too many attempts');
+    if (!signupLimit(req.ip)) return reply.code(429).send('Too many attempts. Please wait a while and try again.');
     const { company, email, password } = req.body || {};
     // Open SaaS onboarding: anyone can self-register. The honeypot field is invisible
     // to people; bots that fill it are silently dropped with the generic failure.
     if (String(req.body?.website || '')) return reply.redirect('/signup?m=' + encodeURIComponent('Check the company, email and a password of 12+ characters.'));
-    if (!company || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email || '') || String(password || '').length < 12) return reply.redirect('/signup?m=' + encodeURIComponent('Check the company, email and a password of 12+ characters.'));
+    if (!company) return reply.redirect('/signup?m=' + encodeURIComponent('Enter your company name.'));
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email || '')) return reply.redirect('/signup?m=' + encodeURIComponent('Enter a valid email address.'));
+    if (String(password || '').length < 12) return reply.redirect('/signup?m=' + encodeURIComponent('Choose a password of 12 or more characters.'));
     const pw = await hashPassword(password);
     try {
-      const tenantId = await withSystem(async (c) => {
+      const { tenantId, userId } = await withSystem(async (c) => {
         const t = (await c.query('INSERT INTO tenants (name) VALUES ($1) RETURNING id', [String(company).slice(0, 120)])).rows[0].id;
-        await c.query('INSERT INTO users (tenant_id, email, pw_hash) VALUES ($1,$2,$3)', [t, String(email).trim().toLowerCase(), pw]);
-        return t;
+        const uid = (await c.query('INSERT INTO users (tenant_id, email, pw_hash) VALUES ($1,$2,$3) RETURNING id', [t, String(email).trim().toLowerCase(), pw])).rows[0].id;
+        return { tenantId: t, userId: uid };
       });
       await withTenant(tenantId, async (c) => {
         await c.query("INSERT INTO profiles (tenant_id, company_name) VALUES (current_setting('app.tenant_id')::uuid,$1)", [String(company).slice(0, 120)]);
         await audit(c, tenantId, 'user:signup', 'tenant.created', {});
       });
       await ensureBuiltinSkills(tenantId);
+      // Self-onboarding: sign the new customer straight in instead of bouncing them to the login form.
+      const token = newToken();
+      await withSystem((c) => c.query("INSERT INTO sessions (token_hash, user_id, tenant_id, expires_at) VALUES ($1,$2,$3, now() + interval '14 days')", [tokenHash(token), userId, tenantId]));
+      reply.setCookie(COOKIE, token, { path: '/', httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 14 * 86400 });
+      return reply.redirect('/app/agent');
     } catch (e) {
-      if (String(e.message).includes('users_email_key')) return reply.redirect('/signup?m=' + encodeURIComponent('That email is already registered.'));
+      if (String(e.message).includes('users_email_key')) return reply.redirect('/signup?m=' + encodeURIComponent('That email is already registered. Sign in instead.'));
       throw e;
     }
-    return reply.redirect('/login?m=' + encodeURIComponent('Account created. Sign in to set up your profile.'));
   });
 
   app.get('/login', async (req, reply) => render(reply, null, 'Sign in', `
@@ -904,6 +910,20 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  // Schema before traffic: apply migrations when an owner connection is configured, then
+  // refuse to serve until every table schema.sql declares exists. An incomplete schema fails
+  // the deploy here instead of serving 500s to customers.
+  if (process.env.MIGRATE_DATABASE_URL) {
+    const { migrate } = await import('./migrate.js');
+    await migrate(process.env.MIGRATE_DATABASE_URL, process.env.HI_APP_PASSWORD);
+    console.log('schema migration applied');
+  }
+  try {
+    await assertSchemaReady();
+  } catch (e) {
+    console.error('FATAL: ' + e.message);
+    process.exit(1);
+  }
   const app = await buildApp({ logger: true });
   await app.listen({ port: Number(process.env.PORT || 3000), host: '0.0.0.0' });
 }

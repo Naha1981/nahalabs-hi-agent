@@ -63,3 +63,13 @@ export async function auditFor(tenantId, actor, action, detail = {}) {
 export function schemaSql() {
   return readFileSync(fileURLToPath(new URL('../db/schema.sql', import.meta.url)), 'utf8');
 }
+
+// Boot readiness: every table schema.sql declares must exist. Throws listing the missing
+// ones instead of letting the app serve 500s. Used at startup; safe to call any time.
+export async function assertSchemaReady(p = getPool()) {
+  const required = [...schemaSql().matchAll(/^CREATE TABLE IF NOT EXISTS (\w+)/gm)].map((m) => m[1]);
+  const { rows } = await p.query('SELECT tablename FROM pg_tables WHERE schemaname = current_schema() AND tablename = ANY($1)', [required]);
+  const present = new Set(rows.map((r) => r.tablename));
+  const missing = required.filter((t) => !present.has(t));
+  if (missing.length) throw new Error('database schema incomplete - missing tables: ' + missing.join(', ') + '. Run: MIGRATE_DATABASE_URL=... npm run migrate');
+}

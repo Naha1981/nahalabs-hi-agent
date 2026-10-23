@@ -66,7 +66,8 @@ test('public pages do not require login, private pages do', async () => {
 test('signup is open to anyone; the honeypot drops bots; passwords are hashed', async () => {
   const open = await app.inject({ method: 'POST', url: '/signup', headers: H, remoteAddress: '10.9.0.1', payload: form({ company: 'No Invite Co', email: 'open@example.test', password: 'a-long-test-password-1' }) });
   assert.equal(open.statusCode, 302);
-  assert.match(open.headers.location, /^\/login\?m=Account%20created/, 'account created without invite code');
+  assert.equal(open.headers.location, '/app/agent', 'new customer is signed straight in');
+  assert.match(String(open.headers['set-cookie']), /^hi_session=/, 'signup sets a session cookie');
   assert.equal((await withSystem((c) => c.query('SELECT 1 FROM users WHERE email=$1', ['open@example.test']))).rowCount, 1, 'public signup creates a user');
   const home = await app.inject({ url: '/' });
   assert.doesNotMatch(home.body, /Have an invite code/);
