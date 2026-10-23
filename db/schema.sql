@@ -479,3 +479,78 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON integrations TO hi_app;
 -- Column additions for existing databases (CREATE TABLE IF NOT EXISTS cannot add columns)
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS morning_brief_auto boolean NOT NULL DEFAULT false;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS surfaced_at timestamptz;
+
+-- ===== Real estate module =====
+CREATE TABLE IF NOT EXISTS re_contacts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  role text NOT NULL DEFAULT 'other' CHECK (role IN ('buyer','seller','landlord','tenant','other')),
+  phone text NOT NULL DEFAULT '',
+  email text NOT NULL DEFAULT '',
+  notes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE re_contacts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE re_contacts FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON re_contacts;
+CREATE POLICY tenant_isolation ON re_contacts USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON re_contacts TO hi_app;
+
+CREATE TABLE IF NOT EXISTS re_properties (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  asking_price text NOT NULL DEFAULT '',
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','sole_mandate','sold','withdrawn')),
+  notes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE re_properties ENABLE ROW LEVEL SECURITY;
+ALTER TABLE re_properties FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON re_properties;
+CREATE POLICY tenant_isolation ON re_properties USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON re_properties TO hi_app;
+
+CREATE TABLE IF NOT EXISTS re_deals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  property_id uuid NOT NULL REFERENCES re_properties(id) ON DELETE CASCADE,
+  contact_id uuid REFERENCES re_contacts(id) ON DELETE SET NULL,
+  stage text NOT NULL DEFAULT 'enquiry' CHECK (stage IN ('enquiry','viewing','offer','otp_signed','bond_pending','transfer_attorneys','registered','fallen_through')),
+  next_action text NOT NULL DEFAULT '',
+  next_action_date date,
+  notes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE re_deals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE re_deals FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON re_deals;
+CREATE POLICY tenant_isolation ON re_deals USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON re_deals TO hi_app;
+CREATE INDEX IF NOT EXISTS re_deals_followup ON re_deals (tenant_id, next_action_date) WHERE next_action_date IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS re_viewings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  property_id uuid NOT NULL REFERENCES re_properties(id) ON DELETE CASCADE,
+  contact_id uuid REFERENCES re_contacts(id) ON DELETE SET NULL,
+  starts_at timestamptz NOT NULL,
+  status text NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','done','no_show','cancelled')),
+  feedback text NOT NULL DEFAULT '',
+  notes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE re_viewings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE re_viewings FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON re_viewings;
+CREATE POLICY tenant_isolation ON re_viewings USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON re_viewings TO hi_app;

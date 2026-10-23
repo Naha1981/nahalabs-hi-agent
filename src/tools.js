@@ -83,9 +83,57 @@ export const TOOL_SCHEMAS = [
   { name: 'propose_account_email', description: 'Draft an email to send from one of the customer\'s connected Gmail/Outlook accounts. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'] } },
   { name: 'propose_calendar_event', description: 'Propose creating an event on one of the customer\'s connected calendars. It is created only after the customer approves.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, title: { type: 'string' }, starts_at: { type: 'string' }, ends_at: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'starts_at', 'ends_at'] } },
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
+  { name: 'estate_add_contact', description: 'Real estate: save a contact such as a buyer, seller, landlord or tenant.', parameters: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['buyer', 'seller', 'landlord', 'tenant', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, notes: { type: 'string' } }, required: ['name'] } },
+  { name: 'estate_add_property', description: 'Real estate: save a property or listing.', parameters: { type: 'object', properties: { title: { type: 'string', description: 'Address or short name, e.g. "12 Oak Street, Sandton"' }, asking_price: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, notes: { type: 'string' } }, required: ['title'] } },
+  { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
+  { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, note: { type: 'string' } } } },
+  { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
+  { name: 'estate_log_viewing', description: 'Real estate: record the outcome and feedback of a viewing (done, no_show or cancelled).', parameters: { type: 'object', properties: { property: { type: 'string' }, viewing_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'no_show', 'cancelled'] }, feedback: { type: 'string' } }, required: ['status'] } },
+  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts or properties.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties'] } }, required: ['what'] } },
+  { name: 'estate_seller_report', description: 'Real estate: create a seller progress report for a property as a downloadable markdown file.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
 ];
 
 const clip = (s, n) => String(s ?? '').slice(0, n);
+
+// ---- Real estate module ----
+export const ESTATE_STAGES = ['enquiry', 'viewing', 'offer', 'otp_signed', 'bond_pending', 'transfer_attorneys', 'registered', 'fallen_through'];
+export const ESTATE_STAGE_LABEL = { enquiry: 'Enquiry', viewing: 'Viewing', offer: 'Offer', otp_signed: 'OTP signed', bond_pending: 'Bond pending', transfer_attorneys: 'Transfer attorneys', registered: 'Registered', fallen_through: 'Fallen through' };
+const ESTATE_OPEN = ESTATE_STAGES.slice(0, 6);
+const estateDateFmt = (d) => { const x = d instanceof Date ? d : new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
+const estateDate = (v) => { const s = String(v ?? '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null; };
+
+async function estateFindProperty(c, ref, clip) {
+  const text = clip(ref, 200).trim();
+  if (!text) return { error: 'Which property? Give an address or name.' };
+  let r;
+  if (/^[0-9a-f-]{36}$/i.test(text)) r = await c.query('SELECT id, title FROM re_properties WHERE id=$1', [text]);
+  else r = await c.query("SELECT id, title FROM re_properties WHERE title ILIKE '%' || $1 || '%' ORDER BY created_at DESC LIMIT 2", [text.replace(/[%_]/g, '')]);
+  if (r.rowCount === 1) return { row: r.rows[0] };
+  if (r.rowCount > 1) return { error: `Several properties match "${text}": ${r.rows.map((x) => x.title).join('; ')}. Be more specific.` };
+  return null;
+}
+async function estateGetOrCreateProperty(c, ref, clip) {
+  const found = await estateFindProperty(c, ref, clip);
+  if (found) return found;
+  const r = await c.query("INSERT INTO re_properties (tenant_id, title) VALUES (current_setting('app.tenant_id')::uuid,$1) RETURNING id, title", [clip(ref, 200).trim()]);
+  return { row: r.rows[0], created: true };
+}
+async function estateFindContact(c, ref, clip) {
+  const text = clip(ref, 120).trim();
+  if (!text) return null;
+  let r;
+  if (/^[0-9a-f-]{36}$/i.test(text)) r = await c.query('SELECT id, name FROM re_contacts WHERE id=$1', [text]);
+  else r = await c.query("SELECT id, name FROM re_contacts WHERE name ILIKE '%' || $1 || '%' ORDER BY created_at DESC LIMIT 2", [text.replace(/[%_]/g, '')]);
+  if (r.rowCount === 1) return { row: r.rows[0] };
+  if (r.rowCount > 1) return { error: `Several contacts match "${text}": ${r.rows.map((x) => x.name).join('; ')}. Be more specific.` };
+  return null;
+}
+async function estateGetOrCreateContact(c, ref, role, clip) {
+  const found = await estateFindContact(c, ref, clip);
+  if (found) return found;
+  const r = await c.query("INSERT INTO re_contacts (tenant_id, name, role) VALUES (current_setting('app.tenant_id')::uuid,$1,$2) RETURNING id, name", [clip(ref, 120).trim(), role]);
+  return { row: r.rows[0], created: true };
+}
 
 // ctx: { c (tenant tx client), tenantId, userEmail, agentId, fetchImpl, lookup, sources:[], steps:[], mode }
 export async function runTool(name, args, ctx) {
@@ -213,6 +261,165 @@ export async function runTool(name, args, ctx) {
         [`Email to ${ctx.userEmail}: "${subject}"`, JSON.stringify({ to: ctx.userEmail, subject, body }), `agent:${ctx.agentName || 'hi'}`]);
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'email.proposed', { approval_id: r.rows[0].id });
       return 'Drafted and placed in the approval queue. It will only be sent if the customer approves. In this version emails go to the customer\'s own address only.';
+    }
+    case 'estate_add_contact': {
+      const name = clip(a.name, 120).trim();
+      if (!name) return 'A contact needs a name.';
+      const role = ['buyer', 'seller', 'landlord', 'tenant', 'other'].includes(a.role) ? a.role : 'other';
+      const r = await c.query(
+        "INSERT INTO re_contacts (tenant_id, name, role, phone, email, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5) RETURNING id",
+        [name, role, clip(a.phone, 40), clip(a.email, 120), clip(a.notes, 1000)]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contact_saved', { contact_id: r.rows[0].id });
+      return `Saved ${name} as a ${role}.`;
+    }
+    case 'estate_add_property': {
+      const title = clip(a.title, 200).trim();
+      if (!title) return 'A property needs an address or name.';
+      const status = ['active', 'sole_mandate', 'sold', 'withdrawn'].includes(a.status) ? a.status : 'active';
+      const r = await c.query(
+        "INSERT INTO re_properties (tenant_id, title, asking_price, status, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4) RETURNING id",
+        [title, clip(a.asking_price, 60), status, clip(a.notes, 1000)]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.property_saved', { property_id: r.rows[0].id });
+      return `Saved property "${title}"${a.asking_price ? ` at ${clip(a.asking_price, 60)}` : ''}.`;
+    }
+    case 'estate_add_deal': {
+      const prop = await estateGetOrCreateProperty(c, a.property, clip);
+      if (prop.error) return prop.error;
+      let contactId = null, contactName = '', contactCreated = false;
+      if (String(a.contact ?? '').trim()) {
+        const con = await estateGetOrCreateContact(c, a.contact, 'buyer', clip);
+        if (con.error) return con.error;
+        contactId = con.row.id; contactName = con.row.name; contactCreated = !!con.created;
+      }
+      const stage = ESTATE_STAGES.includes(a.stage) ? a.stage : 'enquiry';
+      if (a.next_action_date && !estateDate(a.next_action_date)) return 'Next action date must be YYYY-MM-DD.';
+      const r = await c.query(
+        "INSERT INTO re_deals (tenant_id, property_id, contact_id, stage, next_action, next_action_date, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6) RETURNING id",
+        [prop.row.id, contactId, stage, clip(a.next_action, 200), estateDate(a.next_action_date), clip(a.notes, 2000)]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.deal_started', { deal_id: r.rows[0].id, stage });
+      return `Deal started on ${prop.row.title}${prop.created ? ' (new property saved)' : ''}${contactName ? ` with ${contactName}${contactCreated ? ' (new contact saved)' : ''}` : ''}. Stage: ${ESTATE_STAGE_LABEL[stage]}.`;
+    }
+    case 'estate_update_deal': {
+      let deal = null;
+      const idText = String(a.deal_id ?? '').trim();
+      if (idText && /^[0-9a-f-]{36}$/i.test(idText)) {
+        deal = (await c.query('SELECT d.id, d.stage, p.title FROM re_deals d JOIN re_properties p ON p.id=d.property_id WHERE d.id=$1', [idText])).rows[0];
+      } else if (String(a.property ?? '').trim()) {
+        deal = (await c.query(
+          "SELECT d.id, d.stage, p.title FROM re_deals d JOIN re_properties p ON p.id=d.property_id WHERE p.title ILIKE '%' || $1 || '%' AND d.stage <> ALL($2) ORDER BY d.updated_at DESC LIMIT 1",
+          [clip(a.property, 200).replace(/[%_]/g, ''), ESTATE_STAGES.slice(6)])).rows[0]
+          || (await c.query("SELECT d.id, d.stage, p.title FROM re_deals d JOIN re_properties p ON p.id=d.property_id WHERE p.title ILIKE '%' || $1 || '%' ORDER BY d.updated_at DESC LIMIT 1", [clip(a.property, 200).replace(/[%_]/g, '')])).rows[0];
+      }
+      if (!deal) return 'No matching deal found. Give the property name or deal id.';
+      const sets = [], vals = [];
+      if (a.stage != null) {
+        if (!ESTATE_STAGES.includes(a.stage)) return `Stage must be one of: ${ESTATE_STAGES.join(', ')}.`;
+        sets.push(`stage=$${vals.push(a.stage)}`);
+      }
+      if (a.next_action != null) sets.push(`next_action=$${vals.push(clip(a.next_action, 200))}`);
+      if (a.next_action_date != null) {
+        if (!estateDate(a.next_action_date)) return 'Next action date must be YYYY-MM-DD.';
+        sets.push(`next_action_date=$${vals.push(estateDate(a.next_action_date))}`);
+      }
+      if (a.note != null && String(a.note).trim()) sets.push(`notes = CASE WHEN notes='' THEN $${vals.push(clip(a.note, 1000))} ELSE notes || E'\\n[' || to_char(now(),'YYYY-MM-DD') || '] ' || $${vals.push(clip(a.note, 1000))} END`);
+      if (!sets.length) return 'Nothing to update. Give a stage, next action, next action date or note.';
+      vals.push(deal.id);
+      await c.query(`UPDATE re_deals SET ${sets.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.deal_updated', { deal_id: deal.id });
+      return `Deal on ${deal.title} updated${a.stage ? ` - now at ${ESTATE_STAGE_LABEL[a.stage]}` : ''}.`;
+    }
+    case 'estate_add_viewing': {
+      const when = new Date(String(a.starts_at ?? ''));
+      if (Number.isNaN(when.getTime())) return 'Give the viewing time as an ISO date-time, e.g. 2026-10-24T14:00.';
+      const prop = await estateGetOrCreateProperty(c, a.property, clip);
+      if (prop.error) return prop.error;
+      let contactId = null, contactName = '';
+      if (String(a.contact ?? '').trim()) {
+        const con = await estateGetOrCreateContact(c, a.contact, 'buyer', clip);
+        if (con.error) return con.error;
+        contactId = con.row.id; contactName = con.row.name;
+      }
+      const r = await c.query(
+        "INSERT INTO re_viewings (tenant_id, property_id, contact_id, starts_at, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4) RETURNING id",
+        [prop.row.id, contactId, when.toISOString(), clip(a.notes, 500)]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.viewing_booked', { viewing_id: r.rows[0].id });
+      return `Viewing of ${prop.row.title} booked for ${when.toISOString().slice(0, 16).replace('T', ' ')} UTC${contactName ? ` with ${contactName}` : ''}.`;
+    }
+    case 'estate_log_viewing': {
+      let viewing = null;
+      const vid = String(a.viewing_id ?? '').trim();
+      if (vid && /^[0-9a-f-]{36}$/i.test(vid)) {
+        viewing = (await c.query('SELECT v.id, p.title FROM re_viewings v JOIN re_properties p ON p.id=v.property_id WHERE v.id=$1', [vid])).rows[0];
+      } else if (String(a.property ?? '').trim()) {
+        viewing = (await c.query(
+          "SELECT v.id, p.title FROM re_viewings v JOIN re_properties p ON p.id=v.property_id WHERE p.title ILIKE '%' || $1 || '%' AND v.status='scheduled' ORDER BY v.starts_at DESC LIMIT 1",
+          [clip(a.property, 200).replace(/[%_]/g, '')])).rows[0];
+      }
+      if (!viewing) return 'No matching scheduled viewing found. Give the property name or viewing id.';
+      await c.query('UPDATE re_viewings SET status=$1, feedback=$2, updated_at=now() WHERE id=$3', [a.status, clip(a.feedback, 1000), viewing.id]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.viewing_logged', { viewing_id: viewing.id, status: a.status });
+      return `Viewing of ${viewing.title} marked ${a.status.replace('_', '-')}${a.feedback ? ' with feedback saved' : ''}.`;
+    }
+    case 'estate_list': {
+      if (a.what === 'pipeline') {
+        const r = await c.query(
+          `SELECT d.stage, d.next_action, d.next_action_date, p.title AS property, co.name AS contact
+           FROM re_deals d JOIN re_properties p ON p.id=d.property_id LEFT JOIN re_contacts co ON co.id=d.contact_id
+           ORDER BY d.updated_at DESC LIMIT 50`);
+        if (!r.rowCount) return 'No deals yet. Add one with estate_add_deal.';
+        const lines = ESTATE_STAGES.map((st) => {
+          const rows = r.rows.filter((x) => x.stage === st);
+          if (!rows.length) return null;
+          return `${ESTATE_STAGE_LABEL[st]}:\n` + rows.map((x) => `- ${x.property}${x.contact ? ` | ${x.contact}` : ''}${x.next_action ? ` | next: ${x.next_action}${x.next_action_date ? ` (${estateDateFmt(x.next_action_date)})` : ''}` : ''}`).join('\n');
+        }).filter(Boolean);
+        return lines.join('\n\n');
+      }
+      if (a.what === 'due') {
+        const r = await c.query(
+          `SELECT d.next_action, d.next_action_date, p.title AS property, co.name AS contact
+           FROM re_deals d JOIN re_properties p ON p.id=d.property_id LEFT JOIN re_contacts co ON co.id=d.contact_id
+           WHERE d.next_action <> '' AND d.next_action_date IS NOT NULL AND d.next_action_date <= current_date + 3 AND d.stage = ANY($1)
+           ORDER BY d.next_action_date LIMIT 20`, [ESTATE_OPEN]);
+        return r.rowCount ? r.rows.map((x) => `- ${estateDateFmt(x.next_action_date)} | ${x.property}${x.contact ? ` | ${x.contact}` : ''} | ${x.next_action}`).join('\n') : 'No follow-ups due in the next 3 days.';
+      }
+      if (a.what === 'viewings') {
+        const r = await c.query(
+          `SELECT v.starts_at, v.status, p.title AS property, co.name AS contact
+           FROM re_viewings v JOIN re_properties p ON p.id=v.property_id LEFT JOIN re_contacts co ON co.id=v.contact_id
+           WHERE v.status='scheduled' AND v.starts_at > now() - interval '1 day' ORDER BY v.starts_at LIMIT 20`);
+        return r.rowCount ? r.rows.map((x) => `- ${new Date(x.starts_at).toISOString().slice(0, 16).replace('T', ' ')} UTC | ${x.property}${x.contact ? ` | ${x.contact}` : ''}`).join('\n') : 'No upcoming viewings.';
+      }
+      if (a.what === 'contacts') {
+        const r = await c.query('SELECT name, role, phone, email FROM re_contacts ORDER BY created_at DESC LIMIT 20');
+        return r.rowCount ? r.rows.map((x) => `- ${x.name} (${x.role})${x.phone ? ` | ${x.phone}` : ''}${x.email ? ` | ${x.email}` : ''}`).join('\n') : 'No contacts yet.';
+      }
+      if (a.what === 'properties') {
+        const r = await c.query('SELECT title, asking_price, status FROM re_properties ORDER BY created_at DESC LIMIT 20');
+        return r.rowCount ? r.rows.map((x) => `- ${x.title}${x.asking_price ? ` | ${x.asking_price}` : ''} | ${x.status.replace('_', ' ')}`).join('\n') : 'No properties yet.';
+      }
+      return 'Choose what to list: pipeline, due, viewings, contacts or properties.';
+    }
+    case 'estate_seller_report': {
+      const prop = await estateFindProperty(c, a.property, clip);
+      if (!prop) return 'No property matches that name. Save it first or be more specific.';
+      if (prop.error) return prop.error;
+      const deals = (await c.query(
+        `SELECT d.stage, d.next_action, d.next_action_date, d.notes, d.created_at, co.name AS contact
+         FROM re_deals d LEFT JOIN re_contacts co ON co.id=d.contact_id WHERE d.property_id=$1 ORDER BY d.created_at DESC`, [prop.row.id])).rows;
+      const viewings = (await c.query(
+        `SELECT v.starts_at, v.status, v.feedback, co.name AS contact
+         FROM re_viewings v LEFT JOIN re_contacts co ON co.id=v.contact_id WHERE v.property_id=$1 ORDER BY v.starts_at DESC`, [prop.row.id])).rows;
+      const today = new Date().toISOString().slice(0, 10);
+      const lines = [
+        `# Seller report: ${prop.row.title}`, `Date: ${today}`, '',
+        deals.length ? `## Interest and deals\n` + deals.map((d) => `- Stage: ${ESTATE_STAGE_LABEL[d.stage]}${d.contact ? ` | ${d.contact}` : ''} (since ${String(d.created_at).slice(0, 10)})${d.next_action ? `\n  Next: ${d.next_action}${d.next_action_date ? ` by ${String(d.next_action_date).slice(0, 10)}` : ''}` : ''}`).join('\n') : '## Interest and deals\nNo active deals on record.',
+        '',
+        viewings.length ? `## Viewings\n` + viewings.map((v) => `- ${new Date(v.starts_at).toISOString().slice(0, 10)}: ${v.status.replace('_', '-')}${v.contact ? ` | ${v.contact}` : ''}${v.feedback ? `\n  Feedback: ${v.feedback}` : ''}`).join('\n') : '## Viewings\nNo viewings recorded.',
+      ];
+      const slug = prop.row.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'property';
+      const r = await saveFile(c, { tenantId, agentId: ctx.agentId, filename: `seller-report-${slug}-${today}.md`, format: 'md', content: lines.join('\n'), actor: `agent:${ctx.agentName || 'hi'}` });
+      if (r.error) return r.error;
+      return `Seller report saved as "${r.filename}". The customer can download it from the Files page and forward it to the seller.`;
     }
     default: return 'Unknown tool.';
   }

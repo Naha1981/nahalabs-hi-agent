@@ -568,6 +568,38 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     return reply.type(f.mime).send(f.mime === XLSX_MIME ? Buffer.from(f.content, 'base64') : f.content);
   });
 
+  app.get('/app/estate', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const fd = (d) => { if (!d) return ''; const x = d instanceof Date ? d : new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
+    const STAGES = [['enquiry', 'Enquiry'], ['viewing', 'Viewing'], ['offer', 'Offer'], ['otp_signed', 'OTP signed'], ['bond_pending', 'Bond pending'], ['transfer_attorneys', 'Transfer attorneys'], ['registered', 'Registered'], ['fallen_through', 'Fallen through']];
+    const OPEN = STAGES.slice(0, 6).map(([k]) => k);
+    const data = await withTenant(u.tenant_id, async (c) => ({
+      deals: (await c.query(`SELECT d.stage, d.next_action, d.next_action_date, d.updated_at, p.title AS property, co.name AS contact
+        FROM re_deals d JOIN re_properties p ON p.id=d.property_id LEFT JOIN re_contacts co ON co.id=d.contact_id ORDER BY d.updated_at DESC LIMIT 100`)).rows,
+      viewings: (await c.query(`SELECT v.starts_at, p.title AS property, co.name AS contact
+        FROM re_viewings v JOIN re_properties p ON p.id=v.property_id LEFT JOIN re_contacts co ON co.id=v.contact_id
+        WHERE v.status='scheduled' AND v.starts_at > now() - interval '1 day' ORDER BY v.starts_at LIMIT 20`)).rows,
+      props: (await c.query(`SELECT count(*)::int n FROM re_properties`)).rows[0].n,
+      contacts: (await c.query(`SELECT count(*)::int n FROM re_contacts`)).rows[0].n,
+    }));
+    const due = data.deals.filter((d) => OPEN.includes(d.stage) && d.next_action && d.next_action_date && fd(d.next_action_date) <= fd(new Date(Date.now() + 3 * 86400000)));
+    const cards = STAGES.map(([k, label]) => {
+      const rows = data.deals.filter((d) => d.stage === k);
+      if (!rows.length) return '';
+      return `<div class="card"><b>${label}</b> <span class="chip">${rows.length}</span><table style="margin-top:8px">${rows.map((d) => `<tr><td>${esc(d.property)}</td><td>${esc(d.contact || '')}</td><td>${esc(d.next_action || '')}${d.next_action_date ? ` <span class="mut">${fd(d.next_action_date)}</span>` : ''}</td></tr>`).join('')}</table></div>`;
+    }).join('');
+    const dueRows = due.map((d) => `<tr><td>${fd(d.next_action_date)}</td><td>${esc(d.property)}</td><td>${esc(d.contact || '')}</td><td>${esc(d.next_action)}</td></tr>`).join('');
+    const viewRows = data.viewings.map((v) => `<tr><td>${new Date(v.starts_at).toISOString().slice(0, 16).replace('T', ' ')} UTC</td><td>${esc(v.property)}</td><td>${esc(v.contact || '')}</td></tr>`).join('');
+    const empty = !data.deals.length && !data.viewings.length;
+    return render(reply, u, 'Estate', `
+      <h1><b>Estate</b> your deals, viewings and follow-ups.</h1>
+      <p class="mut">${data.props} properties, ${data.contacts} contacts on record. Manage it by talking to HI - for example: <i>"Add a deal for 12 Oak Street with buyer Sipho, offer stage, next action: bank docs by Friday"</i> or <i>"seller report for 12 Oak Street"</i>.</p>
+      ${empty ? '<div class="card empty">Nothing tracked yet. Tell HI about a property, a buyer or a deal and it appears here.</div>' : ''}
+      ${dueRows ? `<div class="card"><b>Follow-ups due (next 3 days)</b><table style="margin-top:8px"><tr><th>Due</th><th>Property</th><th>Who</th><th>Action</th></tr>${dueRows}</table></div>` : ''}
+      ${viewRows ? `<div class="card"><b>Upcoming viewings</b><table style="margin-top:8px"><tr><th>When</th><th>Property</th><th>Who</th></tr>${viewRows}</table></div>` : ''}
+      ${cards}`, flashOf(req));
+  });
+
   // ---------- Agent platform ----------
   const mdLite = (t) => esc(String(t).replace(/<br\s*\/?>/gi, '\n').replace(/^\s*\|?[-:| ]{3,}\|?\s*$/gm, '')).replace(/\*\*([^*\n]{1,200})\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
   const srcList = (src) => (src || []).length ? `<div class="mut">Sources: ${(src).map((x, i) => `[${i + 1}] <a href="${safeUrl(x.url)}" rel="noopener noreferrer" target="_blank">${esc(String(x.title || x.url).slice(0, 80))}</a>`).join(' &nbsp; ')}</div>` : '';
@@ -577,7 +609,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const u = req.user;
     const grp = (g, items) => `<div class="card"><b>${g}</b><p style="margin:10px 0 2px">${items.map(([n, h]) => `<a class="chip" style="padding:8px 14px;margin:4px 6px 4px 0" href="${h}">${n}</a>`).join('')}</p></div>`;
     return render(reply, u, 'Menu', `<h1>All sections</h1>
-      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Tasks', '/app/tasks']])}
+      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Tasks', '/app/tasks']])}
       ${grp('Work', [['Browser', '/app/browser'], ['Drive', '/app/drive'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents']])}
       ${grp('Account', [['Memory', '/app/memory'], ['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']])}`, flashOf(req));
   });
