@@ -80,7 +80,7 @@ test('estate writes deduplicate contacts by email and identical active deals', a
   assert.equal(contactCount, 1);
 
   assert.match(await call(A, 'estate_add_deal', { property: '90 Duplicate Street, Sandton', contact: 'Lerato Mokoena', stage: 'enquiry' }), /Deal started/);
-  assert.match(await call(A, 'estate_add_deal', { property: '90 Duplicate Street, Sandton', contact: 'Lerato Mokoena', stage: 'enquiry' }), /Deal already tracked/);
+  assert.match(await call(A, 'estate_add_deal', { property: '90 Duplicate Street, Sandton', contact: 'Lerato Duplicate', contact_email: 'lerato@example.test', stage: 'enquiry' }), /Deal already tracked/);
   const dealCount = await withTenant(A, (c) => c.query("SELECT count(*)::int n FROM re_deals d JOIN re_properties p ON p.id=d.property_id WHERE p.title='90 Duplicate Street, Sandton'").then((r) => r.rows[0].n));
   assert.equal(dealCount, 1);
 });
@@ -130,6 +130,7 @@ test('estate enquiry watch: needs an inbox, enables once, disables', async () =>
   assert.equal(task.status, 'active');
   assert.match(task.instruction, /never invent price, levies, rates or availability/);
   assert.match(task.instruction, /never create duplicates/);
+  assert.match(task.instruction, /contact_email from the message/);
   assert.match(await call(A, 'estate_enquiry_watch', { action: 'enable' }), /already on/);
   assert.match(await call(A, 'estate_enquiry_watch', { action: 'disable' }), /Enquiry watch off/);
   assert.equal(await withTenant(A, (c) => c.query("SELECT status FROM tasks WHERE title='Enquiry watch'").then((r) => r.rows[0].status)), 'paused');
