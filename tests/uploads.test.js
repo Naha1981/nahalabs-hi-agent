@@ -185,7 +185,7 @@ test('global storage budget: refused closed when the shared budget is exhausted'
   const o = owner(db.ownerUrl); await o.connect();
   const before = (await o.query('SELECT bytes_used FROM upload_budget WHERE id=1')).rows[0].bytes_used;
   const csrf = await csrfOf(A.cookie);
-  process.env.HI_UPLOAD_GLOBAL_BUDGET_BYTES = '1';
+  await o.query('UPDATE upload_budget SET budget_bytes = 1 WHERE id=1');
   try {
     const mp = multipart('global.txt', 'text/plain', Buffer.from('x'), csrf);
     const up = await app.inject({ method: 'POST', url: '/app/uploads', headers: { ...mp.headers, cookie: A.cookie }, payload: mp.payload });
@@ -193,7 +193,7 @@ test('global storage budget: refused closed when the shared budget is exhausted'
     assert.match(decodeURIComponent(up.headers.location), /storage is full/i);
     assert.equal((await readUpload(A.tenantId, { filename: 'global.txt' })), null);
   } finally {
-    delete process.env.HI_UPLOAD_GLOBAL_BUDGET_BYTES;
+    await o.query('UPDATE upload_budget SET budget_bytes = 134217728 WHERE id=1');
   }
   const after = (await o.query('SELECT bytes_used FROM upload_budget WHERE id=1')).rows[0].bytes_used;
   assert.equal(String(after), String(before)); // refused upload reserved nothing

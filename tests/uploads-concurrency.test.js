@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startDb, owner } from './helpers.js';
-import { saveUpload } from '../src/uploads.js';
+import { saveUpload, MAX_UPLOAD_BYTES } from '../src/uploads.js';
 
 process.env.HI_INVITE_CODES = 'invite-test-code';
 process.env.SIGNUP_RATE_MAX = '100';
@@ -34,7 +34,7 @@ test('tenant quota admission is atomic under concurrent same-tenant uploads', as
 
 test('global budget admission is atomic under concurrent cross-tenant uploads', async () => {
   // the ledger already holds 1000 bytes from the previous test; cap the total at 2000
-  process.env.HI_UPLOAD_GLOBAL_BUDGET_BYTES = '2000';
+  await o.query('UPDATE upload_budget SET budget_bytes = 2000 WHERE id=1');
   try {
     const results = await Promise.all([
       ...Array.from({ length: 4 }, (_, i) => attempt(A, `race-g-a-${i}.txt`, txt(200))),
@@ -46,5 +46,31 @@ test('global budget admission is atomic under concurrent cross-tenant uploads', 
     const sum = (await o.query('SELECT COALESCE(SUM(size_bytes),0) AS s FROM uploads')).rows[0].s;
     assert.equal(Number(led), 2000, 'ledger never overshoots the shared budget');
     assert.equal(String(led), String(sum), 'ledger matches stored bytes after the race');
-  } finally { delete process.env.HI_UPLOAD_GLOBAL_BUDGET_BYTES; }
+  } finally { await o.query('UPDATE upload_budget SET budget_bytes = 134217728 WHERE id=1'); }
+});
+
+test('the cap is server-owned: no caller-side setting can widen it', async () => {
+  await o.query('UPDATE upload_budget SET budget_bytes = 3000 WHERE id=1'); // 2000 in use
+  process.env.HI_UPLOAD_GLOBAL_BUDGET_BYTES = '999999999'; // stale env var must be ignored
+  try {
+    assert.equal(await attempt(A, 'cap-1.txt', txt(800)), 'ok');
+    assert.equal(await attempt(A, 'cap-2.txt', txt(800)), 'GLOBAL_BUDGET'); // 2800 + 800 > 3000
+  } finally {
+    delete process.env.HI_UPLOAD_GLOBAL_BUDGET_BYTES;
+    await o.query('UPDATE upload_budget SET budget_bytes = 134217728 WHERE id=1');
+  }
+});
+
+test('a failed insert rolls the global reservation back', async () => {
+  const before = (await o.query('SELECT bytes_used FROM upload_budget WHERE id=1')).rows[0].bytes_used;
+  const ghost = '00000000-0000-0000-0000-000000000000'; // no such tenant: FK fails at INSERT
+  const err = await saveUpload(ghost, { filename: 'ghost.txt', mime: 'text/plain', buffer: txt(64) }).then(() => null).catch((e) => e);
+  assert.ok(err && err.code !== 'GLOBAL_BUDGET' && err.code !== 'TENANT_QUOTA', 'fails at the insert, not admission');
+  const after = (await o.query('SELECT bytes_used FROM upload_budget WHERE id=1')).rows[0].bytes_used;
+  assert.equal(String(after), String(before), 'reservation rolled back with the failed transaction');
+});
+
+test('saveUpload itself enforces the 8 MB cap and rejects empty buffers', async () => {
+  assert.equal(await attempt(A, 'empty.txt', Buffer.alloc(0)), 'UPLOAD_SIZE');
+  assert.equal(await attempt(A, 'huge.txt', Buffer.alloc(MAX_UPLOAD_BYTES + 1)), 'UPLOAD_SIZE');
 });

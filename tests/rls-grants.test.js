@@ -46,14 +46,29 @@ test('INSERT carrying another tenant id is rejected by the policy', async () => 
   );
 });
 
-test('upload_budget: app role holds exactly the admission grant, no more', async () => {
-  // the admission path needs SELECT + UPDATE(bytes_used); both work
-  await app.query('SELECT bytes_used FROM upload_budget WHERE id = 1');
-  await app.query('UPDATE upload_budget SET bytes_used = bytes_used + 0 WHERE id = 1');
-  // everything else on the ledger is denied
+test('upload_budget: app role can only ask for admission, never read or write the ledger', async () => {
+  await assert.rejects(app.query('SELECT bytes_used FROM upload_budget WHERE id = 1'), /permission denied/);
+  await assert.rejects(app.query('UPDATE upload_budget SET bytes_used = 0 WHERE id = 1'), /permission denied/);
   await assert.rejects(app.query('UPDATE upload_budget SET id = 2 WHERE id = 1'), /permission denied/);
+  await assert.rejects(app.query('UPDATE upload_budget SET budget_bytes = 1 WHERE id = 1'), /permission denied/);
   await assert.rejects(app.query('INSERT INTO upload_budget (id, bytes_used) VALUES (2, 0)'), /permission denied/);
   await assert.rejects(app.query('DELETE FROM upload_budget WHERE id = 1'), /permission denied/);
+});
+
+test('upload_budget_admit: validates bytes, admits within the cap, rolls back cleanly', async () => {
+  const before = (await o.query('SELECT bytes_used FROM upload_budget WHERE id=1')).rows[0].bytes_used;
+  await app.query('BEGIN');
+  assert.equal((await app.query('SELECT upload_budget_admit(1) AS ok')).rows[0].ok, true);
+  await app.query('ROLLBACK'); // a rolled-back transaction releases its reservation
+  // adversarial byte counts are refused without touching the ledger
+  assert.equal((await app.query('SELECT upload_budget_admit(0) AS ok')).rows[0].ok, false);
+  assert.equal((await app.query('SELECT upload_budget_admit(-5) AS ok')).rows[0].ok, false);
+  assert.equal((await app.query('SELECT upload_budget_admit(8388609) AS ok')).rows[0].ok, false);
+  assert.equal((await app.query('SELECT upload_budget_admit(NULL) AS ok')).rows[0].ok, false);
+  // the function takes no budget argument: there is nothing a caller can widen
+  await assert.rejects(app.query('SELECT upload_budget_admit(1, 999999999)'), /does not exist/);
+  const after = (await o.query('SELECT bytes_used FROM upload_budget WHERE id=1')).rows[0].bytes_used;
+  assert.equal(String(after), String(before), 'ledger untouched by rollback and refused calls');
 });
 
 test('app role cannot create objects in the public schema', async () => {

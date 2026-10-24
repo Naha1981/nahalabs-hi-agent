@@ -482,12 +482,29 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON uploads TO hi_app;
 -- No delete path exists yet; any future delete must decrement in the same transaction.
 CREATE TABLE IF NOT EXISTS upload_budget (
   id smallint PRIMARY KEY CHECK (id = 1),
-  bytes_used bigint NOT NULL DEFAULT 0
+  bytes_used bigint NOT NULL DEFAULT 0,
+  budget_bytes bigint NOT NULL DEFAULT 134217728  -- 128 MB server-owned cap; changed by owner SQL only
 );
+ALTER TABLE upload_budget ADD COLUMN IF NOT EXISTS budget_bytes bigint NOT NULL DEFAULT 134217728;
 INSERT INTO upload_budget (id, bytes_used)
   SELECT 1, COALESCE(SUM(size_bytes),0) FROM uploads
   ON CONFLICT (id) DO NOTHING;
-GRANT SELECT, UPDATE (bytes_used) ON upload_budget TO hi_app;
+-- Admission goes through this function only: hi_app holds EXECUTE and no direct grant on the
+-- ledger, so the app role can neither read the global counter nor write it. The cap is read
+-- from the row itself (server-owned), never from the caller, and byte counts are validated.
+CREATE OR REPLACE FUNCTION upload_budget_admit(p_bytes bigint) RETURNS boolean AS $$
+DECLARE v_budget bigint;
+BEGIN
+  IF p_bytes IS NULL OR p_bytes <= 0 OR p_bytes > 8388608 THEN RETURN false; END IF;
+  SELECT budget_bytes INTO v_budget FROM upload_budget WHERE id = 1;
+  UPDATE upload_budget SET bytes_used = bytes_used + p_bytes
+   WHERE id = 1 AND bytes_used + p_bytes <= v_budget;
+  RETURN FOUND;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+REVOKE ALL ON FUNCTION upload_budget_admit(bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION upload_budget_admit(bigint) TO hi_app;
+REVOKE ALL ON upload_budget FROM hi_app;
 
 -- ===== User-connected integrations (phase 4): Gmail, Outlook, Google/Outlook Calendar =====
 CREATE TABLE IF NOT EXISTS integrations (
