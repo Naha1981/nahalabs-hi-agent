@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import formbody from '@fastify/formbody';
+import multipart from '@fastify/multipart';
 import cookie from '@fastify/cookie';
 import { timingSafeEqual, createHash, createHmac } from 'node:crypto';
 const require_hash = (t) => createHash('sha256').update(String(t || '')).digest('hex');
@@ -21,6 +22,7 @@ import { ensureBuiltinSkills } from './skills.js';
 import { voiceConfigured, voiceMaxBytes, transcribe, speak } from './voice.js';
 import { buildXlsx, XLSX_MIME } from './xlsx.js';
 import { authUrlFor, connectAccount, providerConfigured, PROVIDERS, integrationsConfigured } from './integrations.js';
+import { saveUpload, listUploads, uploadTypeFor, UPLOAD_TYPES } from './uploads.js';
 import { createHash as _ch } from 'node:crypto';
 
 const COOKIE = 'hi_session';
@@ -49,6 +51,7 @@ const DOC_TYPES = ['CSD supplier report', 'Tax compliance status (SARS)', 'B-BBE
 export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaultChat, lookup } = {}) {
   const app = Fastify({ logger, trustProxy: true, bodyLimit: 100 * 1024 });
   await app.register(formbody);
+  await app.register(multipart, { limits: { fileSize: 8 * 1024 * 1024, files: 1 } });
   await app.register(cookie);
   for (const t of ['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/ogg', 'audio/flac', 'application/octet-stream']) {
     app.addContentTypeParser(t, { parseAs: 'buffer' }, (req, body, done) => done(null, body));
@@ -78,7 +81,8 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   const guard = async (req, reply) => {
     const s = await sessionOf(req);
     if (!s) { reply.redirect('/login'); return reply; }
-    if (req.method === 'POST' && !secretEq(req.body?.csrf, s.csrf)) { reply.code(403).send('Bad request token'); return reply; }
+    const isMultipart = String(req.headers['content-type'] || '').startsWith('multipart/');
+    if (req.method === 'POST' && !isMultipart && !secretEq(req.body?.csrf, s.csrf)) { reply.code(403).send('Bad request token'); return reply; }
     req.user = s;
   };
   const render = (reply, user, title, body, flash) => reply.type('text/html').send(page({ title, user, body, flash }));
@@ -560,10 +564,32 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const u = req.user;
     const files = await withTenant(u.tenant_id, (c) => c.query('SELECT id, filename, mime, char_length(content) size, created_by, created_at FROM files ORDER BY created_at DESC LIMIT 100').then((r) => r.rows));
     const rows = files.map((f) => `<tr><td><a href="/app/files/${f.id}/download">${esc(f.filename)}</a></td><td><span class="chip">${esc(f.mime.split('/')[1])}</span></td><td>${Math.ceil(f.size / 1024)} KB</td><td>${esc(f.created_by)}</td><td>${fdate(f.created_at)}</td></tr>`).join('');
+    const ups = await listUploads(u.tenant_id);
+    const upRows = ups.map((x) => `<tr><td>${esc(x.filename)}</td><td><span class="chip">${esc((UPLOAD_TYPES[x.mime] || {}).label || x.mime)}</span></td><td>${Math.ceil(x.size_bytes / 1024)} KB</td><td>${x.has_extract ? 'yes' : 'no'}</td><td>${fdate(x.created_at)}</td></tr>`).join('');
     return render(reply, u, 'Files', `
       <h1><b>Files</b> your agent made.</h1>
       <p class="mut">Ask HI to save a report or spreadsheet and it lands here. Honest limit: csv, markdown and text for now.</p>
-      <div class="card"><table><tr><th>File</th><th>Type</th><th>Size</th><th>Made by</th><th>When</th></tr>${rows || '<tr><td colspan="5" class="mut">No files yet - ask the agent to create one, e.g. "save a csv of this week\'s matches"</td></tr>'}</table></div>`, flashOf(req));
+      <div class="card"><table><tr><th>File</th><th>Type</th><th>Size</th><th>Made by</th><th>When</th></tr>${rows || '<tr><td colspan="5" class="mut">No files yet - ask the agent to create one, e.g. "save a csv of this week\'s matches"</td></tr>'}</table></div>
+      <h2 style="margin-top:18px"><b>Documents</b> you upload.</h2>
+      <p class="mut">Upload an offer to purchase, FICA pack, lease or sheet (PDF, Word, text, csv - up to 8 MB). Then tell HI in chat what to do with it, e.g. "record the deadlines from the OTP I uploaded".</p>
+      <div class="card"><form method="post" action="/app/uploads" enctype="multipart/form-data">${csrf(u)}<label>Document</label><input type="file" name="doc" required accept=".pdf,.docx,.txt,.md,.csv"><p><button>Upload</button></p></form></div>
+      <div class="card"><table><tr><th>Document</th><th>Type</th><th>Size</th><th>Readable</th><th>When</th></tr>${upRows || '<tr><td colspan="5" class="mut">No documents uploaded yet.</td></tr>'}</table></div>`, flashOf(req));
+  });
+  const uploadLimit = makeLimiter(20, 60 * 60 * 1000);
+  app.post('/app/uploads', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    if (!uploadLimit(u.tenant_id)) return reply.redirect('/app/files?m=' + encodeURIComponent('Too many uploads this hour.'));
+    let part;
+    try { part = await req.file(); } catch { part = null; }
+    if (!part) return reply.redirect('/app/files?m=' + encodeURIComponent('Choose a document first.'));
+    if (!secretEq(String(part.fields?.csrf?.value || ''), u.csrf)) { reply.code(403).send('Bad request token'); return reply; }
+    const mime = uploadTypeFor(part.filename, part.mimetype);
+    if (!mime) return reply.redirect('/app/files?m=' + encodeURIComponent('That file type is not supported yet: PDF, Word, text, markdown or csv.'));
+    let buf;
+    try { buf = await part.toBuffer(); } catch { return reply.redirect('/app/files?m=' + encodeURIComponent('That file is over the 8 MB limit.')); }
+    if (!buf.length) return reply.redirect('/app/files?m=' + encodeURIComponent('That file is empty.'));
+    const saved = await saveUpload(u.tenant_id, { filename: part.filename, mime, buffer: buf }, u.email);
+    return reply.redirect('/app/files?m=' + encodeURIComponent(saved.has_extract ? 'Uploaded and readable - tell HI in chat what to do with it.' : 'Uploaded. HI could not read text from this one (a scan or photo PDF); paste the key lines in chat instead.'));
   });
 
   app.get('/app/files/:id/download', { preHandler: guard }, async (req, reply) => {

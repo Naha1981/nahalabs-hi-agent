@@ -454,6 +454,24 @@ CREATE POLICY tenant_isolation ON files USING (tenant_id = NULLIF(current_settin
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON files TO hi_app;
 
+-- ===== Customer document uploads (Slice 2): OTPs, FICA packs, leases uploaded in the app =====
+CREATE TABLE IF NOT EXISTS uploads (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  filename text NOT NULL CHECK (char_length(filename) BETWEEN 1 AND 200),
+  mime text NOT NULL,
+  size_bytes integer NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 8388608),
+  content bytea NOT NULL,
+  extract text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE uploads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE uploads FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON uploads;
+CREATE POLICY tenant_isolation ON uploads USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON uploads TO hi_app;
+
 -- ===== User-connected integrations (phase 4): Gmail, Outlook, Google/Outlook Calendar =====
 CREATE TABLE IF NOT EXISTS integrations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
