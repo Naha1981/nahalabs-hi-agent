@@ -8,7 +8,7 @@ import { runAgent, ensureDefaultAgent } from './agent.js';
 import { ensureBuiltinSkills } from './skills.js';
 import { proposeBrowserJob } from './browser.js';
 import { buildXlsx, XLSX_MIME } from './xlsx.js';
-import { DesktopFeatureError, startDesktopRecording, appendDesktopAction, stopDesktopRecording, publishDesktopRecording, listDesktopRecordings, listDesktopSkills, claimDesktopTask, finishDesktopTask } from './desktop.js';
+import { DesktopFeatureError, startDesktopRecording, appendDesktopAction, stopDesktopRecording, publishDesktopRecording, listDesktopRecordings, getDesktopRecording, listDesktopSkills, claimDesktopTask, finishDesktopTask } from './desktop.js';
 
 const hashKey = (k) => crypto.createHash('sha256').update(k).digest('hex');
 export const newApiKey = () => 'hi_' + crypto.randomBytes(24).toString('hex');
@@ -211,6 +211,15 @@ export function registerApi(app, { llm, fetchImpl, lookup } = {}) {
       return reply.code(201).send({ recording });
     } catch (e) {
       return reply.code(e instanceof DesktopFeatureError ? e.statusCode : 500).send({ error: e instanceof DesktopFeatureError ? e.message : 'Could not start a desktop recording.' });
+    }
+  });
+
+  app.get('/v1/desktop/recordings/:id', async (req, reply) => {
+    try {
+      const recording = await withTenant(req.apiKey.tenantId, (c) => getDesktopRecording(c, req.params.id));
+      return { recording };
+    } catch (e) {
+      return reply.code(e instanceof DesktopFeatureError ? e.statusCode : 500).send({ error: e instanceof DesktopFeatureError ? e.message : 'Could not load the desktop recording.' });
     }
   });
 
