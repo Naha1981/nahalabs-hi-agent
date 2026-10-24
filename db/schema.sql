@@ -531,6 +531,7 @@ CREATE TABLE IF NOT EXISTS re_contacts (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT '' CHECK (source IN ('','portal','website','referral','signboard','walk_in','other'));  -- enquiry source for ad-spend tracking
+ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS fica_status text NOT NULL DEFAULT '' CHECK (fica_status IN ('','requested','received','verified'));  -- FICA state per contact; documents themselves live in Documents
 ALTER TABLE re_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_contacts FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON re_contacts;

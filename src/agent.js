@@ -51,6 +51,7 @@ const TOOL_LABELS = {
   list_uploads: 'Checked your documents',
   read_upload: 'Read your document',
   estate_add_contact: 'Saved a contact',
+  estate_update_contact: 'Updated a contact',
   estate_add_property: 'Saved a property',
   estate_add_deal: 'Started a deal',
   estate_update_deal: 'Updated a deal',

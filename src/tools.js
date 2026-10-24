@@ -94,7 +94,8 @@ export const TOOL_SCHEMAS = [
   { name: 'propose_account_email', description: 'Draft an email to send from one of the customer\'s connected Gmail/Outlook accounts. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'] } },
   { name: 'propose_calendar_event', description: 'Propose creating an event on one of the customer\'s connected calendars. It is created only after the customer approves.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, title: { type: 'string' }, starts_at: { type: 'string' }, ends_at: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'starts_at', 'ends_at'] } },
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
-  { name: 'estate_add_contact', description: 'Real estate: save a contact such as a buyer, seller, landlord or tenant. source: how the enquiry arrived - portal, website, referral, signboard, walk_in or other - when known.', parameters: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['buyer', 'seller', 'landlord', 'tenant', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, source: { type: 'string', enum: ['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'] }, notes: { type: 'string' } }, required: ['name'] } },
+  { name: 'estate_add_contact', description: 'Real estate: save a contact such as a buyer, seller, landlord or tenant. source: how the enquiry arrived - portal, website, referral, signboard, walk_in or other - when known.', parameters: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['buyer', 'seller', 'landlord', 'tenant', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, source: { type: 'string', enum: ['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'] }, fica_status: { type: 'string', enum: ['requested', 'received', 'verified'] }, notes: { type: 'string' } }, required: ['name'] } },
+  { name: 'estate_update_contact', description: 'Real estate: update a contact - FICA status (requested, received, verified), source, phone, email, or add a note. Identify by name.', parameters: { type: 'object', properties: { name: { type: 'string' }, fica_status: { type: 'string', enum: ['requested', 'received', 'verified'] }, source: { type: 'string', enum: ['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, note: { type: 'string' } }, required: ['name'] } },
   { name: 'estate_add_property', description: 'Real estate: save a property or listing.', parameters: { type: 'object', properties: { title: { type: 'string', description: 'Address or short name, e.g. "12 Oak Street, Sandton"' }, asking_price: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, notes: { type: 'string' } }, required: ['title'] } },
   { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, record the sale price and commission, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, sale_price: { type: 'string', description: 'Sale price in rands, e.g. "R1,250,000" or "1250000"' }, commission_pct: { type: 'number', description: 'Commission percent, e.g. 5 for 5%' }, note: { type: 'string' } } } },
@@ -301,11 +302,35 @@ export async function runTool(name, args, ctx) {
       if (!name) return 'A contact needs a name.';
       const role = ['buyer', 'seller', 'landlord', 'tenant', 'other'].includes(a.role) ? a.role : 'other';
       const source = ['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'].includes(a.source) ? a.source : '';
+      const fica = ['requested', 'received', 'verified'].includes(a.fica_status) ? a.fica_status : '';
       const r = await c.query(
-        "INSERT INTO re_contacts (tenant_id, name, role, phone, email, source, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6) RETURNING id",
-        [name, role, clip(a.phone, 40), clip(a.email, 120), source, clip(a.notes, 1000)]);
-      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contact_saved', { contact_id: r.rows[0].id, source });
-      return `Saved ${name} as a ${role}${source ? ` (source: ${source})` : ''}.`;
+        "INSERT INTO re_contacts (tenant_id, name, role, phone, email, source, fica_status, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6,$7) RETURNING id",
+        [name, role, clip(a.phone, 40), clip(a.email, 120), source, fica, clip(a.notes, 1000)]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contact_saved', { contact_id: r.rows[0].id, source, fica_status: fica });
+      return `Saved ${name} as a ${role}${source ? ` (source: ${source})` : ''}${fica ? `, FICA ${fica}` : ''}.`;
+    }
+    case 'estate_update_contact': {
+      const nameKey = clip(a.name, 120).replace(/[%_]/g, '').trim();
+      if (!nameKey) return 'Give the contact name.';
+      const con = (await c.query("SELECT id, name, fica_status FROM re_contacts WHERE name ILIKE '%' || $1 || '%' ORDER BY updated_at DESC LIMIT 1", [nameKey])).rows[0];
+      if (!con) return 'No contact found with that name.';
+      const sets = [], vals = [];
+      if (a.fica_status != null) {
+        if (!['requested', 'received', 'verified'].includes(a.fica_status)) return 'FICA status must be requested, received or verified.';
+        sets.push(`fica_status=$${vals.push(a.fica_status)}`);
+      }
+      if (a.source != null) {
+        if (!['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'].includes(a.source)) return 'Source must be portal, website, referral, signboard, walk_in or other.';
+        sets.push(`source=$${vals.push(a.source)}`);
+      }
+      if (a.phone != null) sets.push(`phone=$${vals.push(clip(a.phone, 40))}`);
+      if (a.email != null) sets.push(`email=$${vals.push(clip(a.email, 120))}`);
+      if (a.note != null && String(a.note).trim()) sets.push(`notes = CASE WHEN notes='' THEN $${vals.push(clip(a.note, 1000))} ELSE notes || E'\n[' || to_char(now(),'YYYY-MM-DD') || '] ' || $${vals.push(clip(a.note, 1000))} END`);
+      if (!sets.length) return 'Nothing to update. Give a FICA status, source, phone, email or note.';
+      vals.push(con.id);
+      await c.query(`UPDATE re_contacts SET ${sets.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contact_updated', { contact_id: con.id });
+      return `${con.name} updated${a.fica_status ? ` - FICA ${a.fica_status}` : ''}.`;
     }
     case 'estate_add_property': {
       const title = clip(a.title, 200).trim();
@@ -443,8 +468,8 @@ export async function runTool(name, args, ctx) {
         return r.rowCount ? r.rows.map((x) => `- ${estateSAST(x.starts_at)} | ${x.property}${x.contact ? ` | ${x.contact}` : ''}`).join('\n') : 'No upcoming viewings.';
       }
       if (a.what === 'contacts') {
-        const r = await c.query('SELECT name, role, phone, email, source FROM re_contacts ORDER BY created_at DESC LIMIT 20');
-        return r.rowCount ? r.rows.map((x) => `- ${x.name} (${x.role})${x.phone ? ` | ${x.phone}` : ''}${x.email ? ` | ${x.email}` : ''}${x.source ? ` | via ${x.source}` : ''}`).join('\n') : 'No contacts yet.';
+        const r = await c.query('SELECT name, role, phone, email, source, fica_status FROM re_contacts ORDER BY created_at DESC LIMIT 20');
+        return r.rowCount ? r.rows.map((x) => `- ${x.name} (${x.role})${x.phone ? ` | ${x.phone}` : ''}${x.email ? ` | ${x.email}` : ''}${x.source ? ` | via ${x.source}` : ''}${x.fica_status ? ` | FICA ${x.fica_status}` : ''}`).join('\n') : 'No contacts yet.';
       }
       if (a.what === 'properties') {
         const r = await c.query('SELECT title, asking_price, status FROM re_properties ORDER BY created_at DESC LIMIT 20');

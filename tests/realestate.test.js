@@ -150,3 +150,18 @@ test('enquiry source: stored, validated, listed, tenant-isolated', async () => {
   const listB = await call(B, 'estate_list', { what: 'contacts' });
   assert.equal(listB, 'No contacts yet.');
 });
+
+test('contact FICA status: set on add, updated, listed, validated', async () => {
+  const r = await call(A, 'estate_add_contact', { name: 'FICA Fred', role: 'buyer', fica_status: 'requested' });
+  assert.match(r, /Saved FICA Fred as a buyer, FICA requested/);
+  const up = await call(A, 'estate_update_contact', { name: 'FICA Fred', fica_status: 'verified' });
+  assert.match(up, /FICA Fred updated - FICA verified/);
+  const list = await call(A, 'estate_list', { what: 'contacts' });
+  assert.match(list, /FICA Fred \(buyer\).*FICA verified/);
+  const bad = await call(A, 'estate_update_contact', { name: 'FICA Fred', fica_status: 'maybe' });
+  assert.match(bad, /requested, received or verified/);
+  const missing = await call(A, 'estate_update_contact', { name: 'No Such Person', fica_status: 'verified' });
+  assert.match(missing, /No contact found/);
+  const row = await withTenant(A, (c) => c.query("SELECT fica_status FROM re_contacts WHERE name='FICA Fred'").then((x) => x.rows[0]));
+  assert.equal(row.fica_status, 'verified');
+});
