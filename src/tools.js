@@ -103,6 +103,8 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_match', description: 'Real estate: structured matching. Give a property to find matching buyers (budget covers price, bedrooms met, area fits), or a buyer/contact name to find matching listings.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' } } } },
   { name: 'estate_find_duplicates', description: 'Real estate: list likely duplicate contacts (same normalized name, phone or email) so the agent can decide what to merge.', parameters: { type: 'object', properties: {} } },
   { name: 'estate_merge_contacts', description: 'Real estate: merge one duplicate contact into another. Deals, viewings and details move to the kept contact; the duplicate is hidden but never deleted. Without confirm this only previews the change; run with confirm true only after the customer explicitly confirms that exact merge.', parameters: { type: 'object', properties: { keep: { type: 'string', description: 'Name, phone or email of the contact to keep' }, merge: { type: 'string', description: 'Name, phone or email of the duplicate to merge into it' }, confirm: { type: 'boolean', description: 'True only after the customer explicitly confirmed this exact merge' } }, required: ['keep', 'merge'] } },
+  { name: 'estate_add_invoice', description: 'Real estate business: record an invoice you have issued (register only - HI never sends invoices or payment demands). contact matched by name or created as role other. status: draft, sent, paid or cancelled.', parameters: { type: 'object', properties: { invoice_no: { type: 'string' }, contact: { type: 'string' }, property: { type: 'string' }, amount: { type: ['number', 'string'] }, issued_on: { type: 'string' }, due_on: { type: 'string' }, status: { type: 'string' }, notes: { type: 'string' } }, required: ['amount'] } },
+  { name: 'estate_update_invoice', description: 'Real estate business: mark a recorded invoice draft, sent, paid or cancelled, matched by invoice number or contact name.', parameters: { type: 'object', properties: { invoice_no: { type: 'string' }, contact: { type: 'string' }, status: { type: 'string' }, notes: { type: 'string' } }, required: ['status'] } },
   { name: 'estate_add_expense', description: 'Real estate business: record an expense or mileage. category: marketing, travel, office, maintenance, professional, other. Amount in rand (optional for mileage-only entries), mileage_km optional. property optional.', parameters: { type: 'object', properties: { amount: { type: ['number', 'string'] }, category: { type: 'string' }, property: { type: 'string' }, vendor: { type: 'string' }, mileage_km: { type: 'number' }, spent_on: { type: 'string' }, notes: { type: 'string' } } } },
   { name: 'estate_record_payment', description: 'Real estate rentals: record a rent payment against the active lease on a property. Amount in rand, paid_on YYYY-MM-DD (default today), period optional (for example 2026-10). Only records what the agent says was paid.', parameters: { type: 'object', properties: { property: { type: 'string' }, amount: { type: ['number', 'string'] }, paid_on: { type: 'string' }, period: { type: 'string' }, notes: { type: 'string' } }, required: ['property', 'amount'] } },
   { name: 'estate_add_maintenance', description: 'Real estate rentals: log a maintenance request on a property. priority: low, normal or urgent. contact is who reported it (matched by name or created as role tenant).', parameters: { type: 'object', properties: { property: { type: 'string' }, title: { type: 'string' }, detail: { type: 'string' }, priority: { type: 'string' }, contact: { type: 'string' } }, required: ['property', 'title'] } },
@@ -112,7 +114,7 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, record the sale price and commission, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, sale_price: { type: 'string', description: 'Sale price in rands, e.g. "R1,250,000" or "1250000"' }, commission_pct: { type: 'number', description: 'Commission percent, e.g. 5 for 5%' }, note: { type: 'string' } } } },
   { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
   { name: 'estate_log_viewing', description: 'Real estate: record the outcome and feedback of a viewing (done, no_show or cancelled).', parameters: { type: 'object', properties: { property: { type: 'string' }, viewing_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'no_show', 'cancelled'] }, feedback: { type: 'string' } }, required: ['status'] } },
-  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts, properties, leases or items needing attention.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties', 'attention', 'leases', 'payments', 'maintenance', 'expenses'] } }, required: ['what'] } },
+  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts, properties, leases or items needing attention.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties', 'attention', 'leases', 'payments', 'maintenance', 'expenses', 'invoices'] } }, required: ['what'] } },
   { name: 'estate_enquiry_watch', description: 'Real estate: turn the enquiry watch on or off. When on, a scheduled task scans the connected inboxes for new property enquiries, saves contacts, starts deals and drafts approval-gated replies.', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['enable', 'disable'] }, every_minutes: { type: 'integer', description: 'How often to scan, minimum 60. Default 120.' } }, required: ['action'] } },
   { name: 'estate_seller_report', description: 'Real estate: create a seller progress report for a property as a downloadable markdown file.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_mandate_deck', description: 'Real estate: create a polished printable mandate pitch (HTML file) for a property, using only facts on record and the real count of matching buyers. Save for a seller meeting.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
@@ -563,6 +565,50 @@ export async function runTool(name, args, ctx) {
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.lease_recorded', { lease_id: r.rows[0].id, status });
       return `Lease recorded on ${prop.row.title}${prop.created ? ' (new property saved)' : ''}${contactName ? ` - tenant ${contactName}${contactCreated ? ' (new contact saved)' : ''}` : ''}${rent.v != null ? `, rent ${randFmt(rent.v)}/mo` : ''}. Status: ${status}.`;
     }
+    case 'estate_add_invoice': {
+      const cents = estatePriceCents(a.amount);
+      if (!Number.isFinite(cents) || cents <= 0) return 'Amount must be a rand amount like R8,550.';
+      if (a.issued_on && !estateDate(a.issued_on)) return 'Issued-on date must be YYYY-MM-DD.';
+      if (a.due_on && !estateDate(a.due_on)) return 'Due date must be YYYY-MM-DD.';
+      const status = ['draft', 'sent', 'paid', 'cancelled'].includes(a.status) ? a.status : 'sent';
+      let contactId = null, contactName = '';
+      if (String(a.contact ?? '').trim()) {
+        const con = await estateGetOrCreateContact(c, a.contact, 'other', clip);
+        if (con.error) return con.error;
+        contactId = con.row.id; contactName = con.row.name;
+      }
+      let propertyId = null;
+      if (String(a.property ?? '').trim()) {
+        const key = clip(a.property, 200).replace(/[%_]/g, '').trim();
+        const p = (await c.query('SELECT id FROM re_properties WHERE title ILIKE $1 ORDER BY updated_at DESC LIMIT 1', ['%' + key + '%'])).rows[0];
+        if (!p) return 'No property found with that name.';
+        propertyId = p.id;
+      }
+      const r = await c.query(
+        "INSERT INTO re_invoices (tenant_id, contact_id, property_id, invoice_no, amount_cents, issued_on, due_on, status, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,COALESCE($5::date, current_date),$6,$7,$8) RETURNING id",
+        [contactId, propertyId, clip(a.invoice_no, 40), cents, estateDate(a.issued_on), estateDate(a.due_on), status, clip(a.notes, 1000)]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.invoice_recorded', { invoice_id: r.rows[0].id, status, amount_cents: cents });
+      return `Invoice recorded: ${clip(a.invoice_no, 40) || 'no number'} ${randFmt(cents)}${contactName ? ` to ${contactName}` : ''}, status ${status}. This is your register - HI does not send invoices or payment demands.`;
+    }
+    case 'estate_update_invoice': {
+      const status = ['draft', 'sent', 'paid', 'cancelled'].includes(a.status) ? a.status : null;
+      if (!status) return 'Status must be draft, sent, paid or cancelled.';
+      const no = clip(a.invoice_no, 40).trim();
+      const cname = clip(a.contact, 120).replace(/[%_]/g, '').trim();
+      if (!no && !cname) return 'Give the invoice number or the contact name.';
+      const rows = (await c.query(
+        `SELECT i.id, i.invoice_no, i.amount_cents, co.name AS contact FROM re_invoices i LEFT JOIN re_contacts co ON co.id=i.contact_id
+         WHERE ($1 = '' OR i.invoice_no = $1) AND ($2 = '' OR co.name ILIKE '%' || $2 || '%') AND i.status <> 'cancelled'
+         ORDER BY i.updated_at DESC LIMIT 5`, [no, cname])).rows;
+      if (!rows.length) return 'No recorded invoice matched.';
+      if (rows.length > 1) return 'Several invoices match: ' + rows.map((r) => `${r.invoice_no || '(no number)'} ${r.contact || ''}`).join('; ') + '. Give the invoice number.';
+      const inv = rows[0];
+      await c.query(
+        "UPDATE re_invoices SET status=$2, notes = CASE WHEN $3='' THEN notes WHEN notes='' THEN $3 ELSE notes || E'\n' || $3 END, updated_at=now() WHERE id=$1",
+        [inv.id, status, clip(a.notes, 1000)]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.invoice_updated', { invoice_id: inv.id, status });
+      return `Invoice ${inv.invoice_no || '(no number)'}${inv.contact ? ` to ${inv.contact}` : ''} is now ${status}.`;
+    }
     case 'estate_add_expense': {
       const category = ['marketing', 'travel', 'office', 'maintenance', 'professional', 'other'].includes(a.category) ? a.category : 'other';
       const cents = (a.amount == null || a.amount === '') ? null : estatePriceCents(a.amount);
@@ -801,6 +847,14 @@ export async function runTool(name, args, ctx) {
         const lines = r.rows.map((x) => `- ${estateDateFmt(x.spent_on)} | ${x.category}${x.amount_cents != null ? ` | ${randFmt(x.amount_cents)}` : ''}${x.mileage_km != null ? ` | ${x.mileage_km} km` : ''}${x.vendor ? ` | ${x.vendor}` : ''}${x.property ? ` | ${x.property}` : ''}`);
         lines.push(`Recorded this month: ${randFmt(tot)}`);
         return lines.join('\n');
+      }
+      if (a.what === 'invoices') {
+        const r = await c.query(
+          `SELECT i.invoice_no, i.amount_cents, i.issued_on, i.due_on, i.status, co.name AS contact, p.title AS property
+           FROM re_invoices i LEFT JOIN re_contacts co ON co.id=i.contact_id LEFT JOIN re_properties p ON p.id=i.property_id
+           ORDER BY i.issued_on DESC LIMIT 30`);
+        if (!r.rowCount) return 'No invoices recorded yet. Record one with estate_add_invoice.';
+        return r.rows.map((x) => `- ${x.invoice_no || '(no number)'} | ${x.contact || 'no contact'} | ${randFmt(x.amount_cents)} | ${x.status} | issued ${estateDateFmt(x.issued_on)}${x.due_on ? `, due ${estateDateFmt(x.due_on)}` : ''}${x.property ? ` | ${x.property}` : ''}`).join('\n');
       }
       if (a.what === 'contacts') {
         const r = await c.query('SELECT name, role, phone, email, source, fica_status FROM re_contacts WHERE merged_into IS NULL ORDER BY created_at DESC LIMIT 20');

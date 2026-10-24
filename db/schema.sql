@@ -620,6 +620,27 @@ CREATE TABLE IF NOT EXISTS re_leases (
 );
 ALTER TABLE re_leases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_leases FORCE ROW LEVEL SECURITY;
+CREATE TABLE IF NOT EXISTS re_invoices (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  contact_id uuid REFERENCES re_contacts(id) ON DELETE SET NULL,
+  property_id uuid REFERENCES re_properties(id) ON DELETE SET NULL,
+  invoice_no text NOT NULL DEFAULT '',
+  amount_cents bigint NOT NULL,
+  issued_on date NOT NULL DEFAULT current_date,
+  due_on date,
+  status text NOT NULL DEFAULT 'sent' CHECK (status IN ('draft','sent','paid','cancelled')),
+  notes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE re_invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE re_invoices FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON re_invoices;
+CREATE POLICY tenant_isolation ON re_invoices USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON re_invoices TO hi_app;
+
 CREATE TABLE IF NOT EXISTS re_expenses (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,

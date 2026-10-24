@@ -201,3 +201,27 @@ test('expenses: record, list with month total, validation, isolation', async () 
   const ctxB = { agentId: AGENT, agentName: 'hi', userEmail: 'b@b.c', sources: [], steps: [], mode: 'chat' };
   assert.match(await withTenant(B, (c) => runTool('estate_list', { what: 'expenses' }, { ...ctxB, c, tenantId: B })), /No expenses recorded/);
 });
+
+test('invoices: record, list, update, overdue in attention, isolation', async () => {
+  const r = await call(A, 'estate_add_invoice', { invoice_no: 'INV-001', contact: 'Convey Co', amount: 'R8,550', issued_on: '2026-09-01', due_on: '2026-09-30' });
+  assert.match(r, /Invoice recorded: INV-001 R8 550 to Convey Co, status sent/);
+  assert.match(r, /HI does not send invoices or payment demands/);
+
+  const attn = await call(A, 'estate_list', { what: 'attention' });
+  assert.match(attn, /Invoice INV-001 to Convey Co: R8 550 recorded unpaid, \d+ days past the recorded due date 2026-09-30/);
+
+  const list = await call(A, 'estate_list', { what: 'invoices' });
+  assert.match(list, /INV-001 \| Convey Co \| R8 550 \| sent \| issued 2026-09-01, due 2026-09-30/);
+
+  const upd = await call(A, 'estate_update_invoice', { invoice_no: 'INV-001', status: 'paid' });
+  assert.match(upd, /Invoice INV-001 to Convey Co is now paid/);
+  const attn2 = await call(A, 'estate_list', { what: 'attention' });
+  assert.doesNotMatch(attn2, /INV-001/);
+
+  assert.match(await call(A, 'estate_add_invoice', { amount: 'lots' }), /rand amount/);
+  assert.match(await call(A, 'estate_update_invoice', { status: 'maybe' }), /Status must be/);
+  assert.match(await call(A, 'estate_update_invoice', { invoice_no: 'NOPE', status: 'paid' }), /No recorded invoice matched/);
+
+  const ctxB = { agentId: AGENT, agentName: 'hi', userEmail: 'b@b.c', sources: [], steps: [], mode: 'chat' };
+  assert.match(await withTenant(B, (c) => runTool('estate_list', { what: 'invoices' }, { ...ctxB, c, tenantId: B })), /No invoices recorded/);
+});

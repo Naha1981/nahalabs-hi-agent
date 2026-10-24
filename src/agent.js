@@ -60,6 +60,8 @@ const TOOL_LABELS = {
   estate_add_lease: 'Recorded a lease',
   estate_record_payment: 'Recorded a rent payment',
   estate_add_expense: 'Recorded an expense',
+  estate_add_invoice: 'Recorded an invoice',
+  estate_update_invoice: 'Updated an invoice',
   estate_add_maintenance: 'Logged a maintenance request',
   estate_update_maintenance: 'Updated a maintenance request',
   estate_add_property: 'Saved a property',

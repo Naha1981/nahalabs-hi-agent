@@ -55,6 +55,16 @@ export async function estateAttention(c) {
       items.push({ kind: 'rent_arrears', text: `${r.property}${r.tenant_name ? ` (${r.tenant_name})` : ''}: recorded rent payments ${fmt(r.paid_cents)} of ${fmt(expected)} due since ${dateFmt(r.start_date)} - ${fmt(shortfall)} short, assuming monthly rent from the lease start; check the lease for actual due dates, and recorded payments may not cover every period` });
     }
   }
+  // Recorded invoices past their due date. Register only - no demand is ever sent.
+  const inv = (await c.query(
+    `SELECT i.invoice_no, i.amount_cents, i.due_on, co.name AS contact, (current_date - i.due_on)::int AS days_past
+     FROM re_invoices i LEFT JOIN re_contacts co ON co.id = i.contact_id
+     WHERE i.status = 'sent' AND i.due_on IS NOT NULL AND i.due_on < current_date
+     ORDER BY i.due_on LIMIT 10`)).rows;
+  for (const r of inv) {
+    const fmt = (x) => 'R' + Math.round(Number(x) / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    items.push({ kind: 'invoice_overdue', text: `Invoice ${r.invoice_no || '(no number)'}${r.contact ? ` to ${r.contact}` : ''}: ${fmt(r.amount_cents)} recorded unpaid, ${r.days_past} days past the recorded due date ${dateFmt(r.due_on)}` });
+  }
   // Maintenance requests sitting unresolved.
   const maint = (await c.query(
     `SELECT m.title, m.priority, p.title AS property, (current_date - m.reported_on)::int AS days_open
