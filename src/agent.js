@@ -206,7 +206,7 @@ ${r.answer}`)
             msgs.push({ role: 'tool', tool_call_id: t.id, content: wrapToolResult(nonce, 'run_plan', String(planResult).slice(0, 8000)) });
             continue;
           }
-          const result = await withTenant(tenantId, (c) => runTool(t.name, t.args, { c, tenantId, userEmail, agentId, agentName: agent.name, fetchImpl, lookup, sources, steps, mode, taskId, trackMailMessages, mailMessagesSeen })).catch((e) => 'Tool error: ' + String(e.message).slice(0, 120));
+          const result = await withTenant(tenantId, (c) => runTool(t.name, t.args, { c, tenantId, userEmail, agentId, agentName: agent.name, fetchImpl, lookup, sources, steps, mode, taskId, voice, trackMailMessages, mailMessagesSeen })).catch((e) => 'Tool error: ' + String(e.message).slice(0, 120));
           steps.push({ type: 'tool', name: t.name, args: JSON.stringify(t.args || {}).slice(0, 200) });
           msgs.push({ role: 'tool', tool_call_id: t.id, content: wrapToolResult(nonce, t.name, String(result).slice(0, 8000)) });
         }
