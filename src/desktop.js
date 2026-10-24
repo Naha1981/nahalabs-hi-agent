@@ -162,6 +162,17 @@ export async function publishDesktopRecording(c, tenantId, recordingId, name, de
   return { skill, recording_id: row.id, actions_count: actions.length };
 }
 
+export async function getDesktopRecording(c, recordingId) {
+  if (!UUID_RE.test(String(recordingId || ''))) throw new DesktopFeatureError('Invalid recording id.');
+  const row = (await c.query(
+    "SELECT r.id, r.title, r.status, r.actions, r.created_at, r.finished_at, s.name AS skill_name FROM desktop_recordings r LEFT JOIN skills s ON s.id=r.skill_id WHERE r.id=$1",
+    [recordingId],
+  )).rows[0];
+  if (!row) throw new DesktopFeatureError('Recording not found.', 404);
+  // The actions have already been projected to a strict metadata-only shape on write.
+  return { ...row, actions_count: Array.isArray(row.actions) ? row.actions.length : 0 };
+}
+
 export async function listDesktopRecordings(c) {
   return (await c.query(
     "SELECT r.id, r.title, r.status, jsonb_array_length(r.actions) AS actions_count, r.created_at, r.finished_at, s.name AS skill_name FROM desktop_recordings r LEFT JOIN skills s ON s.id=r.skill_id ORDER BY r.created_at DESC LIMIT 30",
