@@ -510,6 +510,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON integrations TO hi_app;
 
 -- Column additions for existing databases (CREATE TABLE IF NOT EXISTS cannot add columns)
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS morning_brief_auto boolean NOT NULL DEFAULT false;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS viewing_reminders_auto boolean NOT NULL DEFAULT false;  -- Settings opt-in: email own address before viewings
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS surfaced_at timestamptz;
 
 -- ===== Real estate module =====
@@ -580,6 +581,7 @@ CREATE TABLE IF NOT EXISTS re_viewings (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE re_viewings ADD COLUMN IF NOT EXISTS reminder_sent_at timestamptz;  -- claimed when the reminder email is sent; NULL = not reminded yet
 ALTER TABLE re_viewings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_viewings FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON re_viewings;

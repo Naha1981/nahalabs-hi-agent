@@ -8,6 +8,7 @@ import { withTenant, withSystem, audit, auditFor, closePool, assertSchemaReady }
 import { hashPassword, verifyPassword, newToken, tokenHash, makeLimiter } from './auth.js';
 import { page, esc, fdate, safeUrl, drivePage } from './views.js';
 import { ingest } from './ingest.js';
+import { runViewingReminders } from './reminders.js';
 import { matchTenant, matchAllTenants } from './match.js';
 import { buildBriefsForAll, decideApproval, setEmergencyStop, emergencyStopped, vaultAlerts } from './core.js';
 import { explainFit, modelEnabled } from './gateway.js';
@@ -72,7 +73,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const token = req.cookies?.[COOKIE];
     if (!token) return null;
     const r = await withSystem((c) => c.query(
-      `SELECT u.id user_id, u.email, u.tenant_id, t.name tenant_name, t.paused, t.morning_brief_auto
+      `SELECT u.id user_id, u.email, u.tenant_id, t.name tenant_name, t.paused, t.morning_brief_auto, t.viewing_reminders_auto
        FROM sessions s JOIN users u ON u.id=s.user_id JOIN tenants t ON t.id=s.tenant_id
        WHERE s.token_hash=$1 AND s.expires_at > now()`, [tokenHash(token)]));
     const u = r.rows[0];
@@ -424,6 +425,8 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       <form method="post" action="/app/settings/pause">${csrf(u)}<button name="paused" value="${u.paused ? 'false' : 'true'}" class="${u.paused ? '' : 'danger'}">${u.paused ? 'Resume' : 'Pause my account'}</button></form></div>
       <div class="card"><b>Morning brief</b><p class="mut">HI drafts you a short brief every morning (calendar, inbox highlights, new tender matches, approvals waiting). ${u.morning_brief_auto ? 'It is emailed to your own address automatically.' : 'It waits in Approvals for you each morning until you switch on auto-send.'}</p>
       <form method="post" action="/app/settings/morning-brief">${csrf(u)}<button name="on" value="${u.morning_brief_auto ? 'false' : 'true'}" class="sec">${u.morning_brief_auto ? 'Switch off auto-send' : 'Auto-send my morning brief to my own address'}</button></form></div>
+      <div class="card"><b>Viewing reminders</b><p class="mut">${u.viewing_reminders_auto ? 'HI emails your own address up to 24 hours before each scheduled viewing.' : 'HI can email your own address up to 24 hours before each scheduled viewing. It never emails your clients.'}</p>
+      <form method="post" action="/app/settings/viewing-reminders">${csrf(u)}<button name="on" value="${u.viewing_reminders_auto ? 'false' : 'true'}" class="sec">${u.viewing_reminders_auto ? 'Switch off viewing reminders' : 'Email me viewing reminders'}</button></form></div>
       <div class="card"><b>Connections</b><ul><li>Official tender open data: active</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
   });
   app.post('/app/settings/morning-brief', { preHandler: guard }, async (req, reply) => {
@@ -431,6 +434,12 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     await withSystem((c) => c.query('UPDATE tenants SET morning_brief_auto=$2 WHERE id=$1', [u.tenant_id, on]));
     await auditFor(u.tenant_id, `user:${u.user_id}`, on ? 'tenant.morning_brief_auto.on' : 'tenant.morning_brief_auto.off', {});
     return reply.redirect('/app/settings?m=' + encodeURIComponent(on ? 'Morning brief will be emailed to your own address each morning.' : 'Morning brief auto-send is off.'));
+  });
+  app.post('/app/settings/viewing-reminders', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, on = req.body?.on === 'true';
+    await withSystem((c) => c.query('UPDATE tenants SET viewing_reminders_auto=$2 WHERE id=$1', [u.tenant_id, on]));
+    await auditFor(u.tenant_id, `user:${u.user_id}`, on ? 'tenant.viewing_reminders_auto.on' : 'tenant.viewing_reminders_auto.off', {});
+    return reply.redirect('/app/settings?m=' + encodeURIComponent(on ? 'Viewing reminders will be emailed to your own address.' : 'Viewing reminders are off.'));
   });
   app.post('/app/settings/pause', { preHandler: guard }, async (req, reply) => {
     const u = req.user, paused = req.body?.paused === 'true';
@@ -934,6 +943,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     if (job === 'brief' || job === 'all') out.brief = await buildBriefsForAll();
     if (job === 'tasks' || job === 'all') out.tasks = await runDueTasks({ llm, fetchImpl, lookup });
     if (job === 'morning-brief') out.morning_brief = await buildMorningBriefs({ fetchImpl });
+    if (job === 'viewing-reminders' || job === 'all') out.viewing_reminders = await runViewingReminders({ fetchImpl });
     return out;
   });
   app.post('/internal/stop', { preHandler: cronAuth }, async (req) => { await setEmergencyStop(req.query.on !== 'false'); return { emergency_stop: req.query.on !== 'false' }; });

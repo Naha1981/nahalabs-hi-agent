@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "migrate": "node src/migrate.js",
-    "test": "node --test --test-concurrency=1 tests/isolation.test.js tests/flows.test.js tests/agent.test.js tests/browser.test.js tests/whatsapp.test.js tests/api.test.js tests/integrations.test.js tests/voice.test.js tests/xlsx.test.js tests/reset.test.js tests/realestate.test.js tests/uploads.test.js tests/bootguard.test.js"
+    "test": "node --test --test-concurrency=1 tests/isolation.test.js tests/flows.test.js tests/agent.test.js tests/browser.test.js tests/whatsapp.test.js tests/api.test.js tests/integrations.test.js tests/voice.test.js tests/xlsx.test.js tests/reset.test.js tests/realestate.test.js tests/uploads.test.js tests/reminders.test.js tests/bootguard.test.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
