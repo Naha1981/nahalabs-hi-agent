@@ -105,7 +105,7 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_merge_contacts', description: 'Real estate: merge one duplicate contact into another. Deals, viewings and details move to the kept contact; the duplicate is hidden but never deleted. Without confirm this only previews the change; run with confirm true only after the customer explicitly confirms that exact merge.', parameters: { type: 'object', properties: { keep: { type: 'string', description: 'Name, phone or email of the contact to keep' }, merge: { type: 'string', description: 'Name, phone or email of the duplicate to merge into it' }, confirm: { type: 'boolean', description: 'True only after the customer explicitly confirmed this exact merge' } }, required: ['keep', 'merge'] } },
   { name: 'estate_add_invoice', description: 'Real estate business: record an invoice you have issued (register only - HI never sends invoices or payment demands). contact matched by name or created as role other. status: draft, sent, paid or cancelled.', parameters: { type: 'object', properties: { invoice_no: { type: 'string' }, contact: { type: 'string' }, property: { type: 'string' }, amount: { type: ['number', 'string'] }, issued_on: { type: 'string' }, due_on: { type: 'string' }, status: { type: 'string' }, notes: { type: 'string' } }, required: ['amount'] } },
   { name: 'estate_update_invoice', description: 'Real estate business: mark a recorded invoice draft, sent, paid or cancelled, matched by invoice number or contact name.', parameters: { type: 'object', properties: { invoice_no: { type: 'string' }, contact: { type: 'string' }, status: { type: 'string' }, notes: { type: 'string' } }, required: ['status'] } },
-  { name: 'estate_add_expense', description: 'Real estate business: record an expense or mileage. category: marketing, travel, office, maintenance, professional, other. Amount in rand (optional for mileage-only entries), mileage_km optional. property optional.', parameters: { type: 'object', properties: { amount: { type: ['number', 'string'] }, category: { type: 'string' }, property: { type: 'string' }, vendor: { type: 'string' }, mileage_km: { type: 'number' }, spent_on: { type: 'string' }, notes: { type: 'string' } } } },
+  { name: 'estate_add_expense', description: 'Real estate business: record an expense or mileage. category: marketing, travel, office, maintenance, professional, other. Amount in rand (optional for mileage-only entries), mileage_km optional. property optional. channel ties marketing spend to an enquiry source: portal, website, referral, signboard, walk_in or other.', parameters: { type: 'object', properties: { amount: { type: ['number', 'string'] }, category: { type: 'string' }, property: { type: 'string' }, vendor: { type: 'string' }, mileage_km: { type: 'number' }, spent_on: { type: 'string' }, channel: { type: 'string' }, notes: { type: 'string' } } } },
   { name: 'estate_record_payment', description: 'Real estate rentals: record a rent payment against the active lease on a property. Amount in rand, paid_on YYYY-MM-DD (default today), period optional (for example 2026-10). Only records what the agent says was paid.', parameters: { type: 'object', properties: { property: { type: 'string' }, amount: { type: ['number', 'string'] }, paid_on: { type: 'string' }, period: { type: 'string' }, notes: { type: 'string' } }, required: ['property', 'amount'] } },
   { name: 'estate_add_maintenance', description: 'Real estate rentals: log a maintenance request on a property. priority: low, normal or urgent. contact is who reported it (matched by name or created as role tenant).', parameters: { type: 'object', properties: { property: { type: 'string' }, title: { type: 'string' }, detail: { type: 'string' }, priority: { type: 'string' }, contact: { type: 'string' } }, required: ['property', 'title'] } },
   { name: 'estate_update_maintenance', description: 'Real estate rentals: update a maintenance request status (open, in_progress, done, cancelled), matched by property and title words.', parameters: { type: 'object', properties: { property: { type: 'string' }, title: { type: 'string' }, status: { type: 'string' }, notes: { type: 'string' } }, required: ['property', 'status'] } },
@@ -114,7 +114,7 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, record the sale price and commission, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, sale_price: { type: 'string', description: 'Sale price in rands, e.g. "R1,250,000" or "1250000"' }, commission_pct: { type: 'number', description: 'Commission percent, e.g. 5 for 5%' }, note: { type: 'string' } } } },
   { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
   { name: 'estate_log_viewing', description: 'Real estate: record the outcome and feedback of a viewing (done, no_show or cancelled).', parameters: { type: 'object', properties: { property: { type: 'string' }, viewing_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'no_show', 'cancelled'] }, feedback: { type: 'string' } }, required: ['status'] } },
-  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts, properties, leases or items needing attention.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties', 'attention', 'leases', 'payments', 'maintenance', 'expenses', 'invoices'] } }, required: ['what'] } },
+  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts, properties, leases or items needing attention.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties', 'attention', 'leases', 'payments', 'maintenance', 'expenses', 'invoices', 'spend'] } }, required: ['what'] } },
   { name: 'estate_enquiry_watch', description: 'Real estate: turn the enquiry watch on or off. When on, a scheduled task scans the connected inboxes for new property enquiries, saves contacts, starts deals and drafts approval-gated replies.', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['enable', 'disable'] }, every_minutes: { type: 'integer', description: 'How often to scan, minimum 60. Default 120.' } }, required: ['action'] } },
   { name: 'estate_seller_report', description: 'Real estate: create a seller progress report for a property as a downloadable markdown file.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_mandate_deck', description: 'Real estate: create a polished printable mandate pitch (HTML file) for a property, using only facts on record and the real count of matching buyers. Save for a seller meeting.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
@@ -372,6 +372,18 @@ export async function runTool(name, args, ctx) {
         sets.push(`bedrooms_needed=$${vals.push(beds)}`);
       }
       if (a.areas != null) sets.push(`areas=$${vals.push(clip(a.areas, 200))}`);
+      if (a.qualification_status != null) {
+        if (!['', 'unqualified', 'working', 'qualified'].includes(a.qualification_status)) return 'Qualification status must be unqualified, working or qualified.';
+        sets.push(`qualification_status=$${vals.push(a.qualification_status)}`);
+      }
+      if (a.bond_status != null) {
+        if (!['', 'unknown', 'preapproved', 'not_preapproved'].includes(a.bond_status)) return 'Bond status must be unknown, preapproved or not_preapproved.';
+        sets.push(`bond_status=$${vals.push(a.bond_status)}`);
+      }
+      if (a.timeframe != null) {
+        if (!['', '0-3 months', '3-6 months', '6+ months'].includes(a.timeframe)) return "Timeframe must be '0-3 months', '3-6 months' or '6+ months'.";
+        sets.push(`timeframe=$${vals.push(a.timeframe)}`);
+      }
       if (a.note != null && String(a.note).trim()) sets.push(`notes = CASE WHEN notes='' THEN $${vals.push(clip(a.note, 1000))} ELSE notes || E'\n[' || to_char(now(),'YYYY-MM-DD') || '] ' || $${vals.push(clip(a.note, 1000))} END`);
       if (!sets.length) return 'Nothing to update. Give a FICA status, source, phone, email, budget, bedrooms needed, areas or note.';
       vals.push(con.id);
@@ -613,6 +625,8 @@ export async function runTool(name, args, ctx) {
       const category = ['marketing', 'travel', 'office', 'maintenance', 'professional', 'other'].includes(a.category) ? a.category : 'other';
       const cents = (a.amount == null || a.amount === '') ? null : estatePriceCents(a.amount);
       if (a.amount != null && a.amount !== '' && !Number.isFinite(cents)) return 'Amount must be a rand amount like R850.';
+      const channel = ['', 'portal', 'website', 'referral', 'signboard', 'walk_in', 'other'].includes(a.channel || '') ? (a.channel || '') : null;
+      if (channel === null) return 'Channel must be portal, website, referral, signboard, walk_in or other.';
       const km = a.mileage_km == null ? null : Number(a.mileage_km);
       if (km != null && (!Number.isFinite(km) || km <= 0 || km > 5000)) return 'Mileage must be kilometres, 0-5000.';
       if (cents == null && km == null) return 'Give an amount, kilometres, or both.';
@@ -625,8 +639,8 @@ export async function runTool(name, args, ctx) {
         propertyId = p.id; propertyTitle = p.title;
       }
       await c.query(
-        "INSERT INTO re_expenses (tenant_id, property_id, category, amount_cents, mileage_km, vendor, spent_on, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,COALESCE($6::date, current_date),$7)",
-        [propertyId, category, cents, km, clip(a.vendor, 120), estateDate(a.spent_on), clip(a.notes, 1000)]);
+        "INSERT INTO re_expenses (tenant_id, property_id, category, amount_cents, mileage_km, vendor, spent_on, notes, channel) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,COALESCE($6::date, current_date),$7,$8)",
+        [propertyId, category, cents, km, clip(a.vendor, 120), estateDate(a.spent_on), clip(a.notes, 1000), channel]);
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.expense_recorded', { category, amount_cents: cents, mileage_km: km });
       return `Expense recorded: ${category}${cents != null ? ` ${randFmt(cents)}` : ''}${km != null ? ` ${km} km` : ''}${a.vendor ? ` at ${clip(a.vendor, 120)}` : ''}${propertyTitle ? ` for ${propertyTitle}` : ''}. These are your own records - HI does not calculate tax or claims.`;
     }
@@ -856,9 +870,25 @@ export async function runTool(name, args, ctx) {
         if (!r.rowCount) return 'No invoices recorded yet. Record one with estate_add_invoice.';
         return r.rows.map((x) => `- ${x.invoice_no || '(no number)'} | ${x.contact || 'no contact'} | ${randFmt(x.amount_cents)} | ${x.status} | issued ${estateDateFmt(x.issued_on)}${x.due_on ? `, due ${estateDateFmt(x.due_on)}` : ''}${x.property ? ` | ${x.property}` : ''}`).join('\n');
       }
+      if (a.what === 'spend') {
+        const r = (await c.query(
+          `SELECT src, sum(spend)::bigint AS spend, sum(enquiries)::int AS enquiries FROM (
+             SELECT channel AS src, sum(amount_cents) AS spend, 0 AS enquiries FROM re_expenses WHERE channel <> '' AND amount_cents IS NOT NULL GROUP BY channel
+             UNION ALL
+             SELECT source AS src, 0 AS spend, count(*) AS enquiries FROM re_contacts WHERE source <> '' AND merged_into IS NULL GROUP BY source
+           ) x GROUP BY src ORDER BY src`)).rows;
+        if (!r.length) return 'No spend or enquiry sources recorded yet. Add channel to marketing expenses and sources to contacts.';
+        const fmtC = (v) => 'R' + Math.round(Number(v) / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+        const lines = r.map((x) => {
+          const cpe = x.enquiries > 0 && x.spend > 0 ? ` | cost per enquiry ${fmtC(Number(x.spend) / x.enquiries)}` : '';
+          return `- ${x.src}: ${x.enquiries} enquir${x.enquiries === 1 ? 'y' : 'ies'} | recorded spend ${fmtC(x.spend)}${cpe}`;
+        });
+        lines.push('Cost per enquiry uses recorded marketing spend divided by recorded enquiries - it is not ROI: HI has no revenue attribution.');
+        return lines.join('\n');
+      }
       if (a.what === 'contacts') {
-        const r = await c.query('SELECT name, role, phone, email, source, fica_status FROM re_contacts WHERE merged_into IS NULL ORDER BY created_at DESC LIMIT 20');
-        return r.rowCount ? r.rows.map((x) => `- ${x.name} (${x.role})${x.phone ? ` | ${x.phone}` : ''}${x.email ? ` | ${x.email}` : ''}${x.source ? ` | via ${x.source}` : ''}${x.fica_status ? ` | FICA ${x.fica_status}` : ''}`).join('\n') : 'No contacts yet.';
+        const r = await c.query('SELECT name, role, phone, email, source, fica_status, qualification_status, bond_status, timeframe FROM re_contacts WHERE merged_into IS NULL ORDER BY created_at DESC LIMIT 20');
+        return r.rowCount ? r.rows.map((x) => `- ${x.name} (${x.role})${x.phone ? ` | ${x.phone}` : ''}${x.email ? ` | ${x.email}` : ''}${x.source ? ` | via ${x.source}` : ''}${x.fica_status ? ` | FICA ${x.fica_status}` : ''}${x.qualification_status ? ` | ${x.qualification_status}` : ''}${x.bond_status === 'preapproved' ? ' | bond preapproved' : (x.bond_status === 'not_preapproved' ? ' | no bond pre-approval' : '')}${x.timeframe ? ` | ${x.timeframe}` : ''}`).join('\n') : 'No contacts yet.';
       }
       if (a.what === 'properties') {
         const r = await c.query('SELECT title, asking_price, status FROM re_properties ORDER BY created_at DESC LIMIT 20');

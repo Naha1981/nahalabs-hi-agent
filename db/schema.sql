@@ -535,7 +535,10 @@ ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS fica_status text NOT NULL DEFAU
 ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS budget_cents bigint CHECK (budget_cents >= 0);
 ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS bedrooms_needed smallint CHECK (bedrooms_needed BETWEEN 0 AND 20);
 ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS areas text NOT NULL DEFAULT '';  -- comma-separated preferred suburbs
-ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS merged_into uuid REFERENCES re_contacts(id);  -- soft merge: duplicates stay recoverable, lists hide merged rows
+ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS merged_into uuid REFERENCES re_contacts(id);
+ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS qualification_status text NOT NULL DEFAULT '';  -- '', unqualified, working, qualified
+ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS bond_status text NOT NULL DEFAULT '';  -- '', unknown, preapproved, not_preapproved
+ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS timeframe text NOT NULL DEFAULT '';  -- '', 0-3 months, 3-6 months, 6+ months
 ALTER TABLE re_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_contacts FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON re_contacts;
@@ -656,6 +659,7 @@ CREATE TABLE IF NOT EXISTS re_expenses (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE re_expenses ADD COLUMN IF NOT EXISTS channel text NOT NULL DEFAULT '';  -- enquiry-source channel this spend belongs to: portal, website, referral, signboard, walk_in, other
 ALTER TABLE re_expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_expenses FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON re_expenses;

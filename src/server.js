@@ -640,7 +640,20 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
         WHERE v.status='scheduled' AND v.starts_at > now() - interval '1 day' ORDER BY v.starts_at LIMIT 20`)).rows,
       props: (await c.query(`SELECT count(*)::int n FROM re_properties`)).rows[0].n,
       contacts: (await c.query(`SELECT count(*)::int n FROM re_contacts`)).rows[0].n,
-      sources: (await c.query(`SELECT source, count(*)::int n FROM re_contacts WHERE source <> '' GROUP BY source ORDER BY n DESC`)).rows,
+      sources: (await c.query(`SELECT src, sum(spend)::bigint AS spend, sum(enquiries)::int AS enquiries FROM (
+        SELECT channel AS src, sum(amount_cents) AS spend, 0 AS enquiries FROM re_expenses WHERE channel <> '' AND amount_cents IS NOT NULL GROUP BY channel
+        UNION ALL
+        SELECT source AS src, 0 AS spend, count(*) AS enquiries FROM re_contacts WHERE source <> '' AND merged_into IS NULL GROUP BY source
+      ) x GROUP BY src ORDER BY enquiries DESC, src`)).rows,
+      leases: (await c.query(`SELECT l.rent_cents, l.end_date, l.status, p.title AS property, co.name AS tenant
+        FROM re_leases l JOIN re_properties p ON p.id=l.property_id LEFT JOIN re_contacts co ON co.id=l.contact_id WHERE l.status='active' ORDER BY l.end_date ASC NULLS LAST LIMIT 10`)).rows,
+      maintenance: (await c.query(`SELECT m.title, m.priority, m.reported_on, m.status, p.title AS property
+        FROM re_maintenance m JOIN re_properties p ON p.id=m.property_id WHERE m.status IN ('open','in_progress') ORDER BY CASE m.priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END, m.reported_on LIMIT 10`)).rows,
+      payments: (await c.query(`SELECT rp.amount_cents, rp.paid_on, rp.period, p.title AS property, co.name AS tenant
+        FROM re_lease_payments rp JOIN re_leases l ON l.id=rp.lease_id JOIN re_properties p ON p.id=l.property_id LEFT JOIN re_contacts co ON co.id=l.contact_id ORDER BY rp.paid_on DESC, rp.created_at DESC LIMIT 5`)).rows,
+      monthExpenses: (await c.query(`SELECT COALESCE(sum(amount_cents),0)::bigint AS total, count(*)::int AS n FROM re_expenses WHERE amount_cents IS NOT NULL AND spent_on >= date_trunc('month', current_date)::date`)).rows[0],
+      unpaidInvoices: (await c.query(`SELECT i.invoice_no, i.amount_cents, i.due_on, co.name AS contact
+        FROM re_invoices i LEFT JOIN re_contacts co ON co.id=i.contact_id WHERE i.status='sent' ORDER BY i.due_on ASC NULLS LAST LIMIT 5`)).rows,
       attention: await estateAttention(c),
     }));
     const due = data.deals.filter((d) => OPEN.includes(d.stage) && d.next_action && d.next_action_date && fd(d.next_action_date) <= fd(new Date(Date.now() + 3 * 86400000)));
@@ -652,14 +665,23 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     }).join('');
     const dueRows = due.map((d) => `<tr><td>${fd(d.next_action_date)}</td><td>${esc(d.property)}</td><td>${esc(d.contact || '')}</td><td>${esc(d.next_action)}</td></tr>`).join('');
     const viewRows = data.viewings.map((v) => `<tr><td>${new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(v.starts_at)).replace(',', '')} SAST</td><td>${esc(v.property)}</td><td>${esc(v.contact || '')}</td></tr>`).join('');
-    const empty = !data.deals.length && !data.viewings.length;
+    const empty = !data.deals.length && !data.viewings.length && !data.leases.length && !data.maintenance.length && !data.payments.length && !data.unpaidInvoices.length && !data.monthExpenses.n;
     const attnCard = data.attention.length ? `<div class="card"><b>Needs attention</b> <span class="chip">${data.attention.length}</span><table style="margin-top:8px">${data.attention.map((x) => `<tr><td>${esc(x.text)}</td></tr>`).join('')}</table></div>` : '';
-    const srcCard = data.sources.length ? `<div class="card"><b>Enquiries by source</b><p class="mut" style="margin:6px 0 0">${data.sources.map((x) => `${esc(x.source.replace('_', ' '))}: ${x.n}`).join(' &middot; ')}</p><p class="mut" style="margin:6px 0 0">Tell HI where each enquiry came from (portal, website, referral, signboard, walk-in) so this stays useful.</p></div>` : '';
+    const fmtR = (v) => 'R' + Math.round(Number(v) / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    const srcCard = data.sources.length ? `<div class="card"><b>Enquiries by source</b><table style="margin-top:8px"><tr><th>Source</th><th>Enquiries</th><th>Recorded spend</th><th>Cost per enquiry</th></tr>${data.sources.map((x) => `<tr><td>${esc(x.src.replace('_', ' '))}</td><td>${x.enquiries}</td><td>${x.spend > 0 ? fmtR(x.spend) : '<span class="mut">-</span>'}</td><td>${x.enquiries > 0 && x.spend > 0 ? fmtR(Number(x.spend) / x.enquiries) : '<span class="mut">-</span>'}</td></tr>`).join('')}</table><p class="mut" style="margin:6px 0 0">Cost per enquiry is recorded marketing spend divided by recorded enquiries - not ROI, HI does not track revenue attribution. Tell HI the channel on marketing expenses ("record R1 200 portal spend for October") and the source on each enquiry.</p></div>` : '';
+    const leaseRows = data.leases.map((l) => `<tr><td>${esc(l.property)}</td><td>${esc(l.tenant || '')}</td><td>${l.rent_cents != null ? `${fmtR(l.rent_cents)} / month` : '<span class="mut">-</span>'}</td><td>${l.end_date ? esc(fd(l.end_date)) : '<span class="mut">no end date</span>'}</td></tr>`).join('');
+    const maintRows = data.maintenance.map((m) => `<tr><td>${esc(m.title)}</td><td>${esc(m.property)}</td><td>${esc(m.priority)}</td><td class="mut">${esc(fd(m.reported_on))} &middot; ${esc(m.status.replace('_', ' '))}</td></tr>`).join('');
+    const payRows = data.payments.map((p) => `<tr><td>${esc(fd(p.paid_on))}</td><td>${fmtR(p.amount_cents)}${p.period ? ` (${esc(p.period)})` : ''}</td><td>${esc([p.property, p.tenant].filter(Boolean).join(' - '))}</td></tr>`).join('');
+    const invRows = data.unpaidInvoices.map((i) => `<tr><td>${esc(i.invoice_no || '(no number)')}</td><td>${fmtR(i.amount_cents)}</td><td>${esc(i.contact || '')}</td><td>${i.due_on ? `due ${esc(fd(i.due_on))}` : ''}</td></tr>`).join('');
+    const moneyCard = (payRows || invRows || data.monthExpenses.n) ? `<div class="card"><b>Money records</b>${data.monthExpenses.n ? `<p class="mut" style="margin:6px 0 0">Expenses this month: <b>${fmtR(data.monthExpenses.total)}</b> across ${data.monthExpenses.n} entr${data.monthExpenses.n === 1 ? 'y' : 'ies'}.</p>` : ''}${payRows ? `<p class="mut" style="margin:10px 0 0"><b>Recent payments</b></p><table style="margin-top:4px">${payRows}</table>` : ''}${invRows ? `<p class="mut" style="margin:10px 0 0"><b>Unpaid invoices</b></p><table style="margin-top:4px">${invRows}</table>` : ''}</div>` : '';
     return render(reply, u, 'Estate', `
       <h1><b>Estate</b> deals, viewings and follow-ups.</h1>${attnCard}${srcCard}
       <p class="mut">${data.props} properties, ${data.contacts} contacts on record. Manage it by talking to HI - for example: <i>"Add a deal for 12 Oak Street with buyer Sipho, offer stage, next action: bank docs by Friday"</i> or <i>"seller report for 12 Oak Street"</i>.</p>
       ${empty ? '<div class="card empty">Nothing tracked yet. Tell HI about a property, a buyer or a deal and it appears here.</div>' : ''}
       ${dueRows ? `<div class="card"><b>Overdue and upcoming follow-ups</b><table style="margin-top:8px"><tr><th>Due</th><th>Property</th><th>Who</th><th>Action</th></tr>${dueRows}</table></div>` : ''}
+      ${leaseRows ? `<div class="card"><b>Active leases</b><table style="margin-top:8px"><tr><th>Property</th><th>Tenant</th><th>Rent</th><th>Ends</th></tr>${leaseRows}</table></div>` : ''}
+      ${maintRows ? `<div class="card"><b>Open maintenance</b><table style="margin-top:8px"><tr><th>Issue</th><th>Property</th><th>Priority</th><th>Reported</th></tr>${maintRows}</table></div>` : ''}
+      ${moneyCard}
       ${viewRows ? `<div class="card"><b>Upcoming viewings</b><table style="margin-top:8px"><tr><th>When</th><th>Property</th><th>Who</th></tr>${viewRows}</table></div>` : ''}
       ${cards}`, flashOf(req));
   });

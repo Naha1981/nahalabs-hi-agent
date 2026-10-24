@@ -74,5 +74,11 @@ export async function estateAttention(c) {
   for (const r of maint) {
     items.push({ kind: 'maintenance_open', text: `${r.property}: maintenance "${r.title}" ${r.status === 'in_progress' ? 'in progress' : 'open'} ${r.days_open} days${r.priority === 'urgent' ? ' (urgent)' : ''}` });
   }
+  // Buyers/tenants with no qualification recorded: one summary line, not per-contact noise.
+  const unq = (await c.query(
+    `SELECT count(*)::int AS n FROM re_contacts WHERE role IN ('buyer','tenant') AND qualification_status = '' AND merged_into IS NULL`)).rows[0].n;
+  if (unq > 0) {
+    items.push({ kind: 'qualification_gap', text: `${unq} buyer/tenant contact${unq === 1 ? '' : 's'} have no qualification recorded - ask budget, bond pre-approval and timeframe before matching` });
+  }
   return items;
 }
