@@ -73,7 +73,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const token = req.cookies?.[COOKIE];
     if (!token) return null;
     const r = await withSystem((c) => c.query(
-      `SELECT u.id user_id, u.email, u.tenant_id, t.name tenant_name, t.paused, t.morning_brief_auto, t.viewing_reminders_auto
+      `SELECT u.id user_id, u.email, u.tenant_id, t.name tenant_name, t.paused, t.morning_brief_auto, t.viewing_reminders_auto, (SELECT COALESCE(array_length(p.keywords,1),0) > 0 FROM profiles p WHERE p.tenant_id=u.tenant_id LIMIT 1) desk_active
        FROM sessions s JOIN users u ON u.id=s.user_id JOIN tenants t ON t.id=s.tenant_id
        WHERE s.token_hash=$1 AND s.expires_at > now()`, [tokenHash(token)]));
     const u = r.rows[0];
@@ -423,11 +423,11 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     return render(reply, u, 'Settings', `<h1>Settings</h1>
       <div class="card"><b>Emergency stop for your account</b><p class="mut">${u.paused ? 'Your account is paused. HI will not match, draft or send anything.' : 'Pause stops all matching, drafting and sending for your account immediately.'}</p>
       <form method="post" action="/app/settings/pause">${csrf(u)}<button name="paused" value="${u.paused ? 'false' : 'true'}" class="${u.paused ? '' : 'danger'}">${u.paused ? 'Resume' : 'Pause my account'}</button></form></div>
-      <div class="card"><b>Morning brief</b><p class="mut">HI drafts you a short brief every morning (calendar, inbox highlights, new tender matches, approvals waiting). ${u.morning_brief_auto ? 'It is emailed to your own address automatically.' : 'It waits in Approvals for you each morning until you switch on auto-send.'}</p>
+      <div class="card"><b>Morning brief</b><p class="mut">HI drafts you a short brief every morning (calendar, inbox highlights, ${u.desk_active ? 'new tender matches, ' : ''}estate follow-ups, approvals waiting). ${u.morning_brief_auto ? 'It is emailed to your own address automatically.' : 'It waits in Approvals for you each morning until you switch on auto-send.'}</p>
       <form method="post" action="/app/settings/morning-brief">${csrf(u)}<button name="on" value="${u.morning_brief_auto ? 'false' : 'true'}" class="sec">${u.morning_brief_auto ? 'Switch off auto-send' : 'Auto-send my morning brief to my own address'}</button></form></div>
       <div class="card"><b>Viewing reminders</b><p class="mut">${u.viewing_reminders_auto ? 'HI emails your own address up to 24 hours before each scheduled viewing.' : 'HI can email your own address up to 24 hours before each scheduled viewing. It never emails your clients.'}</p>
       <form method="post" action="/app/settings/viewing-reminders">${csrf(u)}<button name="on" value="${u.viewing_reminders_auto ? 'false' : 'true'}" class="sec">${u.viewing_reminders_auto ? 'Switch off viewing reminders' : 'Email me viewing reminders'}</button></form></div>
-      <div class="card"><b>Connections</b><ul><li>Official tender open data: active</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
+      <div class="card"><b>Connections</b><ul><li>${u.desk_active ? 'Official tender open data: active' : 'Opportunity Desk: inactive until you set keywords in Profile'}</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
   });
   app.post('/app/settings/morning-brief', { preHandler: guard }, async (req, reply) => {
     const u = req.user, on = req.body?.on === 'true';
