@@ -56,6 +56,7 @@ test.before(async () => {
 test.after(async () => { await app.close(); await db.stop(); });
 test.beforeEach(() => { script = []; seen = []; });
 
+const sastToday = (hhmm) => new Date(`${new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Johannesburg' })}T${hhmm}:00+02:00`);
 const toolCtx = (u, principal) => ({ tenantId: u.tenantId, userEmail: u.email, agentId: u.agentId, agentName: 'hi', fetchImpl: net, lookup, principal });
 const withTool = (u, principal, fn) => withTenant(u.tenantId, (c) => fn({ ...toolCtx(u, principal), c }));
 
@@ -136,7 +137,7 @@ test('morning brief builds end to end and queues an approval for the owner', asy
   const state = new URL(start.headers.location).searchParams.get('state');
   const cb = await app.inject({ url: `/integrations/google/callback?_h=1&code=fake-code&state=${encodeURIComponent(state)}`, headers: { cookie: A.cookie } });
   assert.equal(cb.statusCode, 302);
-  const out = await buildMorningBriefs({ fetchImpl: net });
+  const out = await buildMorningBriefs({ fetchImpl: net, now: sastToday('07:30') });
   const a = out.find((x) => String(x.tenant) === String(A.tenantId));
   assert.ok(a, 'tenant A has a brief result');
   assert.ok(!a.error, `no error (estateAttention import regression): ${a.error || ''}`);
@@ -154,6 +155,38 @@ test('internal run: morning-brief job works, all includes it, and every run stam
   assert.ok(Array.isArray(all.json().morning_brief), 'job=all runs the morning brief');
   const flag = await withSystem((c) => c.query("SELECT value FROM system_flags WHERE key='last_cron_run'")).then((x) => x.rows[0]);
   assert.ok(flag && flag.value.length > 10, 'last_cron_run stamped');
+});
+
+test('morning brief: only drafts in the morning window, at most once per account per day', async () => {
+  const start = await app.inject({ url: '/integrations/google/start', headers: { cookie: B.cookie } });
+  const state = new URL(start.headers.location).searchParams.get('state');
+  await app.inject({ url: `/integrations/google/callback?_h=1&code=fake-code&state=${encodeURIComponent(state)}`, headers: { cookie: B.cookie } });
+  const night = await buildMorningBriefs({ fetchImpl: net, now: sastToday('03:00') });
+  const bNight = night.find((x) => String(x.tenant) === String(B.tenantId));
+  assert.match(bNight.skipped, /outside the morning window/);
+  const first = await buildMorningBriefs({ fetchImpl: net, now: sastToday('07:30') });
+  assert.ok(first.find((x) => String(x.tenant) === String(B.tenantId)).proposed, 'first morning run drafts');
+  const second = await buildMorningBriefs({ fetchImpl: net, now: sastToday('09:00') });
+  const bSecond = second.find((x) => String(x.tenant) === String(B.tenantId));
+  assert.match(bSecond.skipped, /already drafted today/, 'no repeated briefs from a frequent cron');
+  const count = await withTenant(B.tenantId, (c) => c.query("SELECT count(*)::int n FROM approvals WHERE kind='account_email' AND proposed_by='system:morning-brief'")).then((x) => x.rows[0].n);
+  assert.equal(count, 1, 'exactly one brief approval for the day');
+});
+
+test('concurrent approvals cannot both pass the per-account cap', async () => {
+  const D = await mk('Delta Co', 'd@example.test');
+  await withSystem((c) => c.query("INSERT INTO email_log (tenant_id, to_addr, subject) SELECT $1, 'x@y.z', 's' FROM generate_series(1, 4)", [D.tenantId]));
+  const ap1 = await proposeSend(D, 'd@example.test');
+  const ap2 = await proposeSend(D, 'd@example.test');
+  const uid = await ownerId(D);
+  const [r1, r2] = await Promise.all([
+    decideApproval({ tenantId: D.tenantId, userId: uid, userEmail: 'd@example.test', approvalId: ap1, decision: 'approve', fetchImpl: net }),
+    decideApproval({ tenantId: D.tenantId, userId: uid, userEmail: 'd@example.test', approvalId: ap2, decision: 'approve', fetchImpl: net }),
+  ]);
+  const statuses = [r1.status, r2.status].sort();
+  assert.deepEqual(statuses, ['executed', 'failed'], `exactly one send passes the cap: ${JSON.stringify([r1, r2])}`);
+  const sent = await withSystem((c) => c.query('SELECT count(*)::int n FROM email_log WHERE tenant_id=$1', [D.tenantId])).then((x) => x.rows[0].n);
+  assert.equal(sent, 5, 'cap of 5 is exact under concurrency');
 });
 
 test('production boot refuses to start without session or cron secrets', async () => {

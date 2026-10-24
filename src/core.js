@@ -106,6 +106,10 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
       await audit(c, tenantId, 'system', 'send.blocked', { reason: stopped ? 'emergency stop' : 'tenant paused' });
       return { status: 'cancelled', reason: stopped ? 'emergency stop is on' : 'tenant is paused' };
     }
+    // Lock the account row so concurrent approvals cannot both pass the count check:
+  // the per-account cap is exact. The platform ceiling below is a backstop across
+  // accounts and can be overshot by the number of sends executing at the same instant.
+    await c.query("SELECT id FROM tenants WHERE id = current_setting('app.tenant_id')::uuid FOR UPDATE");
     // Two independent limits: a per-account daily cap and a separate platform-wide daily ceiling.
     const tenantCap = Number(process.env.HI_EMAIL_DAILY_CAP || 5);
     const platformCap = Number(process.env.HI_EMAIL_PLATFORM_DAILY_CAP || 50);

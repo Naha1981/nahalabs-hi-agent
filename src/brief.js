@@ -34,9 +34,20 @@ export function composeBrief({ date, events, unread, matches, approvals, estate 
   return L.join('\n');
 }
 
-const todayIso = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Johannesburg' });
+const todayIso = (now = new Date()) => now.toLocaleDateString('en-CA', { timeZone: 'Africa/Johannesburg' });
 
-async function briefForTenant(t, fetchImpl) {
+// The brief is a morning product: it only drafts between 05:00 and 11:59 South Africa
+// time, and at most once per account per local day, however often the external cron
+// calls job=all. South Africa keeps UTC+2 all year, so the local day start is fixed.
+const BRIEF_WINDOW = { from: 5, to: 12 };
+export function briefWindowOpen(now = new Date()) {
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Johannesburg', hour: 'numeric', hour12: false }).format(now));
+  return hour >= BRIEF_WINDOW.from && hour < BRIEF_WINDOW.to;
+}
+
+async function briefForTenant(t, fetchImpl, now = new Date()) {
+  if (!briefWindowOpen(now)) return { tenant: t.tenant_id, skipped: 'outside the morning window' };
+  const dayStart = new Date(`${todayIso(now)}T00:00:00+02:00`);
   const date = new Date().toLocaleDateString('en-ZA', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Africa/Johannesburg' });
   const [events, unread] = await Promise.all([
     calendarUpcoming(t.tenant_id, { days: 1, fetchImpl }).catch(() => []),
@@ -60,6 +71,10 @@ async function briefForTenant(t, fetchImpl) {
     estate.attention = await estateAttention(c);
     const deskActive = Boolean((await c.query('SELECT COALESCE(array_length(keywords,1),0) > 0 AS active FROM profiles LIMIT 1')).rows[0]?.active);
     const approvals = Number((await c.query("SELECT count(*)::int AS n FROM approvals WHERE status='proposed'")).rows[0].n);
+    // One brief per account per local day, whatever its approval outcome: a rejected
+    // brief is not redrafted until tomorrow.
+    const existing = (await c.query("SELECT id FROM approvals WHERE kind='account_email' AND proposed_by='system:morning-brief' AND created_at >= $1 ORDER BY created_at DESC LIMIT 1", [dayStart])).rows[0];
+    if (existing) return { tenant: t.tenant_id, skipped: 'already drafted today', approval_id: existing.id };
     const owner = (await c.query("SELECT id, email FROM users WHERE role='owner' ORDER BY created_at LIMIT 1")).rows[0];
     const integ = (await c.query("SELECT id FROM integrations WHERE status='active' ORDER BY created_at LIMIT 1")).rows[0];
     if (!owner || !integ) return { tenant: t.tenant_id, skipped: 'no owner or no connected account' };
@@ -73,9 +88,9 @@ async function briefForTenant(t, fetchImpl) {
   });
 }
 
-export async function buildMorningBriefs({ fetchImpl = fetch } = {}) {
+export async function buildMorningBriefs({ fetchImpl = fetch, now = new Date() } = {}) {
   const tenants = (await withSystem((c) => c.query('SELECT id AS tenant_id, morning_brief_auto FROM tenants WHERE NOT paused'))).rows;
   const out = [];
-  for (const t of tenants) out.push(await briefForTenant(t, fetchImpl).catch((e) => ({ tenant: t.tenant_id, error: String(e.message).slice(0, 120) })));
+  for (const t of tenants) out.push(await briefForTenant(t, fetchImpl, now).catch((e) => ({ tenant: t.tenant_id, error: String(e.message).slice(0, 120) })));
   return out;
 }

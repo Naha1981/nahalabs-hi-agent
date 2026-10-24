@@ -43,6 +43,11 @@ code{background:var(--chip);border-radius:6px;padding:1px 6px;font-size:14px}
 @media(max-width:480px){
 .card{padding:14px 12px;scroll-margin-top:70px}
 td,th{padding:7px 5px;font-size:14px}
+table.mem thead{display:none}
+table.mem tr{display:block;border-bottom:1px solid var(--line);padding:8px 0}
+table.mem td{display:block;border:0;padding:2px 0;overflow-wrap:break-word}
+table.mem td.mmeta{display:inline;color:var(--mut);font-size:13px;padding-right:0}
+table.mem td.mmeta+td.mmeta::before{content:" · "}
 }
 .auth h1{text-align:center}
 /* signed-in shell */
