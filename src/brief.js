@@ -39,6 +39,8 @@ const todayIso = (now = new Date()) => now.toLocaleDateString('en-CA', { timeZon
 // The brief is a morning product: it only drafts between 05:00 and 11:59 South Africa
 // time, and at most once per account per local day, however often the external cron
 // calls job=all. South Africa keeps UTC+2 all year, so the local day start is fixed.
+// This version assumes every account is on South Africa time; per-account timezones
+// are not modeled yet.
 const BRIEF_WINDOW = { from: 5, to: 12 };
 export function briefWindowOpen(now = new Date()) {
   const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Johannesburg', hour: 'numeric', hour12: false }).format(now));
@@ -53,7 +55,10 @@ async function briefForTenant(t, fetchImpl, now = new Date()) {
     calendarUpcoming(t.tenant_id, { days: 1, fetchImpl }).catch(() => []),
     mailSearch(t.tenant_id, { query: 'is:unread', max: 5, fetchImpl }).catch(() => []),
   ]);
-  return withTenant(t.tenant_id, async (c) => {
+  const r = await withTenant(t.tenant_id, async (c) => {
+    // Serialize concurrent cron runs for this account: the once-per-day check below
+    // is read-then-create, so two parallel job=all requests could otherwise both draft.
+    await c.query("SELECT id FROM tenants WHERE id = current_setting('app.tenant_id')::uuid FOR UPDATE");
     const matches = (await c.query(
       "SELECT m.ocid, m.score, t.title FROM matches m JOIN tenders t ON t.ocid=m.ocid WHERE m.status='new' ORDER BY m.score DESC, m.updated_at DESC LIMIT 3")).rows;
     // Estate pipeline: due follow-ups (today and overdue) plus today's viewings.
@@ -74,18 +79,23 @@ async function briefForTenant(t, fetchImpl, now = new Date()) {
     // One brief per account per local day, whatever its approval outcome: a rejected
     // brief is not redrafted until tomorrow.
     const existing = (await c.query("SELECT id FROM approvals WHERE kind='account_email' AND proposed_by='system:morning-brief' AND created_at >= $1 ORDER BY created_at DESC LIMIT 1", [dayStart])).rows[0];
-    if (existing) return { tenant: t.tenant_id, skipped: 'already drafted today', approval_id: existing.id };
+    if (existing) return { skipped: 'already drafted today', approval_id: existing.id };
     const owner = (await c.query("SELECT id, email FROM users WHERE role='owner' ORDER BY created_at LIMIT 1")).rows[0];
     const integ = (await c.query("SELECT id FROM integrations WHERE status='active' ORDER BY created_at LIMIT 1")).rows[0];
-    if (!owner || !integ) return { tenant: t.tenant_id, skipped: 'no owner or no connected account' };
+    if (!owner || !integ) return { skipped: 'no owner or no connected account' };
     const body = composeBrief({ date, events: events.filter((e) => !e.error), unread: unread.filter((m) => !m.error), matches, approvals, estate, deskActive });
     const p = await proposeAccountEmail(c, { tenantId: t.tenant_id, integrationId: integ.id, to: owner.email, subject: `Your HI morning brief - ${date}`, body, actor: 'system:morning-brief' });
-    if (p.error) return { tenant: t.tenant_id, error: p.error };
-    if (!t.morning_brief_auto) return { tenant: t.tenant_id, proposed: p.approval_id };
-    // Tenant explicitly enabled auto-send of their own morning brief in Settings.
-    const d = await decideApproval({ tenantId: t.tenant_id, userId: owner.id, userEmail: owner.email, approvalId: p.approval_id, decision: 'approve', fetchImpl });
-    return { tenant: t.tenant_id, sent: !d.error, approval_id: p.approval_id, error: d.error };
+    if (p.error) return { error: p.error };
+    return { approval_id: p.approval_id, owner };
   });
+  if (r.error) return { tenant: t.tenant_id, error: r.error };
+  if (r.skipped) return { tenant: t.tenant_id, skipped: r.skipped, approval_id: r.approval_id };
+  if (!t.morning_brief_auto) return { tenant: t.tenant_id, proposed: r.approval_id };
+  // Tenant explicitly enabled auto-send of their own morning brief in Settings.
+  // decideApproval runs in its own transaction after the draft has committed: called
+  // from inside the transaction above it cannot see the uncommitted approval row.
+  const d = await decideApproval({ tenantId: t.tenant_id, userId: r.owner.id, userEmail: r.owner.email, approvalId: r.approval_id, decision: 'approve', fetchImpl });
+  return { tenant: t.tenant_id, sent: !d.error, approval_id: r.approval_id, error: d.error };
 }
 
 export async function buildMorningBriefs({ fetchImpl = fetch, now = new Date() } = {}) {

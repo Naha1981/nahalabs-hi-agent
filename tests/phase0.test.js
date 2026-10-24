@@ -25,6 +25,7 @@ const net = async (url) => {
   if (u.includes('resend.com')) return json({ id: 're_test_1' });
   if (u === 'https://oauth2.googleapis.com/token') return json({ access_token: 'g-access-1', refresh_token: 'g-refresh-1', expires_in: 3600 });
   if (u.includes('openidconnect.googleapis.com')) return json({ email: 'alpha@gmail.test' });
+  if (u.includes('gmail.googleapis.com/gmail/v1/users/me/messages/send')) return json({ id: 'gmail-sent-1' });
   if (u.includes('gmail.googleapis.com')) return json({ messages: [] });
   if (u.includes('googleapis.com/calendar/')) return json({ items: [] });
   return json({ releases: [] });
@@ -171,6 +172,48 @@ test('morning brief: only drafts in the morning window, at most once per account
   assert.match(bSecond.skipped, /already drafted today/, 'no repeated briefs from a frequent cron');
   const count = await withTenant(B.tenantId, (c) => c.query("SELECT count(*)::int n FROM approvals WHERE kind='account_email' AND proposed_by='system:morning-brief'")).then((x) => x.rows[0].n);
   assert.equal(count, 1, 'exactly one brief approval for the day');
+});
+
+test('morning brief auto-send emails the owner own address after the draft commits', async () => {
+  const E = await mk('Echo Co', 'e@example.test');
+  const start = await app.inject({ url: '/integrations/google/start', headers: { cookie: E.cookie } });
+  const state = new URL(start.headers.location).searchParams.get('state');
+  await app.inject({ url: `/integrations/google/callback?_h=1&code=fake-code&state=${encodeURIComponent(state)}`, headers: { cookie: E.cookie } });
+  await withSystem((c) => c.query('UPDATE tenants SET morning_brief_auto=true WHERE id=$1', [E.tenantId]));
+  const out = await buildMorningBriefs({ fetchImpl: net, now: sastToday('07:30') });
+  const e = out.find((x) => String(x.tenant) === String(E.tenantId));
+  assert.equal(e.sent, true, `auto-send executed: ${JSON.stringify(e)}`);
+  const ap = await withTenant(E.tenantId, (c) => c.query("SELECT status FROM approvals WHERE kind='account_email' ORDER BY created_at DESC LIMIT 1")).then((x) => x.rows[0]);
+  assert.equal(ap.status, 'executed');
+});
+
+test('concurrent morning runs draft only one brief for the same account and day', async () => {
+  const F = await mk('Foxtrot Co', 'f@example.test');
+  const start = await app.inject({ url: '/integrations/google/start', headers: { cookie: F.cookie } });
+  const state = new URL(start.headers.location).searchParams.get('state');
+  await app.inject({ url: `/integrations/google/callback?_h=1&code=fake-code&state=${encodeURIComponent(state)}`, headers: { cookie: F.cookie } });
+  await Promise.all([
+    buildMorningBriefs({ fetchImpl: net, now: sastToday('07:30') }),
+    buildMorningBriefs({ fetchImpl: net, now: sastToday('07:30') }),
+  ]);
+  const count = await withTenant(F.tenantId, (c) => c.query("SELECT count(*)::int n FROM approvals WHERE kind='account_email' AND proposed_by='system:morning-brief'")).then((x) => x.rows[0].n);
+  assert.equal(count, 1, 'concurrent cron requests produced exactly one brief');
+});
+
+test('platform ceiling is exact under concurrent sends from different accounts', async () => {
+  const G = await mk('Golf Co', 'g@example.test');
+  const H2 = await mk('Hotel Co', 'h@example.test');
+  process.env.HI_EMAIL_PLATFORM_DAILY_CAP = String(await withSystem((c) => c.query('SELECT count(*)::int n FROM email_log')).then((x) => x.rows[0].n) + 1);
+  try {
+    const apG = await proposeSend(G, 'g@example.test');
+    const apH = await proposeSend(H2, 'h@example.test');
+    const [rG, rH] = await Promise.all([
+      decideApproval({ tenantId: G.tenantId, userId: await ownerId(G), userEmail: 'g@example.test', approvalId: apG, decision: 'approve', fetchImpl: net }),
+      decideApproval({ tenantId: H2.tenantId, userId: await ownerId(H2), userEmail: 'h@example.test', approvalId: apH, decision: 'approve', fetchImpl: net }),
+    ]);
+    const statuses = [rG.status, rH.status].sort();
+    assert.deepEqual(statuses, ['executed', 'failed'], `exactly one send passes the platform ceiling: ${JSON.stringify([rG, rH])}`);
+  } finally { delete process.env.HI_EMAIL_PLATFORM_DAILY_CAP; }
 });
 
 test('concurrent approvals cannot both pass the per-account cap', async () => {
