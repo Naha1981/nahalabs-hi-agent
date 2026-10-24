@@ -561,6 +561,9 @@ CREATE TABLE IF NOT EXISTS re_deals (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE re_deals ADD COLUMN IF NOT EXISTS sale_price_cents bigint CHECK (sale_price_cents >= 0);
+ALTER TABLE re_deals ADD COLUMN IF NOT EXISTS commission_pct numeric(5,2) CHECK (commission_pct >= 0 AND commission_pct <= 100);
+ALTER TABLE re_deals ADD COLUMN IF NOT EXISTS commission_cents bigint CHECK (commission_cents >= 0);
 ALTER TABLE re_deals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_deals FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON re_deals;

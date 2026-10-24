@@ -623,7 +623,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const STAGES = [['enquiry', 'Enquiry'], ['viewing', 'Viewing'], ['offer', 'Offer'], ['otp_signed', 'OTP signed'], ['bond_pending', 'Bond pending'], ['transfer_attorneys', 'Transfer attorneys'], ['registered', 'Registered'], ['fallen_through', 'Fallen through']];
     const OPEN = STAGES.slice(0, 6).map(([k]) => k);
     const data = await withTenant(u.tenant_id, async (c) => ({
-      deals: (await c.query(`SELECT d.stage, d.next_action, d.next_action_date, d.updated_at, p.title AS property, co.name AS contact
+      deals: (await c.query(`SELECT d.stage, d.next_action, d.next_action_date, d.updated_at, d.sale_price_cents, d.commission_pct, d.commission_cents, p.title AS property, co.name AS contact
         FROM re_deals d JOIN re_properties p ON p.id=d.property_id LEFT JOIN re_contacts co ON co.id=d.contact_id ORDER BY d.updated_at DESC LIMIT 100`)).rows,
       viewings: (await c.query(`SELECT v.starts_at, p.title AS property, co.name AS contact
         FROM re_viewings v JOIN re_properties p ON p.id=v.property_id LEFT JOIN re_contacts co ON co.id=v.contact_id
@@ -635,7 +635,8 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const cards = STAGES.map(([k, label]) => {
       const rows = data.deals.filter((d) => d.stage === k);
       if (!rows.length) return '';
-      return `<div class="card"><b>${label}</b> <span class="chip">${rows.length}</span><table style="margin-top:8px">${rows.map((d) => `<tr><td>${esc(d.property)}</td><td>${esc(d.contact || '')}</td><td>${esc(d.next_action || '')}${d.next_action_date ? ` <span class="mut">${fd(d.next_action_date)}</span>` : ''}</td></tr>`).join('')}</table></div>`;
+      const money = (d) => d.commission_cents != null ? ` <span class="mut">comm R${Math.round(d.commission_cents / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ')}</span>` : (d.sale_price_cents != null ? ` <span class="mut">R${Math.round(d.sale_price_cents / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ')}</span>` : '');
+      return `<div class="card"><b>${label}</b> <span class="chip">${rows.length}</span><table style="margin-top:8px">${rows.map((d) => `<tr><td>${esc(d.property)}</td><td>${esc(d.contact || '')}</td><td>${esc(d.next_action || '')}${money(d)}${d.next_action_date ? ` <span class="mut">${fd(d.next_action_date)}</span>` : ''}</td></tr>`).join('')}</table></div>`;
     }).join('');
     const dueRows = due.map((d) => `<tr><td>${fd(d.next_action_date)}</td><td>${esc(d.property)}</td><td>${esc(d.contact || '')}</td><td>${esc(d.next_action)}</td></tr>`).join('');
     const viewRows = data.viewings.map((v) => `<tr><td>${new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(v.starts_at)).replace(',', '')} SAST</td><td>${esc(v.property)}</td><td>${esc(v.contact || '')}</td></tr>`).join('');

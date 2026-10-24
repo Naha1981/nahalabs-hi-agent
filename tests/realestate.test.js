@@ -120,3 +120,20 @@ test('enquiry watch is inert for existing tenants: no task, nothing runs', async
   // And in unattended mode the watch cannot be switched on or modified.
   assert.match(await withTenant(C, (c) => runTool('estate_enquiry_watch', { action: 'enable' }, { c, tenantId: C, agentId: AGENT, agentName: 'hi', userEmail: 'c@d.e', sources: [], steps: [], mode: 'task' })), /cannot change the enquiry watch/);
 });
+
+test('estate deal commission: price + pct stored in cents, recomputed, validated', async () => {
+  await call(A, 'estate_add_deal', { property: '5 Protea Lane, Midrand', contact: 'Johan Venter', stage: 'viewing' });
+  const bad = await call(A, 'estate_update_deal', { property: '5 Protea Lane', sale_price: 'abc' });
+  assert.match(bad, /rand amount/);
+  const badPct = await call(A, 'estate_update_deal', { property: '5 Protea Lane', commission_pct: 140 });
+  assert.match(badPct, /between 0 and 100/);
+  const r = await call(A, 'estate_update_deal', { property: '5 Protea Lane', stage: 'offer', sale_price: 'R1,250,000', commission_pct: 5 });
+  assert.match(r, /Commission: R62 500 \(5% of R1 250 000\)/);
+  const row = await withTenant(A, (c) => c.query("SELECT d.sale_price_cents, d.commission_pct, d.commission_cents FROM re_deals d JOIN re_properties p ON p.id=d.property_id WHERE p.title ILIKE '%Protea%'").then((x) => x.rows[0]));
+  assert.equal(String(row.sale_price_cents), '125000000');
+  assert.equal(String(row.commission_cents), '6250000');
+  // changing only the pct recomputes from the stored price
+  await call(A, 'estate_update_deal', { property: '5 Protea Lane', commission_pct: 6 });
+  const again = await withTenant(A, (c) => c.query("SELECT d.commission_cents FROM re_deals d JOIN re_properties p ON p.id=d.property_id WHERE p.title ILIKE '%Protea%'").then((x) => x.rows[0]));
+  assert.equal(String(again.commission_cents), '7500000');
+});
