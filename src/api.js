@@ -8,7 +8,7 @@ import { runAgent, ensureDefaultAgent } from './agent.js';
 import { ensureBuiltinSkills } from './skills.js';
 import { proposeBrowserJob } from './browser.js';
 import { buildXlsx, XLSX_MIME } from './xlsx.js';
-import { DesktopFeatureError, startDesktopRecording, appendDesktopAction, stopDesktopRecording, publishDesktopRecording, listDesktopRecordings, getDesktopRecording, listDesktopSkills, claimDesktopTask, finishDesktopTask } from './desktop.js';
+import { DesktopFeatureError, startDesktopRecording, appendDesktopAction, stopDesktopRecording, publishDesktopRecording, listDesktopRecordings, getDesktopRecording, listDesktopSkills, claimDesktopTask, checkDesktopTask, finishDesktopTask } from './desktop.js';
 
 const hashKey = (k) => crypto.createHash('sha256').update(k).digest('hex');
 export const newApiKey = () => 'hi_' + crypto.randomBytes(24).toString('hex');
@@ -263,6 +263,14 @@ export function registerApi(app, { llm, fetchImpl, lookup } = {}) {
       return { task };
     } catch (e) {
       return reply.code(e instanceof DesktopFeatureError ? e.statusCode : 500).send({ error: e instanceof DesktopFeatureError ? e.message : 'Could not claim a desktop task.' });
+    }
+  });
+
+  app.post('/v1/desktop/tasks/:id/check', async (req, reply) => {
+    try {
+      return await withTenant(req.apiKey.tenantId, (c) => checkDesktopTask(c, req.params.id, String(req.body?.worker_id || '')));
+    } catch (e) {
+      return reply.code(e instanceof DesktopFeatureError ? e.statusCode : 500).send({ error: e instanceof DesktopFeatureError ? e.message : 'Could not check desktop task state.' });
     }
   });
 
