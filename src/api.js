@@ -34,7 +34,8 @@ export function registerApi(app, { llm, fetchImpl, lookup } = {}) {
     const h = hashKey(m[1]);
     const row = await withSystem((c) => c.query('SELECT * FROM api_key_lookup($1)', [h])).then((r) => r.rows[0]);
     if (!row) return reply.code(401).send({ error: 'Invalid, revoked or paused API key.' });
-    if (!rateOk(h)) return reply.code(429).send({ error: 'Rate limit: 60 calls per minute per key.' });
+    const routeLimit = req.url.startsWith('/v1/desktop/recordings/') && req.url.endsWith('/actions') ? 120 : 60;
+    if (!rateOk(h, routeLimit)) return reply.code(429).send({ error: 'Rate limit: ' + routeLimit + ' calls per minute per key.' });
     req.apiKey = { tenantId: row.tenant_id, keyId: row.key_id, hash: h };
     withSystem((c) => c.query('UPDATE api_keys SET last_used_at=now() WHERE id=$1', [row.key_id])).catch(() => {});
   });
