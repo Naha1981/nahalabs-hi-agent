@@ -17,6 +17,7 @@ import { runAgent, runDueTasks, ensureDefaultAgent, toolLabel } from './agent.js
 import { buildMorningBriefs } from './brief.js';
 import { chat as defaultChat, agentModelEnabled } from './gateway.js';
 import { registerApi, newApiKey } from './api.js';
+import { listDesktopRecordings, listDesktopSkills } from './desktop.js';
 import { ensureBuiltinSkills } from './skills.js';
 import { voiceConfigured, voiceMaxBytes, transcribe, speak } from './voice.js';
 import { buildXlsx, XLSX_MIME } from './xlsx.js';
@@ -800,6 +801,41 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
 
 
   // ---------- Browser jobs ----------
+  app.get('/app/desktop', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const { recordings, skills } = await withTenant(u.tenant_id, async (c) => ({
+      recordings: await listDesktopRecordings(c),
+      skills: await listDesktopSkills(c),
+    }));
+    const recordingCards = recordings.map((r) => `<div class="card"><div class="row"><b>${esc(r.title)}</b><span class="tag">${esc(r.status)}</span></div><div class="mut">${Number(r.actions_count) || 0} recorded steps · ${fdate(r.created_at)}</div>${r.skill_name ? `<div>Published skill: <code>${esc(r.skill_name)}</code></div>` : ''}<div class="small mut">Recording ID: ${esc(r.id)}</div></div>`).join('');
+    const skillCards = skills.map((s) => `<div class="card"><div class="row"><b>${esc(s.name)}</b><span class="tag">${Number(s.actions_count) || 0} steps</span></div><div>${esc(s.description)}</div><div class="mut small">Created ${fdate(s.created_at)}</div></div>`).join('');
+    const body = `<h1>Desktop skills</h1>
+      <p class="mut">Teach HI a workflow in a Windows app or open window. HI keeps the reusable skill in your account; the local companion runs it only after you approve it in the normal HI approval queue.</p>
+      <div class="card"><h2 style="margin-top:0">Set up your Windows companion</h2>
+        <ol><li>Create an API key on the <a href="/app/api-keys">API keys</a> page. Keep it secret and do not put it in source files.</li>
+        <li>Download or clone the HI repository on the Windows computer, then open PowerShell in its <code>desktop-companion</code> directory.</li>
+        <li>Install the listed dependencies and set your key for this PowerShell session:</li></ol>
+        <pre>py -m pip install -r requirements.txt
+$env:HI_BASE_URL = "https://hi.nahalabs.co.za"
+$env:HI_API_KEY = "hi_your_key_here"</pre>
+        <p>Replace the placeholder with your own API key. The value stays on the local computer; HI never asks you to paste it into chat.</p>
+      </div>
+      <div class="card"><h2 style="margin-top:0">Record a workflow</h2>
+        <pre>py .\\hi_desktop_companion.py record --title "Prepare monthly invoice"</pre>
+        <p>Switch to the app and demonstrate the process yourself. Stop with <b>Ctrl+Shift+F12</b>. Review the recording and choose a skill name when prompted. HI does not save typed values or screenshots.</p>
+      </div>
+      <div class="card"><h2 style="margin-top:0">Run a saved skill</h2>
+        <pre>py .\\hi_desktop_companion.py worker</pre>
+        <p>Leave that local worker running. Then ask HI in chat to run the skill by name and approve the proposed task. If a control has changed, is sensitive, or cannot be uniquely identified, the worker pauses or stops rather than guessing.</p>
+      </div>
+      <h2>Saved skills</h2>
+      ${skillCards || '<div class="card mut">No desktop skills have been published yet.</div>'}
+      <h2>Recent recordings</h2>
+      ${recordingCards || '<div class="card mut">No recordings yet. Start one using the Windows companion instructions above.</div>'}
+      <p class="mut small">Windows-first initial release. Native automation depends on the target app exposing UI Automation controls. Apps with custom-drawn controls may need manual handling; this does not yet record arbitrary Android or iOS screens.</p>`;
+    return render(reply, u, 'Desktop skills', body, flashOf(req));
+  });
+
   app.get('/app/browser', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
     const jobs = (await withTenant(u.tenant_id, (c) => c.query('SELECT id, start_url, goal, mode, status, result, step_count, screenshots, created_at, finished_at FROM browser_jobs ORDER BY created_at DESC LIMIT 15'))).rows;
