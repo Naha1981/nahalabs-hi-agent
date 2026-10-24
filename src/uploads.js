@@ -54,8 +54,11 @@ export async function extractText(mime, buffer) {
 }
 
 export async function saveUpload(tenantId, { filename, mime, buffer }, actor = 'customer') {
-  const extract = await extractText(mime, buffer);
   const row = await withTenant(tenantId, async (c) => {
+    // Per-tenant admission lock: serializes this tenant's admissions until commit/rollback,
+    // so the quota SUM below cannot race a concurrent same-tenant upload (TOCTOU fix).
+    // Keyed by hashtext: collisions only mean harmless extra serialization.
+    await c.query("SELECT pg_advisory_xact_lock(hashtext(current_setting('app.tenant_id', true)))");
     // Atomic global admission: reserve bytes on the ledger row first; the row lock
     // serializes concurrent admissions and Postgres re-checks the budget condition
     // after any lock wait. Rolled back with everything else when anything fails.
@@ -64,17 +67,22 @@ export async function saveUpload(tenantId, { filename, mime, buffer }, actor = '
       [buffer.length, globalUploadBudget()]
     );
     if (!g.rows.length) { const e = new Error('global upload storage budget reached'); e.code = 'GLOBAL_BUDGET'; throw e; }
-    // Per-tenant admission (RLS scopes the SUM to this tenant).
+    // Per-tenant admission (RLS scopes the SUM to this tenant; the advisory lock above
+    // makes the check + insert atomic against other admissions for this tenant).
     const t = await c.query('SELECT COALESCE(SUM(size_bytes),0)::bigint AS used FROM uploads');
     if (Number(t.rows[0].used) + buffer.length > tenantUploadQuota()) { const e = new Error('tenant upload quota reached'); e.code = 'TENANT_QUOTA'; throw e; }
+    // Extraction runs only after both admissions pass: a refused upload costs no parse CPU.
+    // Note: the global ledger row lock is held for the parse - admissions across tenants
+    // serialize for sub-second parse of files up to 8 MB, acceptable at this scale.
+    const extract = await extractText(mime, buffer);
     const r = await c.query(
       'INSERT INTO uploads (tenant_id, filename, mime, size_bytes, content, extract) VALUES (NULLIF(current_setting(\'app.tenant_id\', true), \'\')::uuid, $1, $2, $3, $4, $5) RETURNING id, filename, mime, size_bytes, (extract IS NOT NULL) AS has_extract, created_at',
       [String(filename).slice(0, 200), mime, buffer.length, buffer, extract]
     );
     return r.rows[0];
   });
-  await auditFor(tenantId, actor, 'upload.saved', { id: row.id, filename: row.filename, mime, bytes: buffer.length, has_extract: extract !== null });
-  return { ...row, has_extract: extract !== null };
+  await auditFor(tenantId, actor, 'upload.saved', { id: row.id, filename: row.filename, mime, bytes: buffer.length, has_extract: row.has_extract });
+  return row;
 }
 
 export const listUploads = (tenantId) =>
