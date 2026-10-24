@@ -38,5 +38,31 @@ export async function estateAttention(c) {
   for (const r of stale) {
     items.push({ kind: 'stale_listing', text: `${r.title}: ${r.days_listed} days on market, no viewing in the last 14 days` });
   }
+  // Rent arrears: recorded payments vs rent due since lease start. Month-granular and
+  // labelled "recorded" - HI only knows payments the agent told it about.
+  const arrears = (await c.query(
+    `SELECT p.title AS property, co.name AS tenant_name, l.rent_cents, l.start_date,
+            GREATEST(0, (EXTRACT(YEAR FROM age(current_date, l.start_date)) * 12 + EXTRACT(MONTH FROM age(current_date, l.start_date)))::int + 1) AS months_due,
+            COALESCE((SELECT sum(pay.amount_cents) FROM re_lease_payments pay WHERE pay.lease_id = l.id), 0)::bigint AS paid_cents
+     FROM re_leases l JOIN re_properties p ON p.id = l.property_id LEFT JOIN re_contacts co ON co.id = l.contact_id
+     WHERE l.status = 'active' AND l.rent_cents IS NOT NULL AND l.start_date IS NOT NULL AND l.start_date <= current_date
+     ORDER BY l.start_date LIMIT 20`)).rows;
+  for (const r of arrears) {
+    const expected = Number(r.rent_cents) * r.months_due;
+    const shortfall = expected - Number(r.paid_cents);
+    if (shortfall > 0) {
+      const fmt = (x) => 'R' + Math.round(x / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+      items.push({ kind: 'rent_arrears', text: `${r.property}${r.tenant_name ? ` (${r.tenant_name})` : ''}: recorded rent payments ${fmt(r.paid_cents)} of ${fmt(expected)} due since ${dateFmt(r.start_date)} - ${fmt(shortfall)} short` });
+    }
+  }
+  // Maintenance requests sitting unresolved.
+  const maint = (await c.query(
+    `SELECT m.title, m.priority, p.title AS property, (current_date - m.reported_on)::int AS days_open
+     FROM re_maintenance m JOIN re_properties p ON p.id = m.property_id
+     WHERE m.status IN ('open','in_progress') AND m.reported_on < current_date - 14
+     ORDER BY m.reported_on LIMIT 10`)).rows;
+  for (const r of maint) {
+    items.push({ kind: 'maintenance_open', text: `${r.property}: maintenance "${r.title}" ${r.status === 'in_progress' ? 'in progress' : 'open'} ${r.days_open} days${r.priority === 'urgent' ? ' (urgent)' : ''}` });
+  }
   return items;
 }

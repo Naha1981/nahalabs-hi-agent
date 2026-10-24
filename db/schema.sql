@@ -620,6 +620,46 @@ CREATE TABLE IF NOT EXISTS re_leases (
 );
 ALTER TABLE re_leases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_leases FORCE ROW LEVEL SECURITY;
+CREATE TABLE IF NOT EXISTS re_lease_payments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  lease_id uuid NOT NULL REFERENCES re_leases(id) ON DELETE CASCADE,
+  amount_cents bigint NOT NULL,
+  paid_on date NOT NULL DEFAULT current_date,
+  period text NOT NULL DEFAULT '',
+  notes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE re_lease_payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE re_lease_payments FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON re_lease_payments;
+CREATE POLICY tenant_isolation ON re_lease_payments USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON re_lease_payments TO hi_app;
+
+CREATE TABLE IF NOT EXISTS re_maintenance (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  property_id uuid NOT NULL REFERENCES re_properties(id) ON DELETE CASCADE,
+  contact_id uuid REFERENCES re_contacts(id) ON DELETE SET NULL,
+  title text NOT NULL,
+  detail text NOT NULL DEFAULT '',
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','in_progress','done','cancelled')),
+  priority text NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','urgent')),
+  reported_on date NOT NULL DEFAULT current_date,
+  resolved_on date,
+  notes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE re_maintenance ENABLE ROW LEVEL SECURITY;
+ALTER TABLE re_maintenance FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON re_maintenance;
+CREATE POLICY tenant_isolation ON re_maintenance USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON re_maintenance TO hi_app;
+
 DROP POLICY IF EXISTS tenant_isolation ON re_leases;
 CREATE POLICY tenant_isolation ON re_leases USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);

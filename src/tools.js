@@ -103,12 +103,15 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_match', description: 'Real estate: structured matching. Give a property to find matching buyers (budget covers price, bedrooms met, area fits), or a buyer/contact name to find matching listings.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' } } } },
   { name: 'estate_find_duplicates', description: 'Real estate: list likely duplicate contacts (same normalized name, phone or email) so the agent can decide what to merge.', parameters: { type: 'object', properties: {} } },
   { name: 'estate_merge_contacts', description: 'Real estate: merge one duplicate contact into another. Deals, viewings and details move to the kept contact; the duplicate is hidden but never deleted. Without confirm this only previews the change; run with confirm true only after the customer explicitly confirms that exact merge.', parameters: { type: 'object', properties: { keep: { type: 'string', description: 'Name, phone or email of the contact to keep' }, merge: { type: 'string', description: 'Name, phone or email of the duplicate to merge into it' }, confirm: { type: 'boolean', description: 'True only after the customer explicitly confirmed this exact merge' } }, required: ['keep', 'merge'] } },
+  { name: 'estate_record_payment', description: 'Real estate rentals: record a rent payment against the active lease on a property. Amount in rand, paid_on YYYY-MM-DD (default today), period optional (for example 2026-10). Only records what the agent says was paid.', parameters: { type: 'object', properties: { property: { type: 'string' }, amount: { type: ['number', 'string'] }, paid_on: { type: 'string' }, period: { type: 'string' }, notes: { type: 'string' } }, required: ['property', 'amount'] } },
+  { name: 'estate_add_maintenance', description: 'Real estate rentals: log a maintenance request on a property. priority: low, normal or urgent. contact is who reported it (matched by name or created as role tenant).', parameters: { type: 'object', properties: { property: { type: 'string' }, title: { type: 'string' }, detail: { type: 'string' }, priority: { type: 'string' }, contact: { type: 'string' } }, required: ['property', 'title'] } },
+  { name: 'estate_update_maintenance', description: 'Real estate rentals: update a maintenance request status (open, in_progress, done, cancelled), matched by property and title words.', parameters: { type: 'object', properties: { property: { type: 'string' }, title: { type: 'string' }, status: { type: 'string' }, notes: { type: 'string' } }, required: ['property', 'status'] } },
   { name: 'estate_add_lease', description: 'Real estate rentals: record a lease on a property. tenant_contact is the renting person (matched by name or created as role tenant). Amounts in rand. Dates YYYY-MM-DD. status: active, renewal_due, ended or cancelled.', parameters: { type: 'object', properties: { property: { type: 'string' }, tenant_contact: { type: 'string' }, rent: { type: ['number', 'string'] }, deposit: { type: ['number', 'string'] }, escalation_pct: { type: 'number' }, start_date: { type: 'string' }, end_date: { type: 'string' }, status: { type: 'string' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, record the sale price and commission, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, sale_price: { type: 'string', description: 'Sale price in rands, e.g. "R1,250,000" or "1250000"' }, commission_pct: { type: 'number', description: 'Commission percent, e.g. 5 for 5%' }, note: { type: 'string' } } } },
   { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
   { name: 'estate_log_viewing', description: 'Real estate: record the outcome and feedback of a viewing (done, no_show or cancelled).', parameters: { type: 'object', properties: { property: { type: 'string' }, viewing_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'no_show', 'cancelled'] }, feedback: { type: 'string' } }, required: ['status'] } },
-  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts, properties, leases or items needing attention.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties', 'attention', 'leases'] } }, required: ['what'] } },
+  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts, properties, leases or items needing attention.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties', 'attention', 'leases', 'payments', 'maintenance'] } }, required: ['what'] } },
   { name: 'estate_enquiry_watch', description: 'Real estate: turn the enquiry watch on or off. When on, a scheduled task scans the connected inboxes for new property enquiries, saves contacts, starts deals and drafts approval-gated replies.', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['enable', 'disable'] }, every_minutes: { type: 'integer', description: 'How often to scan, minimum 60. Default 120.' } }, required: ['action'] } },
   { name: 'estate_seller_report', description: 'Real estate: create a seller progress report for a property as a downloadable markdown file.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_mandate_deck', description: 'Real estate: create a polished printable mandate pitch (HTML file) for a property, using only facts on record and the real count of matching buyers. Save for a seller meeting.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
@@ -559,6 +562,59 @@ export async function runTool(name, args, ctx) {
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.lease_recorded', { lease_id: r.rows[0].id, status });
       return `Lease recorded on ${prop.row.title}${prop.created ? ' (new property saved)' : ''}${contactName ? ` - tenant ${contactName}${contactCreated ? ' (new contact saved)' : ''}` : ''}${rent.v != null ? `, rent ${randFmt(rent.v)}/mo` : ''}. Status: ${status}.`;
     }
+    case 'estate_record_payment': {
+      const key = clip(a.property, 200).replace(/[%_]/g, '').trim();
+      if (!key) return 'Give the property.';
+      const lease = (await c.query(
+        "SELECT l.id, p.title, co.name AS tenant_name FROM re_leases l JOIN re_properties p ON p.id=l.property_id LEFT JOIN re_contacts co ON co.id=l.contact_id WHERE l.status='active' AND p.title ILIKE '%' || $1 || '%' ORDER BY l.updated_at DESC LIMIT 1", [key])).rows[0];
+      if (!lease) return 'No active lease found for that property. Record the lease first with estate_add_lease.';
+      const cents = estatePriceCents(a.amount);
+      if (!Number.isFinite(cents) || cents <= 0) return 'Amount must be a rand amount like R12,500.';
+      if (a.paid_on && !estateDate(a.paid_on)) return 'Paid-on date must be YYYY-MM-DD.';
+      const period = /^\d{4}-\d{2}$/.test(String(a.period || '').trim()) ? String(a.period).trim() : '';
+      await c.query(
+        "INSERT INTO re_lease_payments (tenant_id, lease_id, amount_cents, paid_on, period, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,COALESCE($3::date, current_date),$4,$5)",
+        [lease.id, cents, estateDate(a.paid_on) || null, period, clip(a.notes, 1000)]);
+      await c.query('UPDATE re_leases SET updated_at=now() WHERE id=$1', [lease.id]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.payment_recorded', { lease_id: lease.id, amount_cents: cents, period });
+      return `Recorded ${randFmt(cents)} on ${lease.title}${lease.tenant_name ? ` (${lease.tenant_name})` : ''}${period ? ` for ${period}` : ''}. HI only knows payments you record - arrears are worked out from recorded payments.`;
+    }
+    case 'estate_add_maintenance': {
+      const prop = await estateGetOrCreateProperty(c, a.property, clip);
+      if (prop.error) return prop.error;
+      const title = clip(a.title, 200).trim();
+      if (!title) return 'Give the maintenance issue in a few words.';
+      let contactId = null, contactName = '';
+      if (String(a.contact ?? '').trim()) {
+        const con = await estateGetOrCreateContact(c, a.contact, 'tenant', clip);
+        if (con.error) return con.error;
+        contactId = con.row.id; contactName = con.row.name;
+      }
+      const priority = ['low', 'normal', 'urgent'].includes(a.priority) ? a.priority : 'normal';
+      const r = await c.query(
+        "INSERT INTO re_maintenance (tenant_id, property_id, contact_id, title, detail, priority) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5) RETURNING id",
+        [prop.row.id, contactId, title, clip(a.detail, 2000), priority]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.maintenance_logged', { request_id: r.rows[0].id, priority });
+      return `Maintenance logged on ${prop.row.title}: ${title}${contactName ? ` (reported by ${contactName})` : ''}${priority !== 'normal' ? ` - ${priority}` : ''}.`;
+    }
+    case 'estate_update_maintenance': {
+      const status = ['open', 'in_progress', 'done', 'cancelled'].includes(a.status) ? a.status : null;
+      if (!status) return 'Status must be open, in_progress, done or cancelled.';
+      const key = clip(a.property, 200).replace(/[%_]/g, '').trim();
+      const tkey = clip(a.title, 200).replace(/[%_]/g, '').trim();
+      const rows = (await c.query(
+        `SELECT m.id, m.title, m.status, p.title AS property FROM re_maintenance m JOIN re_properties p ON p.id=m.property_id
+         WHERE p.title ILIKE '%' || $1 || '%' AND ($2 = '' OR m.title ILIKE '%' || $2 || '%') AND m.status IN ('open','in_progress')
+         ORDER BY m.updated_at DESC LIMIT 5`, [key, tkey])).rows;
+      if (!rows.length) return 'No open maintenance request matched.';
+      if (rows.length > 1) return 'Several requests match: ' + rows.map((r) => `${r.title} at ${r.property}`).join('; ') + '. Be more specific.';
+      const m = rows[0];
+      await c.query(
+        "UPDATE re_maintenance SET status=$2, resolved_on = CASE WHEN $2 IN ('done','cancelled') THEN current_date ELSE resolved_on END, notes = CASE WHEN $3='' THEN notes WHEN notes='' THEN $3 ELSE notes || E'\n' || $3 END, updated_at=now() WHERE id=$1",
+        [m.id, status, clip(a.notes, 1000)]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.maintenance_updated', { request_id: m.id, status });
+      return `Maintenance "${m.title}" at ${m.property} is now ${status.replace('_', ' ')}.`;
+    }
     case 'estate_add_deal': {
       const prop = await estateGetOrCreateProperty(c, a.property, clip);
       if (prop.error) return prop.error;
@@ -696,6 +752,22 @@ export async function runTool(name, args, ctx) {
            ORDER BY l.updated_at DESC LIMIT 30`);
         if (!r.rowCount) return 'No leases on record yet. Record one with estate_add_lease.';
         return r.rows.map((x) => `- ${x.property}${x.tenant_name ? ` | tenant ${x.tenant_name}` : ''}${x.rent_cents != null ? ` | rent ${randFmt(x.rent_cents)}/mo` : ''}${x.escalation_pct != null ? ` | esc ${x.escalation_pct}%` : ''}${x.end_date ? ` | ends ${estateDateFmt(x.end_date)}` : ''} | ${x.status}`).join('\n');
+      }
+      if (a.what === 'payments') {
+        const r = await c.query(
+          `SELECT pay.amount_cents, pay.paid_on, pay.period, p.title AS property, co.name AS tenant_name
+           FROM re_lease_payments pay JOIN re_leases l ON l.id=pay.lease_id JOIN re_properties p ON p.id=l.property_id LEFT JOIN re_contacts co ON co.id=l.contact_id
+           ORDER BY pay.paid_on DESC LIMIT 30`);
+        if (!r.rowCount) return 'No rent payments recorded yet. Record one with estate_record_payment.';
+        return r.rows.map((x) => `- ${estateDateFmt(x.paid_on)} | ${x.property}${x.tenant_name ? ` | ${x.tenant_name}` : ''} | ${randFmt(x.amount_cents)}${x.period ? ` | ${x.period}` : ''}`).join('\n');
+      }
+      if (a.what === 'maintenance') {
+        const r = await c.query(
+          `SELECT m.title, m.status, m.priority, m.reported_on, m.resolved_on, p.title AS property, co.name AS reporter
+           FROM re_maintenance m JOIN re_properties p ON p.id=m.property_id LEFT JOIN re_contacts co ON co.id=m.contact_id
+           ORDER BY m.updated_at DESC LIMIT 30`);
+        if (!r.rowCount) return 'No maintenance requests on record. Log one with estate_add_maintenance.';
+        return r.rows.map((x) => `- ${x.property} | ${x.title} | ${x.status}${x.priority !== 'normal' ? ` (${x.priority})` : ''}${x.reporter ? ` | by ${x.reporter}` : ''} | reported ${estateDateFmt(x.reported_on)}${x.resolved_on ? `, resolved ${estateDateFmt(x.resolved_on)}` : ''}`).join('\n');
       }
       if (a.what === 'contacts') {
         const r = await c.query('SELECT name, role, phone, email, source, fica_status FROM re_contacts WHERE merged_into IS NULL ORDER BY created_at DESC LIMIT 20');

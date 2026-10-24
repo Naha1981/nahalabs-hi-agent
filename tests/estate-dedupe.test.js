@@ -125,3 +125,57 @@ test('estate leases: record, list, validate, tenant-isolated', async () => {
   const listB = await withTenant(B, (c) => runTool('estate_list', { what: 'leases' }, { c, tenantId: B, agentId: AGENT, agentName: 'hi', userEmail: 'b@b.c', sources: [], steps: [], mode: 'chat' }));
   assert.match(listB, /No leases on record/);
 });
+
+test('rent arrears: recorded payments vs due, honest labels, isolation', async () => {
+  // the active lease on 3 Rental Road (rent R12,500/mo from 2026-01-01) has no payments yet
+  let out = await call(A, 'estate_list', { what: 'attention' });
+  assert.match(out, /3 Rental Road \(Tandi Tenant\): recorded rent payments R0 of R125 000 due since 2026-01-01 - R125 000 short/);
+
+  const rec = await call(A, 'estate_record_payment', { property: '3 Rental Road', amount: 'R12,500', period: '2026-01' });
+  assert.match(rec, /Recorded R12 500 on 3 Rental Road \(Tandi Tenant\) for 2026-01/);
+  assert.match(rec, /HI only knows payments you record/);
+
+  out = await call(A, 'estate_list', { what: 'attention' });
+  assert.match(out, /recorded rent payments R12 500 of R125 000 due since 2026-01-01 - R112 500 short/);
+
+  const pays = await call(A, 'estate_list', { what: 'payments' });
+  assert.match(pays, /3 Rental Road \| Tandi Tenant \| R12 500 \| 2026-01/);
+
+  // validation + unknown lease
+  assert.match(await call(A, 'estate_record_payment', { property: '3 Rental Road', amount: 'lots' }), /rand amount/);
+  assert.match(await call(A, 'estate_record_payment', { property: 'Nowhere Place', amount: 100 }), /No active lease found/);
+
+  // tenant B: no payments, no arrears lines about A
+  const ctxB = { agentId: AGENT, agentName: 'hi', userEmail: 'b@b.c', sources: [], steps: [], mode: 'chat' };
+  assert.match(await withTenant(B, (c) => runTool('estate_list', { what: 'payments' }, { ...ctxB, c, tenantId: B })), /No rent payments recorded/);
+  const attnB = await withTenant(B, (c) => runTool('estate_list', { what: 'attention' }, { ...ctxB, c, tenantId: B }));
+  assert.doesNotMatch(attnB, /3 Rental Road/);
+});
+
+test('maintenance: log, list, update, stale surfaces in attention, isolation', async () => {
+  const add = await call(A, 'estate_add_maintenance', { property: '3 Rental Road', title: 'Geyser leaking', detail: 'Water in the ceiling', priority: 'urgent', contact: 'Tandi Tenant' });
+  assert.match(add, /Maintenance logged on 3 Rental Road: Geyser leaking \(reported by Tandi Tenant\) - urgent/);
+
+  const list = await call(A, 'estate_list', { what: 'maintenance' });
+  assert.match(list, /3 Rental Road \| Geyser leaking \| open \(urgent\) \| by Tandi Tenant/);
+
+  // fresh requests are not attention items; backdate past 14 days and it surfaces
+  let attn = await call(A, 'estate_list', { what: 'attention' });
+  assert.doesNotMatch(attn, /Geyser leaking/);
+  await withTenant(A, (c) => c.query("UPDATE re_maintenance SET reported_on = current_date - 20 WHERE title='Geyser leaking'"));
+  attn = await call(A, 'estate_list', { what: 'attention' });
+  assert.match(attn, /3 Rental Road: maintenance "Geyser leaking" open 20 days \(urgent\)/);
+
+  const upd = await call(A, 'estate_update_maintenance', { property: '3 Rental Road', title: 'Geyser', status: 'done', notes: 'plumber replaced element' });
+  assert.match(upd, /Maintenance "Geyser leaking" at 3 Rental Road is now done/);
+  attn = await call(A, 'estate_list', { what: 'attention' });
+  assert.doesNotMatch(attn, /Geyser leaking/);
+
+  // guards
+  assert.match(await call(A, 'estate_update_maintenance', { property: '3 Rental Road', status: 'maybe' }), /Status must be/);
+  assert.match(await call(A, 'estate_update_maintenance', { property: '3 Rental Road', title: 'Geyser', status: 'open' }), /No open maintenance request matched/);
+
+  // tenant B sees nothing of A's requests
+  const ctxB = { agentId: AGENT, agentName: 'hi', userEmail: 'b@b.c', sources: [], steps: [], mode: 'chat' };
+  assert.match(await withTenant(B, (c) => runTool('estate_list', { what: 'maintenance' }, { ...ctxB, c, tenantId: B })), /No maintenance requests on record/);
+});
