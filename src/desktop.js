@@ -207,6 +207,9 @@ export async function proposeDesktopTask(c, { tenantId, agentName, skillName }) 
 /** Atomically claim one approved task, preventing two paired computers from running it concurrently. */
 export async function claimDesktopTask(c, tenantId, workerId) {
   if (!UUID_RE.test(String(workerId || ''))) throw new DesktopFeatureError('worker_id must be a UUID.');
+  const emergency = (await c.query("SELECT value FROM system_flags WHERE key='emergency_stop'")).rows[0]?.value === 'on';
+  const tenant = (await c.query("SELECT paused FROM tenants WHERE id=current_setting('app.tenant_id')::uuid")).rows[0];
+  if (emergency || !tenant || tenant.paused) return null;
   const row = (await c.query(
     "WITH candidate AS (SELECT a.id FROM approvals a JOIN desktop_skills d ON d.skill_id=(a.payload->>'skill_id')::uuid AND d.tenant_id=a.tenant_id JOIN skills s ON s.id=d.skill_id AND s.enabled=true WHERE a.kind='desktop_task' AND (a.status='approved' OR (a.status='executing' AND (a.payload->>'claimed_at')::timestamptz < now() - interval '60 minutes')) AND (a.payload->>'worker_id' IS NULL OR (a.payload->>'claimed_at')::timestamptz < now() - interval '60 minutes') ORDER BY a.created_at LIMIT 1 FOR UPDATE OF a SKIP LOCKED), claimed AS (UPDATE approvals a SET status='executing', payload=a.payload || jsonb_build_object('worker_id',$1::text,'claimed_at',now()::text) FROM candidate c WHERE a.id=c.id RETURNING a.id,a.tenant_id,a.payload,a.summary) SELECT cl.id,cl.summary,cl.payload,s.name AS skill_name,d.actions,jsonb_array_length(d.actions) AS actions_count FROM claimed cl JOIN desktop_skills d ON d.skill_id=(cl.payload->>'skill_id')::uuid AND d.tenant_id=cl.tenant_id JOIN skills s ON s.id=d.skill_id AND s.enabled=true",
     [workerId],
@@ -214,6 +217,18 @@ export async function claimDesktopTask(c, tenantId, workerId) {
   if (!row) return null;
   await audit(c, tenantId, 'desktop-companion', 'desktop.task_claimed', { approval_id: row.id, skill_name: row.skill_name, worker_id: workerId, steps: row.actions_count });
   return { id: row.id, summary: row.summary, skill_name: row.skill_name, actions: row.actions, actions_count: row.actions_count, worker_id: workerId };
+}
+
+export async function checkDesktopTask(c, taskId, workerId) {
+  if (!UUID_RE.test(String(taskId || '')) || !UUID_RE.test(String(workerId || ''))) throw new DesktopFeatureError('Invalid desktop task or worker id.');
+  const row = (await c.query("SELECT id, status, payload FROM approvals WHERE id=$1 AND kind='desktop_task' FOR UPDATE", [taskId])).rows[0];
+  if (!row) throw new DesktopFeatureError('Desktop task not found.', 404);
+  if (row.payload?.worker_id !== workerId) throw new DesktopFeatureError('This task is assigned to a different companion.', 403);
+  if (row.status !== 'executing') return { allowed: false, reason: 'The HI task is no longer executing.' };
+  const stopped = (await c.query("SELECT value FROM system_flags WHERE key='emergency_stop'")).rows[0]?.value === 'on';
+  const tenant = (await c.query("SELECT paused FROM tenants WHERE id=current_setting('app.tenant_id')::uuid")).rows[0];
+  if (stopped || !tenant || tenant.paused) return { allowed: false, reason: stopped ? 'HI emergency stop is active.' : 'This HI account is paused.' };
+  return { allowed: true };
 }
 
 export async function finishDesktopTask(c, tenantId, taskId, workerId, status, summary) {
