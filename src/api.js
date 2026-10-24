@@ -8,6 +8,7 @@ import { runAgent, ensureDefaultAgent } from './agent.js';
 import { ensureBuiltinSkills } from './skills.js';
 import { proposeBrowserJob } from './browser.js';
 import { buildXlsx, XLSX_MIME } from './xlsx.js';
+import { DesktopFeatureError, startDesktopRecording, appendDesktopAction, stopDesktopRecording, publishDesktopRecording, listDesktopRecordings, listDesktopSkills, claimDesktopTask, finishDesktopTask } from './desktop.js';
 
 const hashKey = (k) => crypto.createHash('sha256').update(k).digest('hex');
 export const newApiKey = () => 'hi_' + crypto.randomBytes(24).toString('hex');
@@ -196,6 +197,75 @@ export function registerApi(app, { llm, fetchImpl, lookup } = {}) {
     if (!r) return reply.code(404).send({ error: 'Task not found.' });
     if (r.error) return reply.code(409).send(r);
     return r;
+  });
+
+  // --- Recorded desktop skills and local companion ---
+  app.get('/v1/desktop/recordings', async (req) => ({
+    recordings: await withTenant(req.apiKey.tenantId, (c) => listDesktopRecordings(c)),
+  }));
+
+  app.post('/v1/desktop/recordings', async (req, reply) => {
+    try {
+      const recording = await withTenant(req.apiKey.tenantId, (c) => startDesktopRecording(c, req.apiKey.tenantId, req.body?.title));
+      return reply.code(201).send({ recording });
+    } catch (e) {
+      return reply.code(e instanceof DesktopFeatureError ? e.statusCode : 500).send({ error: e instanceof DesktopFeatureError ? e.message : 'Could not start a desktop recording.' });
+    }
+  });
+
+  app.post('/v1/desktop/recordings/:id/actions', async (req, reply) => {
+    try {
+      const action = req.body?.action ?? req.body;
+      const result = await withTenant(req.apiKey.tenantId, (c) => appendDesktopAction(c, req.apiKey.tenantId, req.params.id, action));
+      return result;
+    } catch (e) {
+      return reply.code(e instanceof DesktopFeatureError ? e.statusCode : 500).send({ error: e instanceof DesktopFeatureError ? e.message : 'Could not save that desktop action.' });
+    }
+  });
+
+  app.post('/v1/desktop/recordings/:id/stop', async (req, reply) => {
+    try {
+      return await withTenant(req.apiKey.tenantId, (c) => stopDesktopRecording(c, req.apiKey.tenantId, req.params.id));
+    } catch (e) {
+      return reply.code(e instanceof DesktopFeatureError ? e.statusCode : 500).send({ error: e instanceof DesktopFeatureError ? e.message : 'Could not stop the desktop recording.' });
+    }
+  });
+
+  app.post('/v1/desktop/recordings/:id/publish', async (req, reply) => {
+    try {
+      const result = await withTenant(req.apiKey.tenantId, (c) => publishDesktopRecording(c, req.apiKey.tenantId, req.params.id, req.body?.name, req.body?.description));
+      return reply.code(201).send(result);
+    } catch (e) {
+      return reply.code(e instanceof DesktopFeatureError ? e.statusCode : 500).send({ error: e instanceof DesktopFeatureError ? e.message : 'Could not publish the desktop skill.' });
+    }
+  });
+
+  app.get('/v1/desktop/skills', async (req) => ({
+    skills: await withTenant(req.apiKey.tenantId, (c) => listDesktopSkills(c)),
+  }));
+
+  // A task is claimable only after its HI approval has been granted. The companion claims one
+  // task at a time and reports a redacted status; it never receives tasks before approval.
+  app.post('/v1/desktop/tasks/claim', async (req, reply) => {
+    try {
+      const workerId = String(req.body?.worker_id || '');
+      const task = await withTenant(req.apiKey.tenantId, (c) => claimDesktopTask(c, req.apiKey.tenantId, workerId));
+      return { task };
+    } catch (e) {
+      return reply.code(e instanceof DesktopFeatureError ? e.statusCode : 500).send({ error: e instanceof DesktopFeatureError ? e.message : 'Could not claim a desktop task.' });
+    }
+  });
+
+  app.post('/v1/desktop/tasks/:id/result', async (req, reply) => {
+    try {
+      const result = await withTenant(req.apiKey.tenantId, (c) => finishDesktopTask(
+        c, req.apiKey.tenantId, req.params.id, String(req.body?.worker_id || ''),
+        req.body?.status, req.body?.summary,
+      ));
+      return result;
+    } catch (e) {
+      return reply.code(e instanceof DesktopFeatureError ? e.statusCode : 500).send({ error: e instanceof DesktopFeatureError ? e.message : 'Could not save desktop execution result.' });
+    }
   });
 
   // --- Plans (multi-agent) ---
