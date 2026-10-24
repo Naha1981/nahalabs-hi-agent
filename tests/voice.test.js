@@ -142,7 +142,7 @@ test('audit log records the voice turn', async () => {
 
 test('drive alerts: due task result surfaces once, only for its tenant', async () => {
   await withTenant(A.tenantId, (c) => c.query(
-    "INSERT INTO tasks (tenant_id, agent_id, title, instruction, next_run_at) VALUES (current_setting('app.tenant_id')::uuid,$1,'Phone the school','Remind Thabiso to phone the school at 3pm', now() - interval '1 minute')", [A.agentId]));
+    "INSERT INTO tasks (tenant_id, agent_id, title, instruction, next_run_at) VALUES (current_setting('app.tenant_id')::uuid,$1,'Phone the school','Remind Karabo to phone the school at 3pm', now() - interval '1 minute')", [A.agentId]));
   script = [say('Time to phone the school. It is almost 3pm.')];
   const out = await runDueTasks({ llm, fetchImpl: fakeFetch, lookup });
   assert.equal(out.filter((r) => r.status === 'done').length >= 1, true, 'due task ran');

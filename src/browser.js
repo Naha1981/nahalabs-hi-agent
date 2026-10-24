@@ -35,7 +35,7 @@ export async function startBrowserJob(c, { tenantId, jobId, fetchImpl = fetch })
   if (monthly >= Number(process.env.BROWSER_MAX_JOBS_PER_MONTH || 300)) { await c.query("UPDATE browser_jobs SET status='failed', result='Platform browser allowance for this month is used up.' WHERE id=$1", [jobId]); return { error: 'monthly allowance used up' }; }
   const token = randomBytes(24).toString('hex');
   await c.query("UPDATE browser_jobs SET status='queued', token_hash=$2, token_expires_at=now() + interval '15 minutes' WHERE id=$1", [jobId, hash(token)]);
-  const gh = process.env.GITHUB_DISPATCH_TOKEN, repo = process.env.GITHUB_REPO || 'Naha1981/nahalabs-hi-opportunity-desk', base = process.env.PUBLIC_BASE_URL;
+  const gh = process.env.GITHUB_DISPATCH_TOKEN, repo = process.env.GITHUB_REPO || 'Naha1981/nahalabs-hi-agent', base = process.env.PUBLIC_BASE_URL;
   if (!gh || !base) { await c.query("UPDATE browser_jobs SET status='failed', result='Browser runner is not configured.' WHERE id=$1", [jobId]); return { error: 'runner not configured' }; }
   const res = await fetchImpl(`https://api.github.com/repos/${repo}/actions/workflows/browser.yml/dispatches`, {
     method: 'POST', headers: { authorization: `Bearer ${gh}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'user-agent': 'hi-by-nahalabs' },

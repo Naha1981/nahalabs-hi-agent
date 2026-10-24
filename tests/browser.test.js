@@ -69,7 +69,7 @@ test('read-only mode: links and scrolling only; typing, buttons and leaving the 
 
 test('act mode: normal fields ok, sensitive fields blocked, final submit and risky buttons wait for approval', async () => {
   let j = await launch(A, 'act', 'Send a message to the site');
-  assert.deepEqual((await step(j, { type: 'type', index: 1, text: 'Thabiso' })).body.action, { type: 'type', index: 1, text: 'Thabiso' });
+  assert.deepEqual((await step(j, { type: 'type', index: 1, text: 'Karabo' })).body.action, { type: 'type', index: 1, text: 'Karabo' });
   for (const idx of [2, 5]) { j = await launch(A, 'act'); await step(j, { type: 'type', index: idx, text: 'secret' }); assert.match((await state(A, j.job_id)).result, /sensitive/); }
   for (const idx of [3, 4]) { // submit button and an injected "delete account" button both gate
     j = await launch(A, 'act'); const r = await step(j, { type: 'click', index: idx }); assert.equal(r.body.action.type, 'wait');

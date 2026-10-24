@@ -27,7 +27,7 @@ const cookieOf = (res) => (res.headers['set-cookie'] || '').toString().split(';'
 test.before(async () => {
   db = await startDb(54328);
   app = await buildApp({ fetchImpl: fakeFetch, llm });
-  await app.inject({ method: 'POST', url: '/signup', headers: H, payload: form({ invite: 'invite-test-code', company: 'Alpha', email: 'Thabiso@Example.Test', password: 'old-password-12345' }) });
+  await app.inject({ method: 'POST', url: '/signup', headers: H, payload: form({ invite: 'invite-test-code', company: 'Alpha', email: 'Karabo@Example.Test', password: 'old-password-12345' }) });
 });
 test.after(async () => { await app.close(); await db.stop(); });
 test.beforeEach(() => { sent = []; });
@@ -46,10 +46,10 @@ test('unknown email gets the same message and no mail is sent', async () => {
 });
 
 test('reset link is emailed, raw token is never stored, and the flow changes the password', async () => {
-  const r = await app.inject({ method: 'POST', url: '/forgot', headers: H, remoteAddress: '10.0.0.3', payload: form({ email: 'thabiso@example.test' }) });
+  const r = await app.inject({ method: 'POST', url: '/forgot', headers: H, remoteAddress: '10.0.0.3', payload: form({ email: 'karabo@example.test' }) });
   assert.equal(r.statusCode, 302);
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].to[0], 'thabiso@example.test');
+  assert.equal(sent[0].to[0], 'karabo@example.test');
   const m = /https:\/\/hi\.example\.test\/reset\/([A-Za-z0-9_-]{20,})/.exec(sent[0].text);
   assert.ok(m, 'email contains a reset link');
   const token = m[1];
@@ -64,15 +64,15 @@ test('reset link is emailed, raw token is never stored, and the flow changes the
   assert.ok(weak.body.includes('at least 12 characters'));
 
   // an existing session proves the reset kills old sessions
-  const login = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'thabiso@example.test', password: 'old-password-12345' }) });
+  const login = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'karabo@example.test', password: 'old-password-12345' }) });
   const oldCookie = cookieOf(login);
   const ok = await app.inject({ method: 'POST', url: `/reset/${token}`, headers: H, payload: form({ password: 'new-password-67890' }) });
   assert.ok(ok.headers.location.startsWith('/login?m='));
   assert.equal((await app.inject({ url: '/app', headers: { cookie: oldCookie } })).statusCode, 302, 'old session killed');
 
-  const oldTry = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'thabiso@example.test', password: 'old-password-12345' }) });
+  const oldTry = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'karabo@example.test', password: 'old-password-12345' }) });
   assert.ok(oldTry.headers.location.startsWith('/login?m='), 'old password rejected');
-  const newTry = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'Thabiso@Example.Test', password: 'new-password-67890' }) });
+  const newTry = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'Karabo@Example.Test', password: 'new-password-67890' }) });
   assert.equal(newTry.headers.location, '/app/agent', 'new password works (email case-insensitive)');
 
   const reuse = await app.inject({ url: `/reset/${token}` });
