@@ -602,6 +602,28 @@ CREATE TABLE IF NOT EXISTS re_viewings (
 ALTER TABLE re_viewings ADD COLUMN IF NOT EXISTS reminder_sent_at timestamptz;  -- claimed when the reminder email is sent; NULL = not reminded yet
 ALTER TABLE re_viewings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_viewings FORCE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS re_leases (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  property_id uuid NOT NULL REFERENCES re_properties(id) ON DELETE CASCADE,
+  contact_id uuid REFERENCES re_contacts(id) ON DELETE SET NULL,
+  rent_cents bigint,
+  deposit_cents bigint,
+  escalation_pct numeric(5,2),
+  start_date date,
+  end_date date,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','renewal_due','ended','cancelled')),
+  notes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE re_leases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE re_leases FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON re_leases;
+CREATE POLICY tenant_isolation ON re_leases USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON re_leases TO hi_app;
 DROP POLICY IF EXISTS tenant_isolation ON re_viewings;
 CREATE POLICY tenant_isolation ON re_viewings USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);

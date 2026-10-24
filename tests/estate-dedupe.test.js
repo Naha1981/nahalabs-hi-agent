@@ -104,3 +104,24 @@ test('estate attention: overdue follow-ups, stalled deals, stale listings surfac
   const outB = await withTenant(B, (c) => runTool('estate_list', { what: 'attention' }, { c, tenantId: B, agentId: AGENT, agentName: 'hi', userEmail: 'b@b.c', sources: [], steps: [], mode: 'chat' }));
   assert.doesNotMatch(outB, /7 Attention Ave/);
 });
+
+test('estate leases: record, list, validate, tenant-isolated', async () => {
+  const r = await call(A, 'estate_add_lease', { property: '3 Rental Road', tenant_contact: 'Tandi Tenant', rent: 'R12,500', deposit: 25000, escalation_pct: 6, start_date: '2026-01-01', end_date: '2026-12-31' });
+  assert.match(r, /Lease recorded on 3 Rental Road \(new property saved\) - tenant Tandi Tenant \(new contact saved\), rent R12 500\/mo\. Status: active\./);
+
+  const list = await call(A, 'estate_list', { what: 'leases' });
+  assert.match(list, /3 Rental Road \| tenant Tandi Tenant \| rent R12 500\/mo \| esc 6(\.00)?% \| ends 2026-12-31 \| active/);
+
+  // the tenant contact gets role tenant
+  const role = await withTenant(A, (c) => c.query("SELECT role FROM re_contacts WHERE name='Tandi Tenant'").then((x) => x.rows[0].role));
+  assert.equal(role, 'tenant');
+
+  // validation
+  assert.match(await call(A, 'estate_add_lease', { property: '3 Rental Road', rent: 'lots' }), /Rent must be a rand amount/);
+  assert.match(await call(A, 'estate_add_lease', { property: '3 Rental Road', end_date: '31-12-2026' }), /End date must be YYYY-MM-DD/);
+  assert.match(await call(A, 'estate_add_lease', { property: '3 Rental Road', escalation_pct: 250 }), /Escalation must be a percentage/);
+
+  // tenant B sees no leases
+  const listB = await withTenant(B, (c) => runTool('estate_list', { what: 'leases' }, { c, tenantId: B, agentId: AGENT, agentName: 'hi', userEmail: 'b@b.c', sources: [], steps: [], mode: 'chat' }));
+  assert.match(listB, /No leases on record/);
+});

@@ -659,7 +659,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       <h1><b>Estate</b> deals, viewings and follow-ups.</h1>${attnCard}${srcCard}
       <p class="mut">${data.props} properties, ${data.contacts} contacts on record. Manage it by talking to HI - for example: <i>"Add a deal for 12 Oak Street with buyer Sipho, offer stage, next action: bank docs by Friday"</i> or <i>"seller report for 12 Oak Street"</i>.</p>
       ${empty ? '<div class="card empty">Nothing tracked yet. Tell HI about a property, a buyer or a deal and it appears here.</div>' : ''}
-      ${dueRows ? `<div class="card"><b>Follow-ups due (next 3 days)</b><table style="margin-top:8px"><tr><th>Due</th><th>Property</th><th>Who</th><th>Action</th></tr>${dueRows}</table></div>` : ''}
+      ${dueRows ? `<div class="card"><b>Overdue and upcoming follow-ups</b><table style="margin-top:8px"><tr><th>Due</th><th>Property</th><th>Who</th><th>Action</th></tr>${dueRows}</table></div>` : ''}
       ${viewRows ? `<div class="card"><b>Upcoming viewings</b><table style="margin-top:8px"><tr><th>When</th><th>Property</th><th>Who</th></tr>${viewRows}</table></div>` : ''}
       ${cards}`, flashOf(req));
   });

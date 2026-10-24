@@ -103,11 +103,12 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_match', description: 'Real estate: structured matching. Give a property to find matching buyers (budget covers price, bedrooms met, area fits), or a buyer/contact name to find matching listings.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' } } } },
   { name: 'estate_find_duplicates', description: 'Real estate: list likely duplicate contacts (same normalized name, phone or email) so the agent can decide what to merge.', parameters: { type: 'object', properties: {} } },
   { name: 'estate_merge_contacts', description: 'Real estate: merge one duplicate contact into another. Deals, viewings and details move to the kept contact; the duplicate is hidden but never deleted. Without confirm this only previews the change; run with confirm true only after the customer explicitly confirms that exact merge.', parameters: { type: 'object', properties: { keep: { type: 'string', description: 'Name, phone or email of the contact to keep' }, merge: { type: 'string', description: 'Name, phone or email of the duplicate to merge into it' }, confirm: { type: 'boolean', description: 'True only after the customer explicitly confirmed this exact merge' } }, required: ['keep', 'merge'] } },
+  { name: 'estate_add_lease', description: 'Real estate rentals: record a lease on a property. tenant_contact is the renting person (matched by name or created as role tenant). Amounts in rand. Dates YYYY-MM-DD. status: active, renewal_due, ended or cancelled.', parameters: { type: 'object', properties: { property: { type: 'string' }, tenant_contact: { type: 'string' }, rent: { type: ['number', 'string'] }, deposit: { type: ['number', 'string'] }, escalation_pct: { type: 'number' }, start_date: { type: 'string' }, end_date: { type: 'string' }, status: { type: 'string' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, record the sale price and commission, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, sale_price: { type: 'string', description: 'Sale price in rands, e.g. "R1,250,000" or "1250000"' }, commission_pct: { type: 'number', description: 'Commission percent, e.g. 5 for 5%' }, note: { type: 'string' } } } },
   { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
   { name: 'estate_log_viewing', description: 'Real estate: record the outcome and feedback of a viewing (done, no_show or cancelled).', parameters: { type: 'object', properties: { property: { type: 'string' }, viewing_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'no_show', 'cancelled'] }, feedback: { type: 'string' } }, required: ['status'] } },
-  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts or properties.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties', 'attention'] } }, required: ['what'] } },
+  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts, properties, leases or items needing attention.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties', 'attention', 'leases'] } }, required: ['what'] } },
   { name: 'estate_enquiry_watch', description: 'Real estate: turn the enquiry watch on or off. When on, a scheduled task scans the connected inboxes for new property enquiries, saves contacts, starts deals and drafts approval-gated replies.', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['enable', 'disable'] }, every_minutes: { type: 'integer', description: 'How often to scan, minimum 60. Default 120.' } }, required: ['action'] } },
   { name: 'estate_seller_report', description: 'Real estate: create a seller progress report for a property as a downloadable markdown file.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_mandate_deck', description: 'Real estate: create a polished printable mandate pitch (HTML file) for a property, using only facts on record and the real count of matching buyers. Save for a seller meeting.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
@@ -531,6 +532,33 @@ export async function runTool(name, args, ctx) {
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contacts_merged', { kept: keep.id, merged: dup.id, deals, viewings });
       return `Merged ${dup.name} into ${keep.name}. ${deals} deal${deals === 1 ? '' : 's'} and ${viewings} viewing${viewings === 1 ? '' : 's'} moved across; the duplicate is hidden but kept on record.`;
     }
+    case 'estate_add_lease': {
+      const prop = await estateGetOrCreateProperty(c, a.property, clip);
+      if (prop.error) return prop.error;
+      let contactId = null, contactName = '', contactCreated = false;
+      if (String(a.tenant_contact ?? '').trim()) {
+        const con = await estateGetOrCreateContact(c, a.tenant_contact, 'tenant', clip);
+        if (con.error) return con.error;
+        contactId = con.row.id; contactName = con.row.name; contactCreated = !!con.created;
+      }
+      const money = (v, label) => {
+        if (v == null || v === '') return { v: null };
+        const cents = estatePriceCents(v);
+        return Number.isFinite(cents) ? { v: cents } : { error: `${label} must be a rand amount like R12,500.` };
+      };
+      const rent = money(a.rent, 'Rent'); if (rent.error) return rent.error;
+      const dep = money(a.deposit, 'Deposit'); if (dep.error) return dep.error;
+      const esc = a.escalation_pct == null ? null : Number(a.escalation_pct);
+      if (esc != null && (!Number.isFinite(esc) || esc < 0 || esc > 100)) return 'Escalation must be a percentage 0-100.';
+      if (a.start_date && !estateDate(a.start_date)) return 'Start date must be YYYY-MM-DD.';
+      if (a.end_date && !estateDate(a.end_date)) return 'End date must be YYYY-MM-DD.';
+      const status = ['active', 'renewal_due', 'ended', 'cancelled'].includes(a.status) ? a.status : 'active';
+      const r = await c.query(
+        "INSERT INTO re_leases (tenant_id, property_id, contact_id, rent_cents, deposit_cents, escalation_pct, start_date, end_date, status, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id",
+        [prop.row.id, contactId, rent.v, dep.v, esc, estateDate(a.start_date), estateDate(a.end_date), status, clip(a.notes, 2000)]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.lease_recorded', { lease_id: r.rows[0].id, status });
+      return `Lease recorded on ${prop.row.title}${prop.created ? ' (new property saved)' : ''}${contactName ? ` - tenant ${contactName}${contactCreated ? ' (new contact saved)' : ''}` : ''}${rent.v != null ? `, rent ${randFmt(rent.v)}/mo` : ''}. Status: ${status}.`;
+    }
     case 'estate_add_deal': {
       const prop = await estateGetOrCreateProperty(c, a.property, clip);
       if (prop.error) return prop.error;
@@ -660,6 +688,14 @@ export async function runTool(name, args, ctx) {
            FROM re_viewings v JOIN re_properties p ON p.id=v.property_id LEFT JOIN re_contacts co ON co.id=v.contact_id
            WHERE v.status='scheduled' AND v.starts_at > now() - interval '1 day' ORDER BY v.starts_at LIMIT 20`);
         return r.rowCount ? r.rows.map((x) => `- ${estateSAST(x.starts_at)} | ${x.property}${x.contact ? ` | ${x.contact}` : ''}`).join('\n') : 'No upcoming viewings.';
+      }
+      if (a.what === 'leases') {
+        const r = await c.query(
+          `SELECT l.status, l.rent_cents, l.deposit_cents, l.escalation_pct, l.start_date, l.end_date, p.title AS property, co.name AS tenant_name
+           FROM re_leases l JOIN re_properties p ON p.id=l.property_id LEFT JOIN re_contacts co ON co.id=l.contact_id
+           ORDER BY l.updated_at DESC LIMIT 30`);
+        if (!r.rowCount) return 'No leases on record yet. Record one with estate_add_lease.';
+        return r.rows.map((x) => `- ${x.property}${x.tenant_name ? ` | tenant ${x.tenant_name}` : ''}${x.rent_cents != null ? ` | rent ${randFmt(x.rent_cents)}/mo` : ''}${x.escalation_pct != null ? ` | esc ${x.escalation_pct}%` : ''}${x.end_date ? ` | ends ${estateDateFmt(x.end_date)}` : ''} | ${x.status}`).join('\n');
       }
       if (a.what === 'contacts') {
         const r = await c.query('SELECT name, role, phone, email, source, fica_status FROM re_contacts WHERE merged_into IS NULL ORDER BY created_at DESC LIMIT 20');
