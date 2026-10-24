@@ -618,6 +618,8 @@ CREATE TABLE IF NOT EXISTS re_leases (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE re_leases ADD COLUMN IF NOT EXISTS lease_reminder_stage smallint NOT NULL DEFAULT 0;  -- 0 none, 1 sent 60-day, 2 sent 30-day, 3 sent ended
+ALTER TABLE re_leases ADD COLUMN IF NOT EXISTS lease_reminder_for date;  -- the end_date value the stage belongs to; a changed date resets the stage
 ALTER TABLE re_leases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_leases FORCE ROW LEVEL SECURITY;
 CREATE TABLE IF NOT EXISTS re_invoices (

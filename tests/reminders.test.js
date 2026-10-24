@@ -175,3 +175,51 @@ test('document expiry digest: daily cap sends nothing and does not advance stage
     delete process.env.HI_EMAIL_DAILY_CAP;
   }
 });
+
+test('lease-end digest: same opt-in, stages advance, end-date edit resets, opt-out skipped', async () => {
+  const { runDocExpiryReminders } = await import('../src/reminders.js');
+  process.env.HI_EMAIL_DAILY_CAP = '50'; // earlier tests in this file already logged sends
+  const o = owner(db.ownerUrl); await o.connect();
+  await o.query('UPDATE tenants SET document_reminders_auto=true WHERE id=$1', [A.tenantId]);
+  await o.end();
+  const inDays = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+  const leaseId = await withTenant(A.tenantId, async (c) => {
+    const p = (await c.query("INSERT INTO re_properties (tenant_id, title) VALUES (current_setting('app.tenant_id')::uuid, '44 Lease Lane') RETURNING id")).rows[0];
+    return (await c.query("INSERT INTO re_leases (tenant_id, property_id, end_date, status) VALUES (current_setting('app.tenant_id')::uuid, $1, $2, 'active') RETURNING id", [p.id, inDays(45)])).rows[0].id;
+  });
+
+  const before = sent.length;
+  const r1 = await runDocExpiryReminders({ fetchImpl: fakeFetch });
+  assert.equal(r1.length, 1);
+  assert.equal(r1[0].status, 'sent');
+  assert.ok(r1[0].count >= 1); // the 45-day lease end plus any still-due docs from earlier tests
+  assert.match(sent[sent.length - 1].subject, /Documents and lease ends: \d+ items? need attention/);
+  assert.match(sent[sent.length - 1].text, /Lease 44 Lease Lane: ends .* \(45 days left\)/);
+  assert.match(sent[sent.length - 1].text, /your own address only/);
+
+  // second sweep: nothing new
+  assert.deepEqual(await runDocExpiryReminders({ fetchImpl: fakeFetch }), []);
+  assert.equal(sent.length, before + 1);
+
+  // moving the end date resets the stage and re-reminds at the new threshold
+  await withTenant(A.tenantId, (c) => c.query('UPDATE re_leases SET end_date = $1 WHERE id = $2', [inDays(25), leaseId]));
+  const r3 = await runDocExpiryReminders({ fetchImpl: fakeFetch });
+  assert.equal(r3.length, 1);
+  assert.match(sent[sent.length - 1].text, /25 days left/);
+
+  // ended leases are marked ENDED; cancelled leases never remind
+  await withTenant(A.tenantId, (c) => c.query('UPDATE re_leases SET end_date = $1 WHERE id = $2', [inDays(-2), leaseId]));
+  const r4 = await runDocExpiryReminders({ fetchImpl: fakeFetch });
+  assert.equal(r4.length, 1);
+  assert.match(sent[sent.length - 1].text, /ENDED/);
+  await withTenant(A.tenantId, (c) => c.query("UPDATE re_leases SET status='cancelled', end_date = $1 WHERE id = $2", [inDays(10), leaseId]));
+  assert.deepEqual(await runDocExpiryReminders({ fetchImpl: fakeFetch }), []);
+
+  // Beta (not opted in) never gets lease reminders
+  await withTenant(B.tenantId, async (c) => {
+    const p = (await c.query("INSERT INTO re_properties (tenant_id, title) VALUES (current_setting('app.tenant_id')::uuid, 'Beta Lease') RETURNING id")).rows[0];
+    await c.query("INSERT INTO re_leases (tenant_id, property_id, end_date, status) VALUES (current_setting('app.tenant_id')::uuid, $1, $2, 'active')", [p.id, inDays(20)]);
+  });
+  assert.deepEqual(await runDocExpiryReminders({ fetchImpl: fakeFetch }), []);
+  delete process.env.HI_EMAIL_DAILY_CAP;
+});

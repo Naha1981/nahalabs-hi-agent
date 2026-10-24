@@ -76,23 +76,41 @@ export async function runDocExpiryReminders({ fetchImpl = fetch, now = new Date(
         if (days < 0) target = 3; else if (days <= 7) target = 2; else if (days <= 30) target = 1;
         if (target > d.expiry_reminder_stage) due.push({ ...d, target, days });
       }
-      return { due, email: rows[0]?.email };
+      // lease ends ride the same opt-in digest (60 / 30 / ended); a changed end_date resets the stage
+      await c.query('UPDATE re_leases SET lease_reminder_stage = 0, lease_reminder_for = end_date WHERE end_date IS DISTINCT FROM lease_reminder_for');
+      const leases = (await c.query(
+        `SELECT l.id, l.end_date::text AS end_date, l.lease_reminder_stage, p.title AS property, co.name AS tenant_name
+         FROM re_leases l JOIN re_properties p ON p.id = l.property_id LEFT JOIN re_contacts co ON co.id = l.contact_id
+         WHERE l.end_date IS NOT NULL AND l.status IN ('active','renewal_due')`)).rows;
+      const dueLeases = [];
+      for (const l of leases) {
+        const days = Math.floor((new Date(l.end_date + 'T00:00:00Z') - new Date(today + 'T00:00:00Z')) / 86400000);
+        let target = 0;
+        if (days < 0) target = 3; else if (days <= 30) target = 2; else if (days <= 60) target = 1;
+        if (target > l.lease_reminder_stage) dueLeases.push({ ...l, target, days });
+      }
+      return { due, dueLeases, email: rows[0]?.email };
     });
-    if (!plan.due.length) continue;
+    if (!plan.due.length && !plan.dueLeases.length) continue;
     try {
       if (!plan.email) { out.push({ tenant: tenantId, status: 'no account email' }); continue; }
       const sentToday = await withSystem((s) => s.query("SELECT count(*)::int n FROM email_log WHERE sent_at > now() - interval '1 day'").then((r) => r.rows[0].n));
       if (sentToday >= cap) { out.push({ tenant: tenantId, status: 'daily cap reached' }); continue; }
       const lines = plan.due.map((d) => `- ${d.title} (${d.doc_type}): ${d.days < 0 ? 'EXPIRED' : 'expires'} ${d.expires_on}${d.days >= 0 ? ` (${d.days} day${d.days === 1 ? '' : 's'} left)` : ''}`);
-      const subject = `Document expiry: ${plan.due.length} document${plan.due.length === 1 ? '' : 's'} need attention`;
-      const text = `Reminder from HI - these documents in your Documents register need attention:\n\n${lines.join('\n')}\n\nOpen HI > Documents to update them. This went to your own address only.`;
+      for (const l of plan.dueLeases) lines.push(`- Lease ${l.property}${l.tenant_name ? ` (${l.tenant_name})` : ''}: ${l.days < 0 ? 'ENDED' : 'ends'} ${l.end_date}${l.days >= 0 ? ` (${l.days} day${l.days === 1 ? '' : 's'} left)` : ''}`);
+      const total = plan.due.length + plan.dueLeases.length;
+      const subject = plan.dueLeases.length
+        ? `Documents and lease ends: ${total} item${total === 1 ? '' : 's'} need attention`
+        : `Document expiry: ${plan.due.length} document${plan.due.length === 1 ? '' : 's'} need attention`;
+      const text = `Reminder from HI - these items in your registers need attention:\n\n${lines.join('\n')}\n\nOpen HI > Documents or Estate to update them. This went to your own address only.`;
       const providerId = await sendMail({ to: plan.email, subject, text, fetchImpl });
       await withTenant(tenantId, async (c) => {
         for (const d of plan.due) await c.query('UPDATE vault_docs SET expiry_reminder_stage = $2, expiry_reminder_for = expires_on WHERE id = $1', [d.id, d.target]);
+        for (const l of plan.dueLeases) await c.query('UPDATE re_leases SET lease_reminder_stage = $2, lease_reminder_for = end_date WHERE id = $1', [l.id, l.target]);
         await c.query('INSERT INTO email_log (tenant_id, to_addr, subject, provider_id) VALUES ($1,$2,$3,$4)', [tenantId, plan.email, subject, providerId]);
       });
-      await auditFor(tenantId, 'system', 'docs.expiry_reminder_sent', { count: plan.due.length, provider_id: providerId });
-      out.push({ tenant: tenantId, status: 'sent', count: plan.due.length });
+      await auditFor(tenantId, 'system', 'docs.expiry_reminder_sent', { docs: plan.due.length, leases: plan.dueLeases.length, provider_id: providerId });
+      out.push({ tenant: tenantId, status: 'sent', count: plan.due.length + plan.dueLeases.length });
     } catch (e) {
       out.push({ tenant: tenantId, status: 'failed', error: String((e && e.message) || e).slice(0, 120) });
     }
