@@ -141,17 +141,21 @@ def current_context(x: int | None = None, y: int | None = None, focused: bool = 
             if int(getattr(info, "process_id", pid)) != pid:
                 raise RuntimeError("control belongs to a different process")
             control_type = safe_text(getattr(info, "control_type", ""), 60)
-            control_name = safe_text(getattr(info, "name", ""), 120)
+            raw_name = safe_text(getattr(info, "name", ""), 120)
             automation_id = safe_text(getattr(info, "automation_id", ""), 100)
             class_name = safe_text(getattr(info, "class_name", ""), 100)
             is_password = bool(getattr(info, "is_password", False))
             rect = normalized_rect(get_rect(element), window_rect)
-            sensitive = is_password or bool(SENSITIVE_RE.search(" ".join([control_name, automation_id, class_name])))
+            sensitive = is_password or bool(SENSITIVE_RE.search(" ".join([raw_name, automation_id, class_name])))
+            # UI Automation may expose a field's current value through its Name property.
+            # Never persist that property for any text-entry surface.
+            input_control = control_type in {"Edit", "ComboBox", "Document", "Text"}
+            control_name = "[sensitive field]" if sensitive else ("[input field]" if input_control else (raw_name or control_type))
             if not control_type:
                 raise RuntimeError("control has no accessible type")
             target = {
                 "window_title": title, "process_name": process_name,
-                "control_name": "[sensitive field]" if sensitive else (control_name or control_type),
+                "control_name": control_name,
                 "control_type": control_type, "automation_id": "" if sensitive else automation_id,
                 "class_name": class_name, "sensitive": sensitive, "rect": rect,
             }
@@ -409,6 +413,9 @@ def run_approved_task(client: HIClient, task: dict[str, Any]) -> tuple[str, str]
     manual = 0
     try:
         for index, action in enumerate(actions, start=1):
+            gate = client.request("POST", "/v1/desktop/tasks/" + str(task["id"]) + "/check", {"worker_id": task["worker_id"]})
+            if gate.get("allowed") is not True:
+                return "failed", safe_text(gate.get("reason", "HI blocked this task."), 300)
             kind = action.get("type")
             target = action.get("target") or {}
             label = safe_text(target.get("control_name", target.get("control_type", "control")), 100)
@@ -451,7 +458,8 @@ def run_approved_task(client: HIClient, task: dict[str, Any]) -> tuple[str, str]
                 value = values.get(str(action.get("parameter")), "")
                 control.click_input()
                 pywinauto_keyboard.send_keys("^a")
-                pywinauto_keyboard.send_keys(value, with_spaces=True, pause=0.01)
+                # Escape pywinauto's brace syntax so input is typed literally.
+                pywinauto_keyboard.send_keys(value.replace("{", "{{").replace("}", "}}"), with_spaces=True, pause=0.01)
             elif kind == "key":
                 sequence = KEY_TO_SEND.get(str(action.get("key")))
                 if not sequence:
