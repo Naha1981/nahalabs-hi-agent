@@ -55,6 +55,8 @@ const TOOL_LABELS = {
   estate_update_property: 'Updated a property',
   estate_match: 'Matched buyers and listings',
   estate_mandate_deck: 'Created a mandate pitch',
+  estate_find_duplicates: 'Checked for duplicate contacts',
+  estate_merge_contacts: 'Merged contacts',
   estate_add_property: 'Saved a property',
   estate_add_deal: 'Started a deal',
   estate_update_deal: 'Updated a deal',

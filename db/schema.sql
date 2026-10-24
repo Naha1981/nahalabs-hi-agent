@@ -535,6 +535,7 @@ ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS fica_status text NOT NULL DEFAU
 ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS budget_cents bigint CHECK (budget_cents >= 0);
 ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS bedrooms_needed smallint CHECK (bedrooms_needed BETWEEN 0 AND 20);
 ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS areas text NOT NULL DEFAULT '';  -- comma-separated preferred suburbs
+ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS merged_into uuid REFERENCES re_contacts(id);  -- soft merge: duplicates stay recoverable, lists hide merged rows
 ALTER TABLE re_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_contacts FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON re_contacts;

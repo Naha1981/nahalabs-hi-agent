@@ -100,6 +100,8 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_add_property', description: 'Real estate: save a property or listing. price: rand amount like "R1,250,000" (kept structured for matching); asking_price stays the display text.', parameters: { type: 'object', properties: { title: { type: 'string', description: 'Address or short name, e.g. "12 Oak Street, Sandton"' }, asking_price: { type: 'string' }, price: { type: 'string' }, bedrooms: { type: 'number' }, suburb: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, notes: { type: 'string' } }, required: ['title'] } },
   { name: 'estate_update_property', description: 'Real estate: update a listing - price (tracks the change date), bedrooms, suburb, status, or a note. Identify by title.', parameters: { type: 'object', properties: { title: { type: 'string' }, price: { type: 'string' }, bedrooms: { type: 'number' }, suburb: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, note: { type: 'string' } }, required: ['title'] } },
   { name: 'estate_match', description: 'Real estate: structured matching. Give a property to find matching buyers (budget covers price, bedrooms met, area fits), or a buyer/contact name to find matching listings.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' } } } },
+  { name: 'estate_find_duplicates', description: 'Real estate: list likely duplicate contacts (same normalized name, phone or email) so the agent can decide what to merge.', parameters: { type: 'object', properties: {} } },
+  { name: 'estate_merge_contacts', description: 'Real estate: merge one duplicate contact into another. Deals, viewings and details move to the kept contact; the duplicate is hidden but never deleted.', parameters: { type: 'object', properties: { keep: { type: 'string', description: 'Name of the contact to keep' }, merge: { type: 'string', description: 'Name of the duplicate to merge into it' } }, required: ['keep', 'merge'] } },
   { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, record the sale price and commission, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, sale_price: { type: 'string', description: 'Sale price in rands, e.g. "R1,250,000" or "1250000"' }, commission_pct: { type: 'number', description: 'Commission percent, e.g. 5 for 5%' }, note: { type: 'string' } } } },
   { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
@@ -295,7 +297,7 @@ export async function runTool(name, args, ctx) {
       if (!prop) return 'No property found with that name. Save it first.';
       const matchCount = (await c.query(
         `SELECT count(*)::int n FROM re_contacts
-         WHERE role IN ('buyer','tenant')
+         WHERE role IN ('buyer','tenant') AND merged_into IS NULL
            AND (budget_cents IS NOT NULL OR bedrooms_needed IS NOT NULL OR areas <> '')
            AND (budget_cents IS NULL OR $1::bigint IS NULL OR budget_cents >= $1::bigint)
            AND (bedrooms_needed IS NULL OR $2::smallint IS NULL OR ($3::smallint IS NOT NULL AND $3::smallint >= bedrooms_needed))
@@ -335,7 +337,7 @@ export async function runTool(name, args, ctx) {
     case 'estate_update_contact': {
       const nameKey = clip(a.name, 120).replace(/[%_]/g, '').trim();
       if (!nameKey) return 'Give the contact name.';
-      const con = (await c.query("SELECT id, name, fica_status FROM re_contacts WHERE name ILIKE '%' || $1 || '%' ORDER BY updated_at DESC LIMIT 1", [nameKey])).rows[0];
+      const con = (await c.query("SELECT id, name, fica_status FROM re_contacts WHERE name ILIKE '%' || $1 || '%' AND merged_into IS NULL ORDER BY updated_at DESC LIMIT 1", [nameKey])).rows[0];
       if (!con) return 'No contact found with that name.';
       const sets = [], vals = [];
       if (a.fica_status != null) {
@@ -417,7 +419,7 @@ export async function runTool(name, args, ctx) {
         if (!prop) return 'No property found with that name.';
         const buyers = (await c.query(
           `SELECT name, budget_cents, bedrooms_needed, areas, phone, email FROM re_contacts
-           WHERE role IN ('buyer','tenant')
+           WHERE role IN ('buyer','tenant') AND merged_into IS NULL
              AND (budget_cents IS NOT NULL OR bedrooms_needed IS NOT NULL OR areas <> '')
              AND (budget_cents IS NULL OR $1::bigint IS NULL OR budget_cents >= $1::bigint)
              AND (bedrooms_needed IS NULL OR $2::smallint IS NULL OR ($3::smallint IS NOT NULL AND $3::smallint >= bedrooms_needed))
@@ -443,6 +445,66 @@ export async function runTool(name, args, ctx) {
         return `Listings matching ${buyer.name} (${props.length}):\n` + props.map((p) => `- ${p.title}${p.price_cents ? ` | ${randFmt(p.price_cents)}` : (p.asking_price ? ` | ${p.asking_price}` : '')}${p.bedrooms != null ? ` | ${p.bedrooms} bed` : ''}${p.suburb ? ` | ${p.suburb}` : ''}`).join('\n');
       }
       return 'Give a property to find buyers, or a contact name to find listings.';
+    }
+    case 'estate_find_duplicates': {
+      const rows = (await c.query("SELECT id, name, phone, email FROM re_contacts WHERE merged_into IS NULL ORDER BY name LIMIT 500")).rows;
+      const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const groups = new Map();
+      const add = (k, r) => { if (!k) return; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); };
+      for (const r of rows) {
+        for (const [tag, v] of [['n', r.name], ['p', r.phone], ['e', r.email]]) {
+          const nv = norm(v);
+          if (nv) add(tag + ':' + nv, r);
+        }
+      }
+      const seen = new Set(); const out = [];
+      for (const g of groups.values()) {
+        if (g.length < 2) continue;
+        const key = g.map((x) => x.id).sort().join(',');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(g.map((x) => `${x.name}${x.phone ? ` (${x.phone})` : ''}${x.email ? ` (${x.email})` : ''}`).join('  vs  '));
+      }
+      if (!out.length) return 'No likely duplicates found.';
+      return `Likely duplicates (${out.length} group${out.length === 1 ? '' : 's'}):\n` + out.map((g, i) => `${i + 1}) ${g}`).join('\n') + '\nMerge with estate_merge_contacts (keep, merge) after the agent confirms; use the phone numbers shown to tell same-name duplicates apart.';
+    }
+    case 'estate_merge_contacts': {
+      const findOne = async (v) => {
+        const key = clip(v, 120).replace(/[%_]/g, '').trim();
+        if (!key) return null;
+        const digits = key.replace(/[^0-9+]/g, '');
+        if (digits.replace(/\D/g, '').length >= 6) {
+          const byPhone = (await c.query("SELECT * FROM re_contacts WHERE (phone=$1 OR replace(phone,' ','')=$1) AND merged_into IS NULL ORDER BY updated_at DESC LIMIT 1", [digits])).rows[0];
+          if (byPhone) return byPhone;
+        }
+        if (key.includes('@')) {
+          const byEmail = (await c.query('SELECT * FROM re_contacts WHERE email ILIKE $1 AND merged_into IS NULL ORDER BY updated_at DESC LIMIT 1', [key])).rows[0];
+          if (byEmail) return byEmail;
+        }
+        return (await c.query("SELECT * FROM re_contacts WHERE name ILIKE '%' || $1 || '%' AND merged_into IS NULL ORDER BY updated_at DESC LIMIT 1", [key])).rows[0];
+      };
+      const keep = await findOne(a.keep);
+      const dup = await findOne(a.merge);
+      if (!keep || !dup) return 'Could not find both contacts by name.';
+      if (keep.id === dup.id) return 'Those are the same contact.';
+      await c.query('UPDATE re_deals SET contact_id=$1, updated_at=now() WHERE contact_id=$2', [keep.id, dup.id]);
+      await c.query('UPDATE re_viewings SET contact_id=$1, updated_at=now() WHERE contact_id=$2', [keep.id, dup.id]);
+      await c.query(
+        `UPDATE re_contacts SET
+           phone = CASE WHEN phone='' THEN $2 ELSE phone END,
+           email = CASE WHEN email='' THEN $3 ELSE email END,
+           source = CASE WHEN source='' THEN $4 ELSE source END,
+           fica_status = CASE WHEN fica_status='' THEN $5 ELSE fica_status END,
+           budget_cents = COALESCE(budget_cents, $6),
+           bedrooms_needed = COALESCE(bedrooms_needed, $7),
+           areas = CASE WHEN areas='' THEN $8 ELSE areas END,
+           notes = CASE WHEN $9='' THEN notes WHEN notes='' THEN $9 ELSE notes || E'\n' || $9 END,
+           updated_at=now()
+         WHERE id=$1`,
+        [keep.id, dup.phone, dup.email, dup.source, dup.fica_status, dup.budget_cents, dup.bedrooms_needed, dup.areas, dup.notes ? `[merged from ${dup.name}] ${dup.notes}` : '']);
+      await c.query('UPDATE re_contacts SET merged_into=$1, updated_at=now() WHERE id=$2', [keep.id, dup.id]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contacts_merged', { kept: keep.id, merged: dup.id });
+      return `Merged ${dup.name} into ${keep.name}. Deals and viewings moved across; the duplicate is hidden but kept on record.`;
     }
     case 'estate_add_deal': {
       const prop = await estateGetOrCreateProperty(c, a.property, clip);
@@ -570,7 +632,7 @@ export async function runTool(name, args, ctx) {
         return r.rowCount ? r.rows.map((x) => `- ${estateSAST(x.starts_at)} | ${x.property}${x.contact ? ` | ${x.contact}` : ''}`).join('\n') : 'No upcoming viewings.';
       }
       if (a.what === 'contacts') {
-        const r = await c.query('SELECT name, role, phone, email, source, fica_status FROM re_contacts ORDER BY created_at DESC LIMIT 20');
+        const r = await c.query('SELECT name, role, phone, email, source, fica_status FROM re_contacts WHERE merged_into IS NULL ORDER BY created_at DESC LIMIT 20');
         return r.rowCount ? r.rows.map((x) => `- ${x.name} (${x.role})${x.phone ? ` | ${x.phone}` : ''}${x.email ? ` | ${x.email}` : ''}${x.source ? ` | via ${x.source}` : ''}${x.fica_status ? ` | FICA ${x.fica_status}` : ''}`).join('\n') : 'No contacts yet.';
       }
       if (a.what === 'properties') {
