@@ -66,7 +66,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     reply.header('x-content-type-options', 'nosniff');
     reply.header('x-frame-options', 'DENY');
     reply.header('referrer-policy', 'same-origin');
-    reply.header('content-security-policy', "default-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'");
+    if (!reply.hasHeader('content-security-policy')) reply.header('content-security-policy', "default-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'");
     if (req.url.startsWith('/app')) reply.header('cache-control', 'no-store');
   });
 
@@ -429,8 +429,8 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       <form method="post" action="/app/settings/morning-brief">${csrf(u)}<button name="on" value="${u.morning_brief_auto ? 'false' : 'true'}" class="sec">${u.morning_brief_auto ? 'Switch off auto-send' : 'Auto-send my morning brief to my own address'}</button></form></div>
       <div class="card"><b>Viewing reminders</b><p class="mut">${u.viewing_reminders_auto ? 'HI emails your own address up to 24 hours before each scheduled viewing.' : 'HI can email your own address up to 24 hours before each scheduled viewing. It never emails your clients.'}</p>
       <form method="post" action="/app/settings/viewing-reminders">${csrf(u)}<button name="on" value="${u.viewing_reminders_auto ? 'false' : 'true'}" class="sec">${u.viewing_reminders_auto ? 'Switch off viewing reminders' : 'Email me viewing reminders'}</button></form></div>
-      <div class="card"><b>Document expiry reminders</b><p class="mut">${u.document_reminders_auto ? 'HI emails your own address when a document in Documents is 30 days out, 7 days out, or expired.' : 'HI can email your own address when a document in Documents (FICA, licences, compliance) is 30 days out, 7 days out, or expired.'}</p>
-      <form method="post" action="/app/settings/doc-reminders">${csrf(u)}<button name="on" value="${u.document_reminders_auto ? 'false' : 'true'}" class="sec">${u.document_reminders_auto ? 'Switch off expiry reminders' : 'Email me expiry reminders'}</button></form></div>
+      <div class="card"><b>Expiry and lease-end reminders</b><p class="mut">${u.document_reminders_auto ? 'HI emails your own address when a document in Documents is 30 days out, 7 days out or expired, and when a recorded lease is 60 days out, 30 days out or ended.' : 'HI can email your own address when a document in Documents (FICA, licences, compliance) is 30 days out, 7 days out or expired, and when a recorded lease is 60 days out, 30 days out or ended.'}</p>
+      <form method="post" action="/app/settings/doc-reminders">${csrf(u)}<button name="on" value="${u.document_reminders_auto ? 'false' : 'true'}" class="sec">${u.document_reminders_auto ? 'Switch off expiry and lease-end reminders' : 'Email me expiry and lease-end reminders'}</button></form></div>
       <div class="card"><b>Connections</b><ul><li>${u.desk_active ? 'Official tender open data: active' : 'Opportunity Desk: inactive until you set keywords in Profile'}</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
   });
   app.post('/app/settings/morning-brief', { preHandler: guard }, async (req, reply) => {
@@ -449,7 +449,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const u = req.user, on = req.body?.on === 'true';
     await withSystem((c) => c.query('UPDATE tenants SET document_reminders_auto=$2 WHERE id=$1', [u.tenant_id, on]));
     await auditFor(u.tenant_id, `user:${u.user_id}`, on ? 'tenant.doc_reminders_auto.on' : 'tenant.doc_reminders_auto.off', {});
-    return reply.redirect('/app/settings?m=' + encodeURIComponent(on ? 'Document expiry reminders will be emailed to your own address.' : 'Document expiry reminders are off.'));
+    return reply.redirect('/app/settings?m=' + encodeURIComponent(on ? 'Expiry and lease-end reminders will be emailed to your own address.' : 'Expiry and lease-end reminders are off.'));
   });
   app.post('/app/settings/pause', { preHandler: guard }, async (req, reply) => {
     const u = req.user, paused = req.body?.paused === 'true';
