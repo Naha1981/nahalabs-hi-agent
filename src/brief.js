@@ -12,10 +12,12 @@ export function composeBrief({ date, events, unread, matches, approvals, estate 
   L.push('TODAY FROM YOUR CALENDAR');
   if (events.length) for (const e of events.slice(0, 5)) L.push(`- ${e.title}${e.start ? ' at ' + e.start : ''}`);
   else L.push('- Nothing on the calendar (or no calendar connected yet).');
-  if (estate.viewings.length || estate.followups.length) {
+  const attn = estate.attention || [];
+  if (estate.viewings.length || estate.followups.length || attn.length) {
     L.push('', 'ESTATE TODAY');
     for (const v of estate.viewings.slice(0, 5)) L.push(`- Viewing ${v.property}${v.contact ? ' with ' + v.contact : ''} at ${v.time}`);
     for (const f of estate.followups.slice(0, 5)) L.push(`- Due: ${f.next_action} - ${f.property}${f.contact ? ' (' + f.contact + ')' : ''}${f.date < todayIso() ? ' (due ' + f.date + ')' : ''}`);
+    for (const x of attn.slice(0, 3)) L.push(`- Needs attention: ${x.text}`);
   }
   L.push('', 'INBOX');
   if (unread.length) for (const m of unread.slice(0, 5)) L.push(`- ${m.from || 'Unknown'}: ${m.subject || '(no subject)'}`);
@@ -54,6 +56,7 @@ async function briefForTenant(t, fetchImpl) {
     };
     // The Opportunity Desk section only appears for tenants who told HI what to look
     // for (profile keywords) - matching itself already skips tenants without keywords.
+    estate.attention = await estateAttention(c);
     const deskActive = Boolean((await c.query('SELECT COALESCE(array_length(keywords,1),0) > 0 AS active FROM profiles LIMIT 1')).rows[0]?.active);
     const approvals = Number((await c.query("SELECT count(*)::int AS n FROM approvals WHERE status='proposed'")).rows[0].n);
     const owner = (await c.query("SELECT id, email FROM users WHERE role='owner' ORDER BY created_at LIMIT 1")).rows[0];

@@ -18,6 +18,19 @@ test('estate section appears only when there are viewings or due follow-ups', ()
   assert.match(withEstate, /Due: bank pre-approval - 7 Palm Road \(New Buyer\) \(due 2026-10-22\)/);
 });
 
+test('estate attention lines appear in the brief, capped at three', () => {
+  const out = composeBrief({ ...base, estate: { viewings: [], followups: [], attention: [
+    { kind: 'overdue', text: '7 Palm Road (New Buyer): "bank pre-approval" was due 2026-10-20 - 3 days overdue' },
+    { kind: 'stale_listing', text: '22 Stale Street: 45 days on market, no viewing in the last 14 days' },
+  ] } });
+  assert.match(out, /ESTATE TODAY/);
+  assert.match(out, /Needs attention: 7 Palm Road \(New Buyer\): "bank pre-approval" was due 2026-10-20 - 3 days overdue/);
+  assert.match(out, /Needs attention: 22 Stale Street: 45 days on market/);
+  const four = composeBrief({ ...base, estate: { viewings: [], followups: [], attention: [1, 2, 3, 4].map((i) => ({ kind: 'x', text: `item ${i}` })) } });
+  assert.match(four, /item 3/);
+  assert.doesNotMatch(four, /item 4/);
+});
+
 test('opportunity desk section hidden for tenants without profile keywords', () => {
   const off = composeBrief({ ...base, deskActive: false });
   assert.doesNotMatch(off, /OPPORTUNITY DESK/);
