@@ -137,3 +137,16 @@ test('estate deal commission: price + pct stored in cents, recomputed, validated
   const again = await withTenant(A, (c) => c.query("SELECT d.commission_cents FROM re_deals d JOIN re_properties p ON p.id=d.property_id WHERE p.title ILIKE '%Protea%'").then((x) => x.rows[0]));
   assert.equal(String(again.commission_cents), '7500000');
 });
+
+test('enquiry source: stored, validated, listed, tenant-isolated', async () => {
+  const r = await call(A, 'estate_add_contact', { name: 'Lerato K', role: 'buyer', email: 'lerato@example.test', source: 'portal' });
+  assert.match(r, /Saved Lerato K as a buyer \(source: portal\)/);
+  const list = await call(A, 'estate_list', { what: 'contacts' });
+  assert.match(list, /Lerato K \(buyer\) \| lerato@example\.test \| via portal/);
+  const bad = await call(A, 'estate_add_contact', { name: 'No Source', source: 'mars' });
+  assert.match(bad, /Saved No Source/); // invalid source falls back to empty, never errors
+  const row = await withTenant(A, (c) => c.query("SELECT source FROM re_contacts WHERE name='No Source'").then((x) => x.rows[0]));
+  assert.equal(row.source, '');
+  const listB = await call(B, 'estate_list', { what: 'contacts' });
+  assert.equal(listB, 'No contacts yet.');
+});

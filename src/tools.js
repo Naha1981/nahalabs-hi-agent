@@ -94,7 +94,7 @@ export const TOOL_SCHEMAS = [
   { name: 'propose_account_email', description: 'Draft an email to send from one of the customer\'s connected Gmail/Outlook accounts. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'] } },
   { name: 'propose_calendar_event', description: 'Propose creating an event on one of the customer\'s connected calendars. It is created only after the customer approves.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, title: { type: 'string' }, starts_at: { type: 'string' }, ends_at: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'starts_at', 'ends_at'] } },
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
-  { name: 'estate_add_contact', description: 'Real estate: save a contact such as a buyer, seller, landlord or tenant.', parameters: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['buyer', 'seller', 'landlord', 'tenant', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, notes: { type: 'string' } }, required: ['name'] } },
+  { name: 'estate_add_contact', description: 'Real estate: save a contact such as a buyer, seller, landlord or tenant. source: how the enquiry arrived - portal, website, referral, signboard, walk_in or other - when known.', parameters: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['buyer', 'seller', 'landlord', 'tenant', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, source: { type: 'string', enum: ['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'] }, notes: { type: 'string' } }, required: ['name'] } },
   { name: 'estate_add_property', description: 'Real estate: save a property or listing.', parameters: { type: 'object', properties: { title: { type: 'string', description: 'Address or short name, e.g. "12 Oak Street, Sandton"' }, asking_price: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, notes: { type: 'string' } }, required: ['title'] } },
   { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, record the sale price and commission, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, sale_price: { type: 'string', description: 'Sale price in rands, e.g. "R1,250,000" or "1250000"' }, commission_pct: { type: 'number', description: 'Commission percent, e.g. 5 for 5%' }, note: { type: 'string' } } } },
@@ -120,7 +120,7 @@ const estateDate = (v) => { const s = String(v ?? '').trim(); return /^\d{4}-\d{
 export const ESTATE_WATCH_TITLE = 'Enquiry watch';
 export const ESTATE_WATCH_INSTRUCTION = [
   'Enquiry watch for the estate agency. Search the connected inboxes with mail_search for new property enquiries from the last day, with queries like: newer_than:1d (viewing OR offer OR property OR listing OR "for sale" OR "to rent").',
-  'For each genuine new enquiry: 1) check estate_list contacts for the sender email address first - never create duplicates; 2) save new senders with estate_add_contact (role buyer or tenant, include their email); 3) if a specific property is mentioned, start a deal with estate_add_deal at stage enquiry, next_action "Reply to enquiry", next_action_date tomorrow; 4) draft a reply with propose_account_email: thank them, answer only from facts on record (never invent price, levies, rates or availability - say the agent will confirm), and ask the qualifying questions: budget, bond pre-approval, timeframe, and whether they want a viewing.',
+  'For each genuine new enquiry: 1) check estate_list contacts for the sender email address first - never create duplicates; 2) save new senders with estate_add_contact (role buyer or tenant, include their email and the source - portal or website - when the channel is known); 3) if a specific property is mentioned, start a deal with estate_add_deal at stage enquiry, next_action "Reply to enquiry", next_action_date tomorrow; 4) draft a reply with propose_account_email: thank them, answer only from facts on record (never invent price, levies, rates or availability - say the agent will confirm), and ask the qualifying questions: budget, bond pre-approval, timeframe, and whether they want a viewing.',
   'Nothing sends without the customer approval. End with a short report: enquiries found, contacts and deals created, drafts waiting for approval. If no inbox is connected or nothing is found, say so plainly.',
 ].join(' ');
 
@@ -300,11 +300,12 @@ export async function runTool(name, args, ctx) {
       const name = clip(a.name, 120).trim();
       if (!name) return 'A contact needs a name.';
       const role = ['buyer', 'seller', 'landlord', 'tenant', 'other'].includes(a.role) ? a.role : 'other';
+      const source = ['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'].includes(a.source) ? a.source : '';
       const r = await c.query(
-        "INSERT INTO re_contacts (tenant_id, name, role, phone, email, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5) RETURNING id",
-        [name, role, clip(a.phone, 40), clip(a.email, 120), clip(a.notes, 1000)]);
-      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contact_saved', { contact_id: r.rows[0].id });
-      return `Saved ${name} as a ${role}.`;
+        "INSERT INTO re_contacts (tenant_id, name, role, phone, email, source, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6) RETURNING id",
+        [name, role, clip(a.phone, 40), clip(a.email, 120), source, clip(a.notes, 1000)]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contact_saved', { contact_id: r.rows[0].id, source });
+      return `Saved ${name} as a ${role}${source ? ` (source: ${source})` : ''}.`;
     }
     case 'estate_add_property': {
       const title = clip(a.title, 200).trim();
@@ -442,8 +443,8 @@ export async function runTool(name, args, ctx) {
         return r.rowCount ? r.rows.map((x) => `- ${estateSAST(x.starts_at)} | ${x.property}${x.contact ? ` | ${x.contact}` : ''}`).join('\n') : 'No upcoming viewings.';
       }
       if (a.what === 'contacts') {
-        const r = await c.query('SELECT name, role, phone, email FROM re_contacts ORDER BY created_at DESC LIMIT 20');
-        return r.rowCount ? r.rows.map((x) => `- ${x.name} (${x.role})${x.phone ? ` | ${x.phone}` : ''}${x.email ? ` | ${x.email}` : ''}`).join('\n') : 'No contacts yet.';
+        const r = await c.query('SELECT name, role, phone, email, source FROM re_contacts ORDER BY created_at DESC LIMIT 20');
+        return r.rowCount ? r.rows.map((x) => `- ${x.name} (${x.role})${x.phone ? ` | ${x.phone}` : ''}${x.email ? ` | ${x.email}` : ''}${x.source ? ` | via ${x.source}` : ''}`).join('\n') : 'No contacts yet.';
       }
       if (a.what === 'properties') {
         const r = await c.query('SELECT title, asking_price, status FROM re_properties ORDER BY created_at DESC LIMIT 20');
