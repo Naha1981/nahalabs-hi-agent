@@ -1,7 +1,7 @@
 // Skills registry: named specialist capabilities an agent can work as during a plan step.
 import { withTenant, audit } from './db.js';
 
-const SAFE_TOOLS = ['remember', 'recall', 'web_search', 'fetch_url', 'find_tenders', 'plan', 'schedule_task', 'browser_task', 'browser_results', 'propose_email', 'create_file', 'mail_search', 'calendar_upcoming', 'propose_account_email', 'propose_calendar_event'];
+const SAFE_TOOLS = ['remember', 'recall', 'web_search', 'fetch_url', 'find_tenders', 'plan', 'schedule_task', 'browser_task', 'browser_results', 'desktop_task', 'propose_email', 'create_file', 'mail_search', 'calendar_upcoming', 'propose_account_email', 'propose_calendar_event'];
 
 export const BUILTIN_SKILLS = [
   { name: 'researcher', description: 'Deep web research with numbered citations.', tools: ['web_search', 'fetch_url', 'recall', 'remember', 'plan'],
