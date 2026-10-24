@@ -7,6 +7,7 @@ const require_hash = (t) => createHash('sha256').update(String(t || '')).digest(
 import { withTenant, withSystem, audit, auditFor, closePool, assertSchemaReady } from './db.js';
 import { hashPassword, verifyPassword, newToken, tokenHash, makeLimiter } from './auth.js';
 import { page, esc, fdate, safeUrl, drivePage } from './views.js';
+import { estateAttention } from './attention.js';
 import { ingest } from './ingest.js';
 import { runViewingReminders, runDocExpiryReminders } from './reminders.js';
 import { matchTenant, matchAllTenants } from './match.js';
@@ -640,6 +641,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       props: (await c.query(`SELECT count(*)::int n FROM re_properties`)).rows[0].n,
       contacts: (await c.query(`SELECT count(*)::int n FROM re_contacts`)).rows[0].n,
       sources: (await c.query(`SELECT source, count(*)::int n FROM re_contacts WHERE source <> '' GROUP BY source ORDER BY n DESC`)).rows,
+      attention: await estateAttention(c),
     }));
     const due = data.deals.filter((d) => OPEN.includes(d.stage) && d.next_action && d.next_action_date && fd(d.next_action_date) <= fd(new Date(Date.now() + 3 * 86400000)));
     const cards = STAGES.map(([k, label]) => {
@@ -651,9 +653,10 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const dueRows = due.map((d) => `<tr><td>${fd(d.next_action_date)}</td><td>${esc(d.property)}</td><td>${esc(d.contact || '')}</td><td>${esc(d.next_action)}</td></tr>`).join('');
     const viewRows = data.viewings.map((v) => `<tr><td>${new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(v.starts_at)).replace(',', '')} SAST</td><td>${esc(v.property)}</td><td>${esc(v.contact || '')}</td></tr>`).join('');
     const empty = !data.deals.length && !data.viewings.length;
+    const attnCard = data.attention.length ? `<div class="card"><b>Needs attention</b> <span class="chip">${data.attention.length}</span><table style="margin-top:8px">${data.attention.map((x) => `<tr><td>${esc(x.text)}</td></tr>`).join('')}</table></div>` : '';
     const srcCard = data.sources.length ? `<div class="card"><b>Enquiries by source</b><p class="mut" style="margin:6px 0 0">${data.sources.map((x) => `${esc(x.source.replace('_', ' '))}: ${x.n}`).join(' &middot; ')}</p><p class="mut" style="margin:6px 0 0">Tell HI where each enquiry came from (portal, website, referral, signboard, walk-in) so this stays useful.</p></div>` : '';
     return render(reply, u, 'Estate', `
-      <h1><b>Estate</b> deals, viewings and follow-ups.</h1>${srcCard}
+      <h1><b>Estate</b> deals, viewings and follow-ups.</h1>${attnCard}${srcCard}
       <p class="mut">${data.props} properties, ${data.contacts} contacts on record. Manage it by talking to HI - for example: <i>"Add a deal for 12 Oak Street with buyer Sipho, offer stage, next action: bank docs by Friday"</i> or <i>"seller report for 12 Oak Street"</i>.</p>
       ${empty ? '<div class="card empty">Nothing tracked yet. Tell HI about a property, a buyer or a deal and it appears here.</div>' : ''}
       ${dueRows ? `<div class="card"><b>Follow-ups due (next 3 days)</b><table style="margin-top:8px"><tr><th>Due</th><th>Property</th><th>Who</th><th>Action</th></tr>${dueRows}</table></div>` : ''}

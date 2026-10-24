@@ -77,3 +77,30 @@ test('estate dedupe: merge guards and tenant isolation', async () => {
   // merging a contact into itself is rejected
   assert.match(await call(A, 'estate_merge_contacts', { keep: 'John Smit', merge: 'John Smit' }), /same contact/);
 });
+
+test('estate attention: overdue follow-ups, stalled deals, stale listings surface read-only', async () => {
+  // overdue follow-up (next action due in the past)
+  await call(A, 'estate_add_property', { title: '7 Attention Ave' });
+  await call(A, 'estate_add_contact', { name: 'Oliver Overdue', role: 'buyer', phone: '0850000001' });
+  const deal = await call(A, 'estate_add_deal', { property: '7 Attention Ave', contact: 'Oliver Overdue', stage: 'offer', next_action: 'Chase the bank', next_action_date: '2020-01-05' });
+  assert.match(deal, /deal/i);
+
+  // stale listing: active > 21 days, no recent viewing
+  await call(A, 'estate_add_property', { title: '22 Stale Street' });
+  await withTenant(A, (c) => c.query("UPDATE re_properties SET status='active', created_at = now() - interval '45 days' WHERE title='22 Stale Street'"));
+
+  const out = await call(A, 'estate_list', { what: 'attention' });
+  assert.match(out, /Needs attention/);
+  assert.match(out, /7 Attention Ave \(Oliver Overdue\): "Chase the bank" was due 2020-01-05/);
+  assert.match(out, /days overdue/);
+  assert.match(out, /22 Stale Street: 45 days on market, no viewing in the last 14 days/);
+
+  // a fresh listing with a recent viewing must not appear
+  await call(A, 'estate_add_property', { title: '5 Fresh Road' });
+  const out2 = await call(A, 'estate_list', { what: 'attention' });
+  assert.doesNotMatch(out2, /5 Fresh Road/);
+
+  // tenant B sees none of tenant A's attention items
+  const outB = await withTenant(B, (c) => runTool('estate_list', { what: 'attention' }, { c, tenantId: B, agentId: AGENT, agentName: 'hi', userEmail: 'b@b.c', sources: [], steps: [], mode: 'chat' }));
+  assert.doesNotMatch(outB, /7 Attention Ave/);
+});

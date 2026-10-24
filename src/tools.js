@@ -6,6 +6,7 @@ import { proposeBrowserJob } from './browser.js';
 import { proposePhoneTask } from './phone.js';
 import { saveFile } from './files.js';
 import { buildMandateDeck, andList } from './deck.js';
+import { estateAttention } from './attention.js';
 import { listUploads, readUpload } from './uploads.js';
 import { mailSearch, calendarUpcoming, proposeAccountEmail, proposeCalendarEvent } from './integrations.js';
 
@@ -106,7 +107,7 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, record the sale price and commission, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, sale_price: { type: 'string', description: 'Sale price in rands, e.g. "R1,250,000" or "1250000"' }, commission_pct: { type: 'number', description: 'Commission percent, e.g. 5 for 5%' }, note: { type: 'string' } } } },
   { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
   { name: 'estate_log_viewing', description: 'Real estate: record the outcome and feedback of a viewing (done, no_show or cancelled).', parameters: { type: 'object', properties: { property: { type: 'string' }, viewing_id: { type: 'string' }, status: { type: 'string', enum: ['done', 'no_show', 'cancelled'] }, feedback: { type: 'string' } }, required: ['status'] } },
-  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts or properties.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties'] } }, required: ['what'] } },
+  { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts or properties.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties', 'attention'] } }, required: ['what'] } },
   { name: 'estate_enquiry_watch', description: 'Real estate: turn the enquiry watch on or off. When on, a scheduled task scans the connected inboxes for new property enquiries, saves contacts, starts deals and drafts approval-gated replies.', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['enable', 'disable'] }, every_minutes: { type: 'integer', description: 'How often to scan, minimum 60. Default 120.' } }, required: ['action'] } },
   { name: 'estate_seller_report', description: 'Real estate: create a seller progress report for a property as a downloadable markdown file.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_mandate_deck', description: 'Real estate: create a polished printable mandate pitch (HTML file) for a property, using only facts on record and the real count of matching buyers. Save for a seller meeting.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
@@ -627,6 +628,11 @@ export async function runTool(name, args, ctx) {
       return `Viewing of ${viewing.title} marked ${a.status.replace('_', '-')}${a.feedback ? ' with feedback saved' : ''}.`;
     }
     case 'estate_list': {
+      if (a.what === 'attention') {
+        const items = await estateAttention(c);
+        if (!items.length) return 'Nothing needs escalation: no overdue follow-ups, stalled deals or stale listings on record.';
+        return `Needs attention (${items.length}):\n` + items.map((x) => `- ${x.text}`).join('\n');
+      }
       if (a.what === 'pipeline') {
         const r = await c.query(
           `SELECT d.stage, d.next_action, d.next_action_date, p.title AS property, co.name AS contact
