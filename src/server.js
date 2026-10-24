@@ -599,7 +599,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const viewRows = data.viewings.map((v) => `<tr><td>${new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(v.starts_at)).replace(',', '')} SAST</td><td>${esc(v.property)}</td><td>${esc(v.contact || '')}</td></tr>`).join('');
     const empty = !data.deals.length && !data.viewings.length;
     return render(reply, u, 'Estate', `
-      <h1><b>Estate</b> your deals, viewings and follow-ups.</h1>
+      <h1><b>Estate</b> deals, viewings and follow-ups.</h1>
       <p class="mut">${data.props} properties, ${data.contacts} contacts on record. Manage it by talking to HI - for example: <i>"Add a deal for 12 Oak Street with buyer Sipho, offer stage, next action: bank docs by Friday"</i> or <i>"seller report for 12 Oak Street"</i>.</p>
       ${empty ? '<div class="card empty">Nothing tracked yet. Tell HI about a property, a buyer or a deal and it appears here.</div>' : ''}
       ${dueRows ? `<div class="card"><b>Follow-ups due (next 3 days)</b><table style="margin-top:8px"><tr><th>Due</th><th>Property</th><th>Who</th><th>Action</th></tr>${dueRows}</table></div>` : ''}
