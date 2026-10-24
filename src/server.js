@@ -51,7 +51,13 @@ const STATUSES = ['new', 'saved', 'dismissed', 'applied', 'won', 'lost'];
 const DOC_TYPES = ['CSD supplier report', 'Tax compliance status (SARS)', 'B-BBEE certificate or affidavit', 'CIPC registration', 'Bank confirmation letter', 'FICA - ID document', 'FICA - proof of address', 'PPRA Fidelity Fund Certificate', 'Other'];
 
 export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaultChat, lookup } = {}) {
-  const app = Fastify({ logger, trustProxy: true, bodyLimit: 100 * 1024 });
+  // Refuse to boot in production without the secrets sessions and cron auth depend on. Both are proven set on the live service (logins and cron runs work).
+  if (process.env.NODE_ENV === 'production') {
+    for (const k of ['SESSION_SECRET', 'CRON_SECRET']) {
+      if (!process.env[k] || process.env[k].length < 16) throw new Error(`${k} must be set to at least 16 characters in production`);
+    }
+  }
+  const app = Fastify({ logger, trustProxy: 1, bodyLimit: 100 * 1024 });  // trust one proxy hop (Render's edge); 'true' would trust the whole X-Forwarded-For chain and let clients spoof IPs past rate limits
   await app.register(formbody);
   await app.register(multipart, { limits: { fileSize: 8 * 1024 * 1024, files: 1 } });
   await app.register(cookie);
@@ -422,6 +428,9 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   app.get('/app/settings', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
     u.desk_active = Boolean(await withTenant(u.tenant_id, (c) => c.query('SELECT COALESCE(array_length(keywords,1),0) > 0 AS active FROM profiles LIMIT 1').then((r) => r.rows[0]?.active)));
+    u.emails_today = await withTenant(u.tenant_id, (c) => c.query("SELECT count(*)::int n FROM email_log WHERE sent_at > now() - interval '1 day'").then((r) => r.rows[0].n));
+    u.email_cap = Number(process.env.HI_EMAIL_DAILY_CAP || 5);
+    u.last_cron = await withSystem((c) => c.query("SELECT value FROM system_flags WHERE key='last_cron_run'").then((r) => r.rows[0]?.value || null));
     return render(reply, u, 'Settings', `<h1>Settings</h1>
       <div class="card"><b>Emergency stop for your account</b><p class="mut">${u.paused ? 'Your account is paused. HI will not match, draft or send anything.' : 'Pause stops all matching, drafting and sending for your account immediately.'}</p>
       <form method="post" action="/app/settings/pause">${csrf(u)}<button name="paused" value="${u.paused ? 'false' : 'true'}" class="${u.paused ? '' : 'danger'}">${u.paused ? 'Resume' : 'Pause my account'}</button></form></div>
@@ -431,7 +440,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       <form method="post" action="/app/settings/viewing-reminders">${csrf(u)}<button name="on" value="${u.viewing_reminders_auto ? 'false' : 'true'}" class="sec">${u.viewing_reminders_auto ? 'Switch off viewing reminders' : 'Email me viewing reminders'}</button></form></div>
       <div class="card"><b>Expiry and lease-end reminders</b><p class="mut">${u.document_reminders_auto ? 'HI emails your own address when a document in Documents is 30 days out, 7 days out or expired, and when a recorded lease is 60 days out, 30 days out or ended.' : 'HI can email your own address when a document in Documents (FICA, licences, compliance) is 30 days out, 7 days out or expired, and when a recorded lease is 60 days out, 30 days out or ended.'}</p>
       <form method="post" action="/app/settings/doc-reminders">${csrf(u)}<button name="on" value="${u.document_reminders_auto ? 'false' : 'true'}" class="sec">${u.document_reminders_auto ? 'Switch off expiry and lease-end reminders' : 'Email me expiry and lease-end reminders'}</button></form></div>
-      <div class="card"><b>Connections</b><ul><li>${u.desk_active ? 'Official tender open data: active' : 'Opportunity Desk: inactive until you set keywords in Profile'}</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
+      <div class="card"><b>Connections</b><ul><li>${u.desk_active ? 'Official tender open data: active' : 'Opportunity Desk: inactive until you set keywords in Profile'}</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>Email sends today: ${u.emails_today} of ${u.email_cap} allowed per day</li><li>Last scheduled run: ${u.last_cron ? fdate(new Date(u.last_cron)) : 'none recorded yet'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
   });
   app.post('/app/settings/morning-brief', { preHandler: guard }, async (req, reply) => {
     const u = req.user, on = req.body?.on === 'true';
@@ -847,13 +856,13 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
 
   app.get('/app/memory', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
-    const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT id, kind, content, created_at FROM memories ORDER BY created_at DESC LIMIT 100'))).rows;
+    const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT id, kind, content, source, created_at FROM memories ORDER BY created_at DESC LIMIT 100'))).rows;
     const cand = (await withTenant(u.tenant_id, (c) => c.query("SELECT id, detail, created_at FROM memory_notes WHERE kind='memory_candidate' ORDER BY created_at DESC LIMIT 20"))).rows;
     const candCard = cand.length ? `<div class="card"><b>Suggested by HI - review before they are remembered</b><p class="mut">Nothing here reaches your agent until you approve it.</p>${cand.map((x) => `<div style="border-top:1px solid var(--line);padding:10px 0"><div>${esc(x.detail)}</div><div style="margin-top:6px"><form method="post" action="/app/memory/candidate/${x.id}/approve" class="ask">${csrf(u)}<button>Remember</button></form><form method="post" action="/app/memory/candidate/${x.id}/dismiss" class="ask">${csrf(u)}<button class="sec">Dismiss</button></form></div></div>`).join('')}</div>` : '';
     return render(reply, u, 'Memory', `<h1>What your agents remember</h1><p class="mut">You can see and delete everything saved here. Core memories are always in the agent's mind; archival ones are searched when relevant.</p>
       ${candCard}
       <form method="post" action="/app/memory" class="card">${csrf(u)}<label>Add a memory</label><input name="content" required maxlength="1000"><label>Type</label><select name="kind"><option value="core">core (always remembered)</option><option value="archival">archival</option></select><p><button>Save</button></p></form>
-      <div class="card"><table><tr><th>When</th><th>Type</th><th>Memory</th><th></th></tr>${rows.map((m) => `<tr><td>${fdate(m.created_at)}</td><td>${esc(m.kind)}</td><td>${esc(m.content)}</td><td><form method="post" action="/app/memory/${m.id}/delete">${csrf(u)}<button class="sec">Delete</button></form></td></tr>`).join('') || '<tr><td colspan="4" class="mut">Nothing saved yet.</td></tr>'}</table></div>`, flashOf(req));
+      <div class="card"><table><tr><th>When</th><th>Type</th><th>Source</th><th>Memory</th><th></th></tr>${rows.map((m) => `<tr><td>${fdate(m.created_at)}</td><td>${esc(m.kind)}</td><td>${esc(m.source || 'owner')}</td><td>${esc(m.content)}</td><td><form method="post" action="/app/memory/${m.id}/delete">${csrf(u)}<button class="sec">Delete</button></form></td></tr>`).join('') || '<tr><td colspan="5" class="mut">Nothing saved yet.</td></tr>'}</table></div>`, flashOf(req));
   });
   app.post('/app/memory', { preHandler: guard }, async (req, reply) => {
     const u = req.user, content = String(req.body?.content || '').trim().slice(0, 1000);
@@ -985,9 +994,10 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     if (job === 'match' || job === 'all') out.match = await matchAllTenants();
     if (job === 'brief' || job === 'all') out.brief = await buildBriefsForAll();
     if (job === 'tasks' || job === 'all') out.tasks = await runDueTasks({ llm, fetchImpl, lookup });
-    if (job === 'morning-brief') out.morning_brief = await buildMorningBriefs({ fetchImpl });
+    if (job === 'morning-brief' || job === 'all') out.morning_brief = await buildMorningBriefs({ fetchImpl });
     if (job === 'viewing-reminders' || job === 'all') out.viewing_reminders = await runViewingReminders({ fetchImpl });
     if (job === 'doc-reminders' || job === 'all') out.doc_reminders = await runDocExpiryReminders({ fetchImpl });
+    await withSystem((c) => c.query("INSERT INTO system_flags (key, value) VALUES ('last_cron_run', to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSOF')) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()"));
     return out;
   });
   app.post('/internal/stop', { preHandler: cronAuth }, async (req) => { await setEmergencyStop(req.query.on !== 'false'); return { emergency_stop: req.query.on !== 'false' }; });

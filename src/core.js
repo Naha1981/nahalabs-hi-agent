@@ -106,14 +106,22 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
       await audit(c, tenantId, 'system', 'send.blocked', { reason: stopped ? 'emergency stop' : 'tenant paused' });
       return { status: 'cancelled', reason: stopped ? 'emergency stop is on' : 'tenant is paused' };
     }
-    const cap = Number(process.env.HI_EMAIL_DAILY_CAP || 5);
-    const sentToday = (await c.query("SELECT count(*)::int n FROM email_log WHERE sent_at > now() - interval '1 day'")).rows[0].n;
-    // email_log is global; read it through system scope when cap matters across tenants
-    const global = await withSystem((s) => s.query("SELECT count(*)::int n FROM email_log WHERE sent_at > now() - interval '1 day'").then((r) => r.rows[0].n));
-    if (Math.max(sentToday, global) >= cap) {
+    // Two independent limits: a per-account daily cap and a separate platform-wide daily ceiling.
+    const tenantCap = Number(process.env.HI_EMAIL_DAILY_CAP || 5);
+    const platformCap = Number(process.env.HI_EMAIL_PLATFORM_DAILY_CAP || 50);
+    // email_log is deliberately not RLS-scoped, so filter explicitly: this count is per account.
+    const sentToday = (await c.query("SELECT count(*)::int n FROM email_log WHERE tenant_id = current_setting('app.tenant_id')::uuid AND sent_at > now() - interval '1 day'")).rows[0].n;
+    if (sentToday >= tenantCap) {
       await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]);
-      await audit(c, tenantId, 'system', 'send.blocked', { reason: 'daily email cap reached', cap });
+      await audit(c, tenantId, 'system', 'send.blocked', { reason: 'daily email cap reached', cap: tenantCap });
       return { status: 'failed', reason: 'daily email cap reached' };
+    }
+    // email_log holds every account's rows; the platform ceiling deliberately reads the whole table through system scope.
+    const platform = await withSystem((s) => s.query("SELECT count(*)::int n FROM email_log WHERE sent_at > now() - interval '1 day'").then((r) => r.rows[0].n));
+    if (platform >= platformCap) {
+      await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]);
+      await audit(c, tenantId, 'system', 'send.blocked', { reason: 'platform daily email limit reached', cap: platformCap });
+      return { status: 'failed', reason: 'platform daily email limit reached' };
     }
     const isBrief = ap.kind === 'send_brief';
     const brief = isBrief ? (await c.query('SELECT * FROM briefs WHERE id=$1', [ap.payload.brief_id])).rows[0] : { id: null, subject: ap.payload.subject, body_text: ap.payload.body };

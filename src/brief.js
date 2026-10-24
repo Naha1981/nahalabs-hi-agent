@@ -5,6 +5,7 @@
 import { withSystem, withTenant, audit } from './db.js';
 import { mailSearch, calendarUpcoming, proposeAccountEmail } from './integrations.js';
 import { decideApproval } from './core.js';
+import { estateAttention } from './attention.js';
 
 export function composeBrief({ date, events, unread, matches, approvals, estate = { followups: [], viewings: [] }, deskActive = true }) {
   const L = [];

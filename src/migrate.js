@@ -3,7 +3,7 @@ import pg from 'pg';
 import { schemaSql } from './db.js';
 
 export async function migrate(url, appPassword) {
-  const c = new pg.Client({ connectionString: url, ssl: /localhost|127\.0\.0\.1/.test(url) ? false : { rejectUnauthorized: false } });
+  const c = new pg.Client({ connectionString: url, ssl: /localhost|127\.0\.0\.1/.test(url) ? false : { rejectUnauthorized: true } });
   await c.connect();
   try {
     await c.query(schemaSql());

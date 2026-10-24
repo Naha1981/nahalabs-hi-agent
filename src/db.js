@@ -11,7 +11,7 @@ export function getPool(url = process.env.DATABASE_URL) {
     pool = new Pool({
       connectionString: url,
       max: Number(process.env.DB_POOL_MAX || 5),
-      ssl: process.env.DB_SSL === 'disable' ? false : (url.includes('localhost') || url.includes('127.0.0.1') ? false : { rejectUnauthorized: false }),
+      ssl: process.env.DB_SSL === 'disable' ? false : (url.includes('localhost') || url.includes('127.0.0.1') ? false : { rejectUnauthorized: true }),
       statement_timeout: 15000,
     });
   }

@@ -33,7 +33,7 @@ export async function handleInbound({ to, from, text, externalId, llm, fetchImpl
   });
   if (gate.dup) return { status: 200, ignored: 'duplicate' };
   if (gate.ignored) return { status: 200, ignored: gate.ignored };
-  const r = await runAgent({ tenantId, userEmail: gate.email, agentId: ch.agent_id, conversationId: gate.conversationId, userText: `WhatsApp message from ${gate.contact.name || 'a saved contact'}: ${gate.body}`, llm, fetchImpl, lookup });
+  const r = await runAgent({ tenantId, userEmail: gate.email, agentId: ch.agent_id, conversationId: gate.conversationId, userText: `WhatsApp message from ${gate.contact.name || 'a saved contact'}: ${gate.body}`, llm, fetchImpl, lookup, principal: 'external_contact' });
   if (r.error) return { status: 200, ignored: r.error };
   const reply = String(r.answer).replace(/\*\*/g, '*').slice(0, 1500);
   await withTenant(tenantId, (c) => c.query("INSERT INTO wa_messages (tenant_id, phone, direction, body, status, conversation_id) VALUES (current_setting('app.tenant_id')::uuid,$1,'out',$2,'queued',$3)", [fromN, reply, r.conversationId]));

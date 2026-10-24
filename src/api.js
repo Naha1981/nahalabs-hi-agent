@@ -51,7 +51,8 @@ export function registerApi(app, { llm, fetchImpl, lookup } = {}) {
     if (!text) return reply.code(400).send({ error: 'message is required.' });
     const agentId = uuidOk(req.body?.agent_id) ? req.body.agent_id : (await ensureDefaultAgent(req.apiKey.tenantId)).id;
     const conversationId = uuidOk(req.body?.conversation_id) ? req.body.conversation_id : null;
-    const r = await runAgent({ tenantId: req.apiKey.tenantId, userEmail: 'api', agentId, conversationId, userText: text, llm, fetchImpl, lookup });
+    const owner = (await withTenant(req.apiKey.tenantId, (c) => c.query('SELECT email FROM users ORDER BY created_at LIMIT 1'))).rows[0];
+    const r = await runAgent({ tenantId: req.apiKey.tenantId, userEmail: owner ? owner.email : 'api', agentId, conversationId, userText: text, llm, fetchImpl, lookup });
     if (r.error) return reply.code(400).send({ error: r.error });
     return { answer: r.answer, conversation_id: r.conversationId, run_id: r.runId, status: r.status, sources: r.sources };
   });

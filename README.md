@@ -29,7 +29,7 @@ npm test            # starts an embedded Postgres, runs isolation, flow, agent, 
 Migrations: `MIGRATE_DATABASE_URL=... HI_APP_PASSWORD=... npm run migrate`.
 
 ## Scheduler
-`POST /internal/run?job=ingest|match|brief|all` with header `x-cron-secret: $CRON_SECRET`. `POST /internal/stop?on=true|false` toggles the emergency stop.
+An external cron service calls `POST /internal/run?job=ingest|match|brief|tasks|morning-brief|viewing-reminders|doc-reminders|all` with header `x-cron-secret: $CRON_SECRET`. `all` runs every job in sequence, so one periodic `all` call covers ingest, matching, briefs, scheduled tasks, the morning brief and reminders. Each run stamps `system_flags.last_cron_run`, shown on the Settings page, so a silent cron failure is visible. `POST /internal/stop?on=true|false` toggles the emergency stop.
 
 ## Environment
 Every variable the code reads is documented in `.env.example`, with where to get it and what it costs. Everything on the default path is free tier or open source.

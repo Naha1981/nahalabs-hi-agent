@@ -162,7 +162,7 @@ test('ACCEPTANCE cancellation stops execution: pausing cancels pending approvals
 test('rate limit: daily email cap blocks the send and is logged', async () => {
   const u = await signup('Cap Co', 'cap@example.test');
   await post(u, '/app/profile', { company_name: 'Cap Co', keywords: 'security guarding' });
-  { const o = owner(db.ownerUrl); await o.connect(); await o.query("INSERT INTO email_log (tenant_id,to_addr,subject) SELECT NULL,'x@example.test','x' FROM generate_series(1,3)"); await o.end(); }
+  { const o = owner(db.ownerUrl); await o.connect(); await o.query("INSERT INTO email_log (tenant_id,to_addr,subject) SELECT $1,'x@example.test','x' FROM generate_series(1,3)", [u.tenantId]); await o.end(); }
   const r = await buildBrief(u.tenantId);
   await post(u, `/app/approvals/${r.approval_id}`, { decision: 'approve' });
   assert.equal(sent.length, 0);

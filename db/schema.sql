@@ -248,6 +248,7 @@ CREATE TABLE IF NOT EXISTS memories (
   tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'owner';  -- who saved it: owner, api, or an external contact channel
 CREATE INDEX IF NOT EXISTS memories_tsv_idx ON memories USING gin (tsv);
 CREATE TABLE IF NOT EXISTS tasks (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
