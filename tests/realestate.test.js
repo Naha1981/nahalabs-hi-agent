@@ -51,11 +51,16 @@ test('estate flow: contact, property, deal, update, viewing, report', async () =
   const views = await call(A, 'estate_list', { what: 'viewings' });
   assert.match(views, /No upcoming viewings/);
 
+  // A closed deal is a historical outcome, not current interest.
+  await call(A, 'estate_add_deal', { property: '12 Oak Street', contact: 'Sipho', stage: 'fallen_through', notes: 'Buyer withdrew' });
   // seller report lands in files
   assert.match(await call(A, 'estate_seller_report', { property: 'Oak Street' }), /Seller report saved as "seller-report-12-oak-street-sandton-/);
   const file = await withTenant(A, (c) => c.query("SELECT content FROM files WHERE filename LIKE 'seller-report-%'").then((r) => r.rows[0]));
   assert.match(file.content, /# Seller report: 12 Oak Street, Sandton/);
   assert.match(file.content, /Stage: OTP signed \| Sipho Dube/);
+  assert.match(file.content, /## Current interest and deals/);
+  assert.match(file.content, /## Closed outcomes/);
+  assert.match(file.content, /Stage: Fallen through \| Sipho Dube/);
   assert.match(file.content, /Loved the garden/);
 });
 
@@ -65,6 +70,35 @@ test('estate validation: bad date, bad stage, ambiguous property', async () => {
   assert.match(await call(A, 'estate_add_viewing', { property: '12 Oak Street', starts_at: 'tomorrow' }), /ISO date-time/);
   await call(A, 'estate_add_property', { title: 'Oak Cottage' });
   assert.match(await call(A, 'estate_add_deal', { property: 'Oak' }), /Several properties match/);
+});
+
+
+test('estate writes deduplicate contacts by email and identical active deals', async () => {
+  assert.match(await call(A, 'estate_add_contact', { name: 'Lerato Mokoena', role: 'buyer', email: 'lerato@example.test', phone: '0821000000' }), /Saved Lerato Mokoena/);
+  assert.match(await call(A, 'estate_add_contact', { name: 'Lerato Duplicate', role: 'buyer', email: 'LERATO@example.test' }), /Contact already exists as Lerato Mokoena/);
+  const contactCount = await withTenant(A, (c) => c.query("SELECT count(*)::int n FROM re_contacts WHERE lower(email)=lower('lerato@example.test')").then((r) => r.rows[0].n));
+  assert.equal(contactCount, 1);
+
+  assert.match(await call(A, 'estate_add_deal', { property: '90 Duplicate Street, Sandton', contact: 'Lerato Mokoena', stage: 'enquiry' }), /Deal started/);
+  assert.match(await call(A, 'estate_add_deal', { property: '90 Duplicate Street, Sandton', contact: 'Lerato Duplicate', contact_email: 'lerato@example.test', stage: 'enquiry' }), /Deal already tracked/);
+  const dealCount = await withTenant(A, (c) => c.query("SELECT count(*)::int n FROM re_deals d JOIN re_properties p ON p.id=d.property_id WHERE p.title='90 Duplicate Street, Sandton'").then((r) => r.rows[0].n));
+  assert.equal(dealCount, 1);
+});
+
+test('estate viewing datetimes without offsets are interpreted as SAST', async () => {
+  const result = await call(A, 'estate_add_viewing', { property: '77 Time Zone Avenue', starts_at: '2026-11-08T14:00' });
+  assert.match(result, /2026-11-08 14:00 SAST/);
+  const stored = await withTenant(A, (c) => c.query("SELECT starts_at FROM re_viewings v JOIN re_properties p ON p.id=v.property_id WHERE p.title='77 Time Zone Avenue'").then((r) => r.rows[0].starts_at));
+  assert.equal(new Date(stored).toISOString(), '2026-11-08T12:00:00.000Z');
+});
+
+test('estate viewing feedback refuses to guess when a property has multiple scheduled viewings', async () => {
+  await call(A, 'estate_add_viewing', { property: '88 Ambiguous Viewing Road', starts_at: '2026-12-01T14:00' });
+  await call(A, 'estate_add_viewing', { property: '88 Ambiguous Viewing Road', starts_at: '2026-12-02T14:00' });
+  const result = await call(A, 'estate_log_viewing', { property: '88 Ambiguous Viewing Road', status: 'done', feedback: 'Great' });
+  assert.match(result, /Several scheduled viewings match/);
+  const stillScheduled = await withTenant(A, (c) => c.query("SELECT count(*)::int n FROM re_viewings v JOIN re_properties p ON p.id=v.property_id WHERE p.title='88 Ambiguous Viewing Road' AND v.status='scheduled'").then((r) => r.rows[0].n));
+  assert.equal(stillScheduled, 2);
 });
 
 test('ACCEPTANCE tenant isolation: tenant B cannot see or touch tenant A real-estate data', async () => {
@@ -89,12 +123,14 @@ test('estate enquiry watch: needs an inbox, enables once, disables', async () =>
   assert.match(await call(B, 'estate_enquiry_watch', { action: 'enable' }), /Connect Gmail or Outlook/);
   // Give tenant A a connected google integration
   await withTenant(A, (c) => c.query("INSERT INTO integrations (tenant_id, provider, account_email) VALUES (current_setting('app.tenant_id')::uuid,'google','agent@harbourview.test')"));
+  await withTenant(A, (c) => c.query("INSERT INTO integrations (tenant_id, provider, account_email) VALUES (current_setting('app.tenant_id')::uuid,'microsoft','agent-outlook@harbourview.test')"));
   assert.match(await call(A, 'estate_enquiry_watch', { action: 'enable', every_minutes: 180 }), /Enquiry watch on\. Every 180 minutes/);
   const task = await withTenant(A, (c) => c.query("SELECT title, interval_minutes, status, instruction FROM tasks WHERE title='Enquiry watch'").then((r) => r.rows[0]));
   assert.equal(task.interval_minutes, 180);
   assert.equal(task.status, 'active');
   assert.match(task.instruction, /never invent price, levies, rates or availability/);
   assert.match(task.instruction, /never create duplicates/);
+  assert.match(task.instruction, /contact_email from the message/);
   assert.match(await call(A, 'estate_enquiry_watch', { action: 'enable' }), /already on/);
   assert.match(await call(A, 'estate_enquiry_watch', { action: 'disable' }), /Enquiry watch off/);
   assert.equal(await withTenant(A, (c) => c.query("SELECT status FROM tasks WHERE title='Enquiry watch'").then((r) => r.rows[0].status)), 'paused');
