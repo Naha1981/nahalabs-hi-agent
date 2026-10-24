@@ -8,13 +8,14 @@ HI is NahaLabs' multi-tenant AI employee platform. The Opportunity Desk module f
 - Customer-connected Gmail/Outlook/Calendar over OAuth: the agent can search mail, list upcoming events, and draft emails and events. Sends and creates execute only after approval in the queue.
 - Controlled browser jobs on isolated GitHub Actions runners: read or click through public sites; passwords/cards/codes refused, risky clicks wait for approval, one-job tokens, same-site only.
 - Phone bridge (opt-in): the agent can propose tasks for a paired Android phone - open apps, read the screen, tap and type. Every task waits in the approval queue; the bridge app on the customer's own machine runs only approved tasks and reports back.
+- Desktop skill recorder (Windows-first): the customer demonstrates a workflow in an open app/window; HI stores semantic UI actions and placeholders, then publishes a reusable skill. Replays are claimed by a local companion only after the existing HI approval queue approves the task. Typed values and screenshots are not stored. See `desktop-companion/README.md`.
 - WhatsApp connector (engine-agnostic): reply-only to saved contacts, caps, no outbound-first messages.
 - Voice turns (Drive Companion slice 1): the Drive page records speech, transcribes it (Groq Whisper), runs it through the shared agent with a hands-free driving policy, and speaks the answer (Groq Orpheus TTS with browser-speech fallback). Approvals stay in the queue.
 - Agent file generation (csv, md, txt and genuine xlsx workbooks) with downloads and API reads.
 - Approval queue, per-account pause, global emergency stop, append-only audit log, morning brief (approval-gated, per-tenant auto-send opt-in), public /v1 API with tenant keys.
 
 ## What it does not do
-No bid submission, no payments, no unofficial WhatsApp techniques, no reading of sensitive content aloud by default. Outbound email from the platform mailbox goes only to the signed-in account's own address, after approval, under a daily cap.
+No bid submission, no payments, no unofficial WhatsApp techniques, no reading of sensitive content aloud by default. The desktop companion is a Windows-first initial release; automatic replay depends on application accessibility metadata and intentionally pauses for ambiguous, sensitive, or high-impact steps. Outbound email from the platform mailbox goes only to the signed-in account's own address, after approval, under a daily cap.
 
 ## Safety design
 - Tenant isolation is enforced in Postgres with row-level security (FORCE RLS). The app connects as `hi_app` (no BYPASSRLS, not table owner). Every tenant query runs in a transaction that sets `app.tenant_id`.
