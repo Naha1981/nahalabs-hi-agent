@@ -472,6 +472,20 @@ CREATE POLICY tenant_isolation ON uploads USING (tenant_id = NULLIF(current_sett
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON uploads TO hi_app;
 
+-- Global upload storage budget (single-row ledger, no tenant data, no RLS). The free
+-- Neon project cap is 1 GB (verified neon.com/docs/introduction/plans 2026-10-23) shared
+-- with every database on the project; admissions reserve bytes in the same transaction as
+-- the upload row insert, so a refused upload reserves nothing and an error rolls both back.
+-- No delete path exists yet; any future delete must decrement in the same transaction.
+CREATE TABLE IF NOT EXISTS upload_budget (
+  id smallint PRIMARY KEY CHECK (id = 1),
+  bytes_used bigint NOT NULL DEFAULT 0
+);
+INSERT INTO upload_budget (id, bytes_used)
+  SELECT 1, COALESCE(SUM(size_bytes),0) FROM uploads
+  ON CONFLICT (id) DO NOTHING;
+GRANT SELECT, UPDATE (bytes_used) ON upload_budget TO hi_app;
+
 -- ===== User-connected integrations (phase 4): Gmail, Outlook, Google/Outlook Calendar =====
 CREATE TABLE IF NOT EXISTS integrations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

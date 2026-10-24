@@ -167,6 +167,47 @@ test('type allowlist: png rejected, pdf/docx/txt/csv accepted', async () => {
   assert.equal((await readUpload(A.tenantId, { filename: 'big.pdf' })), null);
 });
 
+test('tenant storage quota: over-quota upload refused with plain message', async () => {
+  const csrf = await csrfOf(A.cookie);
+  process.env.HI_UPLOAD_TENANT_QUOTA_BYTES = '10';
+  try {
+    const mp = multipart('over.txt', 'text/plain', Buffer.from('more than ten bytes here'), csrf);
+    const up = await app.inject({ method: 'POST', url: '/app/uploads', headers: { ...mp.headers, cookie: A.cookie }, payload: mp.payload });
+    assert.equal(up.statusCode, 302);
+    assert.match(decodeURIComponent(up.headers.location), /storage limit reached/i);
+    assert.equal((await readUpload(A.tenantId, { filename: 'over.txt' })), null);
+  } finally {
+    delete process.env.HI_UPLOAD_TENANT_QUOTA_BYTES;
+  }
+});
+
+test('global storage budget: refused closed when the shared budget is exhausted', async () => {
+  const o = owner(db.ownerUrl); await o.connect();
+  const before = (await o.query('SELECT bytes_used FROM upload_budget WHERE id=1')).rows[0].bytes_used;
+  const csrf = await csrfOf(A.cookie);
+  process.env.HI_UPLOAD_GLOBAL_BUDGET_BYTES = '1';
+  try {
+    const mp = multipart('global.txt', 'text/plain', Buffer.from('x'), csrf);
+    const up = await app.inject({ method: 'POST', url: '/app/uploads', headers: { ...mp.headers, cookie: A.cookie }, payload: mp.payload });
+    assert.equal(up.statusCode, 302);
+    assert.match(decodeURIComponent(up.headers.location), /storage is full/i);
+    assert.equal((await readUpload(A.tenantId, { filename: 'global.txt' })), null);
+  } finally {
+    delete process.env.HI_UPLOAD_GLOBAL_BUDGET_BYTES;
+  }
+  const after = (await o.query('SELECT bytes_used FROM upload_budget WHERE id=1')).rows[0].bytes_used;
+  assert.equal(String(after), String(before)); // refused upload reserved nothing
+  await o.end();
+});
+
+test('budget ledger matches stored bytes', async () => {
+  const o = owner(db.ownerUrl); await o.connect();
+  const led = (await o.query('SELECT bytes_used FROM upload_budget WHERE id=1')).rows[0].bytes_used;
+  const sum = (await o.query('SELECT COALESCE(SUM(size_bytes),0) AS s FROM uploads')).rows[0].s;
+  assert.equal(String(led), String(sum));
+  await o.end();
+});
+
 test('tenant isolation: Beta cannot list or read Alpha uploads (RLS)', async () => {
   const listB = await listUploads(B.tenantId);
   assert.deepEqual(listB, []);

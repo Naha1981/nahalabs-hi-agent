@@ -22,7 +22,7 @@ import { ensureBuiltinSkills } from './skills.js';
 import { voiceConfigured, voiceMaxBytes, transcribe, speak } from './voice.js';
 import { buildXlsx, XLSX_MIME } from './xlsx.js';
 import { authUrlFor, connectAccount, providerConfigured, PROVIDERS, integrationsConfigured } from './integrations.js';
-import { saveUpload, listUploads, uploadTypeFor, UPLOAD_TYPES } from './uploads.js';
+import { saveUpload, listUploads, uploadTypeFor, tenantUploadQuota, UPLOAD_TYPES } from './uploads.js';
 import { createHash as _ch } from 'node:crypto';
 
 const COOKIE = 'hi_session';
@@ -588,7 +588,14 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     let buf;
     try { buf = await part.toBuffer(); } catch { return reply.redirect('/app/files?m=' + encodeURIComponent('That file is over the 8 MB limit.')); }
     if (!buf.length) return reply.redirect('/app/files?m=' + encodeURIComponent('That file is empty.'));
-    const saved = await saveUpload(u.tenant_id, { filename: part.filename, mime, buffer: buf }, u.email);
+    let saved;
+    try {
+      saved = await saveUpload(u.tenant_id, { filename: part.filename, mime, buffer: buf }, u.email);
+    } catch (e) {
+      if (e.code === 'TENANT_QUOTA') return reply.redirect('/app/files?m=' + encodeURIComponent(`Document storage limit reached for your workspace (${Math.round(tenantUploadQuota() / 1024 / 1024)} MB). Remove older documents first - ask HI in chat which ones you no longer need.`));
+      if (e.code === 'GLOBAL_BUDGET') return reply.redirect('/app/files?m=' + encodeURIComponent('Document storage is full on HI right now. Please try again later.'));
+      throw e;
+    }
     return reply.redirect('/app/files?m=' + encodeURIComponent(saved.has_extract ? 'Uploaded and readable - tell HI in chat what to do with it.' : 'Uploaded. HI could not read text from this one (a scan or photo PDF); paste the key lines in chat instead.'));
   });
 
