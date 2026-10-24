@@ -18,7 +18,7 @@ h1{font-size:28px;line-height:1.2;margin:.1em 0 .5em;letter-spacing:-.02em}h2{fo
 input,textarea,select{width:100%;background:#fff;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font:inherit}
 input:focus,textarea:focus,select:focus{outline:2px solid rgba(23,23,23,.15);outline-offset:1px;border-color:#c9c9c9}
 label{display:block;margin:14px 0 4px;color:var(--mut);font-size:14px;font-weight:500}
-button,.btn{background:var(--ink);color:#fff;border:1px solid var(--ink);border-radius:8px;padding:10px 20px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block;font:inherit;font-size:15px;line-height:1.3}
+button,.btn{background:var(--ink);color:#fff;border:1px solid var(--ink);border-radius:8px;padding:10px 20px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block;font:inherit;font-size:15px;line-height:1.3;min-height:44px}
 button:hover,.btn:hover{background:#000}button.sec,.btn.sec{background:#fff;color:var(--text);border:1px solid var(--line)}button.sec:hover,.btn.sec:hover{background:var(--soft)}
 button.danger,button.sec.danger{background:#fff;color:var(--bad);border:1px solid var(--bad)}button.danger:hover{background:var(--bad);color:#fff}
 pre{white-space:pre-wrap;background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:14px;font-size:14px;overflow:auto}
@@ -50,14 +50,14 @@ td,th{padding:7px 5px;font-size:14px}
 .side{display:none}
 .appmain{max-width:760px;margin:0 auto;padding:20px 16px 100px}
 .tabs{position:fixed;bottom:0;left:0;right:0;display:flex;background:#fff;border-top:1px solid var(--line);z-index:20;padding:6px 2px calc(6px + env(safe-area-inset-bottom))}
-.tabs a{flex:1;text-align:center;text-decoration:none;color:var(--mut);font-size:11px;font-weight:600;padding:7px 1px;letter-spacing:-.01em}
+.tabs a{flex:1;text-align:center;text-decoration:none;color:var(--mut);font-size:12px;font-weight:600;padding:12px 4px;letter-spacing:-.01em;min-height:44px;display:flex;align-items:center;justify-content:center}
 .tabs a:hover{color:var(--ink)}
 @media(min-width:900px){
 .topbar,.tabs{display:none}
 .side{display:flex;flex-direction:column;position:fixed;top:0;bottom:0;left:0;width:232px;border-right:1px solid var(--line);padding:20px 14px;background:#fff}
 .side nav{display:flex;flex-direction:column;gap:2px;flex:1;overflow-y:auto;margin-top:14px}
-.side .grp{color:var(--mut);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin:16px 10px 4px}
-a.nl{display:block;padding:7px 10px;border-radius:8px;text-decoration:none;color:var(--text);font-size:14px;font-weight:500}
+.side .grp{color:var(--mut);font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin:16px 10px 4px}
+a.nl{display:block;padding:12px 10px;border-radius:8px;text-decoration:none;color:var(--text);font-size:14px;font-weight:500}
 a.nl:hover{background:var(--soft)}
 .side form{padding:10px}
 .appmain{margin-left:232px;max-width:840px;padding:32px 28px}
@@ -69,6 +69,7 @@ a.nl:hover{background:var(--soft)}
 .ask{display:inline-block;margin:4px 6px 0 0}.ask button{font-size:14px;padding:8px 14px}
 /* empty states */
 .empty{text-align:center;color:var(--mut);padding:28px 18px}
+@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 `;
 
 const GROUPS = [
