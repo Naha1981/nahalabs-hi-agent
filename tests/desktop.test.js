@@ -4,6 +4,7 @@ import { startDb, owner } from './helpers.js';
 import { withTenant, withSystem } from '../src/db.js';
 import { buildApp } from '../src/server.js';
 import { ensureDefaultAgent } from '../src/agent.js';
+import { setEmergencyStop } from '../src/core.js';
 import { sanitizeDesktopAction, redactDesktopLabel } from '../src/desktop.js';
 
 process.env.HI_INVITE_CODES = 'desktop-test-invite';
@@ -137,6 +138,7 @@ test('desktop task waits for HI approval, is atomically claimed once and checks 
   assert.equal(approval.status, 'proposed');
   workerA = '6c13d4f6-62e6-48b2-80d9-7a7a6b1d8f22';
   const before = await api(keyA, 'POST', '/v1/desktop/tasks/claim', { worker_id: workerA });
+  assert.equal(before.statusCode, 200, before.body);
   assert.equal(JSON.parse(before.body).task, null);
   const approve = await app.inject({
     method: 'POST', url: '/app/approvals/' + approval.id, headers: { ...H, cookie: A.cookie },
@@ -149,6 +151,12 @@ test('desktop task waits for HI approval, is atomically claimed once and checks 
   assert.equal(task.skill_name, 'prepare-invoice');
   assert.equal(task.actions.length, 2);
   assert.equal(task.worker_id, workerA);
+  const allowed = await api(keyA, 'POST', '/v1/desktop/tasks/' + task.id + '/check', { worker_id: workerA });
+  assert.equal(JSON.parse(allowed.body).allowed, true);
+  await setEmergencyStop(true);
+  const stopped = await api(keyA, 'POST', '/v1/desktop/tasks/' + task.id + '/check', { worker_id: workerA });
+  assert.equal(JSON.parse(stopped.body).allowed, false);
+  await setEmergencyStop(false);
   const wrongWorker = await api(keyA, 'POST', '/v1/desktop/tasks/' + task.id + '/result', {
     worker_id: 'b6b37ac0-329e-4d19-9b6a-ae7dbb99f59b', status: 'executed', summary: 'done',
   });
