@@ -115,3 +115,13 @@ test('settings toggle flips the tenant flag with csrf', async () => {
   const bad = await app.inject({ method: 'POST', url: '/app/settings/viewing-reminders', headers: { cookie: B.cookie, ...H }, payload: form({ csrf: 'wrong', on: 'false' }) });
   assert.equal(bad.statusCode, 403);
 });
+
+test('settings desk status follows profile keywords through RLS', async () => {
+  // Beta (no keywords): inactive
+  const offPage = await app.inject({ url: '/app/settings', headers: { cookie: B.cookie } });
+  assert.match(offPage.body, /Opportunity Desk: inactive until you set keywords in Profile/);
+  // give Beta keywords: active (proves the flag reads through tenant context, not a null)
+  await withTenant(B.tenantId, (c) => c.query("UPDATE profiles SET keywords=ARRAY['cleaning']"));
+  const onPage = await app.inject({ url: '/app/settings', headers: { cookie: B.cookie } });
+  assert.match(onPage.body, /Official tender open data: active/);
+});
