@@ -715,3 +715,28 @@ DROP POLICY IF EXISTS tenant_isolation ON re_viewings;
 CREATE POLICY tenant_isolation ON re_viewings USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON re_viewings TO hi_app;
+
+
+-- ===== Real-estate enquiry watch idempotency =====
+-- Store only message IDs, not message bodies. Successful enquiry-watch runs record the messages
+-- they handled; later runs skip them. Records expire after 14 days in the scheduled runner.
+CREATE TABLE IF NOT EXISTS estate_processed_mail (
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  provider text NOT NULL CHECK (provider IN ('gmail','outlook')),
+  account_email text NOT NULL,
+  message_id text NOT NULL,
+  processed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, provider, account_email, message_id)
+);
+ALTER TABLE estate_processed_mail ENABLE ROW LEVEL SECURITY;
+ALTER TABLE estate_processed_mail FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON estate_processed_mail;
+CREATE POLICY tenant_isolation ON estate_processed_mail
+  USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON estate_processed_mail TO hi_app;
+CREATE INDEX IF NOT EXISTS estate_processed_mail_recent ON estate_processed_mail (tenant_id, processed_at DESC);
+
+-- Email lookup is case-insensitive. This is deliberately a non-unique index so existing duplicate
+-- records in customer databases cannot cause a migration to fail; application writes merge by email.
+CREATE INDEX IF NOT EXISTS re_contacts_email_lookup ON re_contacts (tenant_id, lower(btrim(email))) WHERE email <> '';

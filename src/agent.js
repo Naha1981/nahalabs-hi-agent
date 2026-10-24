@@ -176,7 +176,8 @@ export async function runAgent({ tenantId, userEmail, agentId, conversationId, u
   if (ctxInfo.missing) return { error: 'Agent not found.' };
   const { agent, convId, runId } = ctxInfo;
 
-  const sources = [], steps = [];
+  const sources = [], steps = [], mailMessagesSeen = [];
+  const trackMailMessages = mode === 'task' && userText.startsWith('Scheduled task \"Enquiry watch\":');
   const nonce = randomBytes(8).toString('hex');
   let answer = '', status = 'done', used = ctxInfo.used;
   const msgs = [{ role: 'system', content: systemPrompt({ agent, company: ctxInfo.company, core: ctxInfo.core, recalled: ctxInfo.recalled, mode, now, skill, voice, summary: ctxInfo.convSummary }) },
@@ -220,7 +221,7 @@ ${r.answer}`)
             msgs.push({ role: 'tool', tool_call_id: t.id, content: wrapToolResult(nonce, 'run_plan', String(planResult).slice(0, 8000)) });
             continue;
           }
-          const result = await withTenant(tenantId, (c) => runTool(t.name, t.args, { c, tenantId, userEmail, agentId, agentName: agent.name, fetchImpl, lookup, sources, steps, mode })).catch((e) => 'Tool error: ' + String(e.message).slice(0, 120));
+          const result = await withTenant(tenantId, (c) => runTool(t.name, t.args, { c, tenantId, userEmail, agentId, agentName: agent.name, fetchImpl, lookup, sources, steps, mode, taskId, trackMailMessages, mailMessagesSeen })).catch((e) => 'Tool error: ' + String(e.message).slice(0, 120));
           steps.push({ type: 'tool', name: t.name, args: JSON.stringify(t.args || {}).slice(0, 200) });
           msgs.push({ role: 'tool', tool_call_id: t.id, content: wrapToolResult(nonce, t.name, String(result).slice(0, 8000)) });
         }
@@ -233,6 +234,8 @@ ${r.answer}`)
   await withTenant(tenantId, async (c) => {
     await c.query("INSERT INTO messages (tenant_id, conversation_id, role, content, sources, steps) VALUES (current_setting('app.tenant_id')::uuid,$1,'assistant',$2,$3,$4)", [convId, answer, JSON.stringify(sources), JSON.stringify(steps)]);
     await c.query('UPDATE runs SET status=$2, result=$3, steps=$4, sources=$5 WHERE id=$1', [runId, status, answer, JSON.stringify(steps), JSON.stringify(sources)]);
+    // Enquiry-watch messages are persisted individually by estate_mark_message_processed
+    // after their contact/deal/reply-draft work is complete. Unmarked messages are retried.
     await audit(c, tenantId, `agent:${agent.name}`, mode === 'task' ? 'task.run' : 'chat.reply', { run_id: runId, status, tools: steps.filter((s) => s.type === 'tool').map((s) => s.name) });
   });
   // Conversation compaction: fold older messages into a rolling summary so long chats keep their context.
@@ -281,13 +284,25 @@ export async function runDueTasks({ llm = chat, fetchImpl = fetch, lookup, now =
   const due = await withSystem((c) => c.query('SELECT id FROM tenants WHERE NOT paused').then((r) => r.rows.map((x) => x.id)));
   const out = [];
   for (const tenantId of due) {
+    // Claim due jobs with row locks and update their next-run time in the same transaction.
+    // Parallel cron invocations skip rows already claimed instead of executing the same task twice.
     const tasks = await withTenant(tenantId, (c) => c.query(
-      "SELECT t.*, (SELECT email FROM users WHERE tenant_id=t.tenant_id ORDER BY created_at LIMIT 1) email FROM tasks t WHERE status='active' AND next_run_at <= $1 ORDER BY next_run_at LIMIT $2", [now, limitPerTick])).then((r) => r.rows);
+      `WITH due AS (
+         SELECT id, next_run_at AS due_at FROM tasks
+         WHERE status='active' AND next_run_at <= $1
+         ORDER BY next_run_at LIMIT $2 FOR UPDATE SKIP LOCKED
+       ), claimed AS (
+         UPDATE tasks t
+         SET last_run_at=$1,
+             next_run_at=CASE WHEN t.interval_minutes IS NULL THEN NULL ELSE $1::timestamptz + (t.interval_minutes::text || ' minutes')::interval END,
+             status=CASE WHEN t.interval_minutes IS NULL THEN 'done' ELSE t.status END
+         FROM due d WHERE t.id=d.id
+         RETURNING t.id
+       )
+       SELECT t.*, d.due_at, (SELECT email FROM users WHERE tenant_id=t.tenant_id ORDER BY created_at LIMIT 1) email
+       FROM tasks t JOIN claimed c ON c.id=t.id JOIN due d ON d.id=t.id ORDER BY d.due_at`,
+      [now, limitPerTick])).then((r) => r.rows);
     for (const t of tasks) {
-      // advance first so a crash or slow run cannot trigger a double run
-      await withTenant(tenantId, (c) => t.interval_minutes
-        ? c.query("UPDATE tasks SET last_run_at=$2, next_run_at=$2::timestamptz + ($3 || ' minutes')::interval WHERE id=$1", [t.id, now, String(t.interval_minutes)])
-        : c.query("UPDATE tasks SET last_run_at=$2, status='done', next_run_at=NULL WHERE id=$1", [t.id, now]));
       const r = await runAgent({ tenantId, userEmail: t.email, agentId: t.agent_id, conversationId: null, userText: `Scheduled task "${t.title}": ${t.instruction}`, mode: 'task', taskId: t.id, llm, fetchImpl, lookup, now });
       out.push({ tenant: tenantId, task: t.id, status: r.status || r.error });
     }
