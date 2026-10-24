@@ -201,3 +201,23 @@ test('structured matching: buyers for a property, listings for a buyer, price tr
   // RLS: Beta sees none of Alpha's records through match
   assert.match(await call(B, 'estate_match', { property: '8 Jacaranda' }), /No property found/);
 });
+
+test('mandate deck: facts only, agency name, real match count, downloadable html', async () => {
+  const r = await call(A, 'estate_mandate_deck', { property: '8 Jacaranda' });
+  assert.match(r, /Mandate pitch saved as "Mandate proposal - 8 Jacaranda Ave Sandton\.html"/);
+  const f = await withTenant(A, (c) => c.query("SELECT filename, mime, content FROM files WHERE filename LIKE 'Mandate proposal%' ORDER BY created_at DESC LIMIT 1").then((x) => x.rows[0]));
+  assert.equal(f.mime, 'text/html');
+  const html = String(f.content);
+  assert.match(html, /8 Jacaranda Ave, Sandton/);
+  assert.match(html, /R1 400 000/);          // current price after the update
+  assert.match(html, /3 bedrooms/);
+  assert.match(html, /Alpha/);               // agency = tenant name
+  assert.match(html, /class="big">1</);      // Buyer One matches; Buyer Two does not
+  assert.doesNotMatch(html, /NahaLabs/i);    // no platform branding in a seller-facing document
+  assert.doesNotMatch(html, /HI by/);
+  // buyers without recorded requirements are never claimed as matches
+  const forProp2 = await call(A, 'estate_match', { property: '8 Jacaranda' });
+  assert.doesNotMatch(forProp2, /Sipho Dube/);
+  // no property -> honest error
+  assert.match(await call(A, 'estate_mandate_deck', { property: 'Nowhere' }), /No property found/);
+});

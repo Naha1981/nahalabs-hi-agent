@@ -5,6 +5,7 @@ import { audit } from './db.js';
 import { proposeBrowserJob } from './browser.js';
 import { proposePhoneTask } from './phone.js';
 import { saveFile } from './files.js';
+import { buildMandateDeck } from './deck.js';
 import { listUploads, readUpload } from './uploads.js';
 import { mailSearch, calendarUpcoming, proposeAccountEmail, proposeCalendarEvent } from './integrations.js';
 
@@ -106,6 +107,7 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_list', description: 'Real estate: show the pipeline (deals by stage), follow-ups due, upcoming viewings, contacts or properties.', parameters: { type: 'object', properties: { what: { type: 'string', enum: ['pipeline', 'due', 'viewings', 'contacts', 'properties'] } }, required: ['what'] } },
   { name: 'estate_enquiry_watch', description: 'Real estate: turn the enquiry watch on or off. When on, a scheduled task scans the connected inboxes for new property enquiries, saves contacts, starts deals and drafts approval-gated replies.', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['enable', 'disable'] }, every_minutes: { type: 'integer', description: 'How often to scan, minimum 60. Default 120.' } }, required: ['action'] } },
   { name: 'estate_seller_report', description: 'Real estate: create a seller progress report for a property as a downloadable markdown file.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
+  { name: 'estate_mandate_deck', description: 'Real estate: create a polished printable mandate pitch (HTML file) for a property, using only facts on record and the real count of matching buyers. Save for a seller meeting.', parameters: { type: 'object', properties: { property: { type: 'string' } }, required: ['property'] } },
   { name: 'list_uploads', description: 'List documents the customer uploaded (offers to purchase, FICA packs, leases, sheets) with name, type, size and whether the text is readable.', parameters: { type: 'object', properties: {} } },
   { name: 'read_upload', description: 'Read the extracted text of one uploaded document, by upload_id or exact filename. Use before recording facts from a document the customer uploaded. Record only facts the document states; if something is missing, say so.', parameters: { type: 'object', properties: { upload_id: { type: 'string' }, filename: { type: 'string' } } } },
 ];
@@ -287,6 +289,25 @@ export async function runTool(name, args, ctx) {
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'email.proposed', { approval_id: r.rows[0].id });
       return 'Drafted and placed in the approval queue. It will only be sent if the customer approves. In this version emails go to the customer\'s own address only.';
     }
+    case 'estate_mandate_deck': {
+      const key = clip(a.property, 200).replace(/[%_]/g, '').trim();
+      const prop = (await c.query("SELECT title, asking_price, bedrooms, suburb, notes, price_cents FROM re_properties WHERE title ILIKE '%' || $1 || '%' ORDER BY updated_at DESC LIMIT 1", [key])).rows[0];
+      if (!prop) return 'No property found with that name. Save it first.';
+      const matchCount = (await c.query(
+        `SELECT count(*)::int n FROM re_contacts
+         WHERE role IN ('buyer','tenant')
+           AND (budget_cents IS NOT NULL OR bedrooms_needed IS NOT NULL OR areas <> '')
+           AND (budget_cents IS NULL OR $1::bigint IS NULL OR budget_cents >= $1::bigint)
+           AND (bedrooms_needed IS NULL OR $2::smallint IS NULL OR ($3::smallint IS NOT NULL AND $3::smallint >= bedrooms_needed))
+           AND (areas = '' OR $4 = '' OR EXISTS (SELECT 1 FROM unnest(string_to_array(areas, ',')) ar WHERE $4 ILIKE '%' || trim(ar) || '%'))`,
+        [prop.price_cents, prop.bedrooms, prop.bedrooms, prop.suburb || ''])).rows[0].n;
+      const agency = (await c.query('SELECT name FROM tenants WHERE id = current_setting(\'app.tenant_id\')::uuid')).rows[0]?.name || 'Your agent';
+      const html = buildMandateDeck({ agency, property: prop, matchCount });
+      const fname = `Mandate proposal - ${prop.title}`.slice(0, 90);
+      const r = await saveFile(c, { tenantId, agentId: ctx.agentId, filename: fname, format: 'html', content: html, actor: `agent:${ctx.agentName || 'hi'}` });
+      if (r.error) return r.error;
+      return `Mandate pitch saved as "${r.filename}" - download it from the Files page and open it in any browser (it prints to PDF). It uses only facts on record${matchCount ? `, including ${matchCount} matching ${matchCount === 1 ? 'buyer' : 'buyers'}` : ''}.`;
+    }
     case 'list_uploads': {
       const rows = await listUploads(tenantId);
       if (!rows.length) return 'No documents uploaded yet. The customer can upload on the Files page.';
@@ -397,6 +418,7 @@ export async function runTool(name, args, ctx) {
         const buyers = (await c.query(
           `SELECT name, budget_cents, bedrooms_needed, areas, phone, email FROM re_contacts
            WHERE role IN ('buyer','tenant')
+             AND (budget_cents IS NOT NULL OR bedrooms_needed IS NOT NULL OR areas <> '')
              AND (budget_cents IS NULL OR $1::bigint IS NULL OR budget_cents >= $1::bigint)
              AND (bedrooms_needed IS NULL OR $2::smallint IS NULL OR ($3::smallint IS NOT NULL AND $3::smallint >= bedrooms_needed))
              AND (areas = '' OR $4 = '' OR EXISTS (SELECT 1 FROM unnest(string_to_array(areas, ',')) ar WHERE $4 ILIKE '%' || trim(ar) || '%'))

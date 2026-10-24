@@ -7,6 +7,7 @@ import { buildXlsx, XLSX_MIME } from './xlsx.js';
 
 export const FILE_TYPES = {
   csv: { ext: '.csv', mime: 'text/csv' },
+  html: { ext: '.html', mime: 'text/html' },
   md: { ext: '.md', mime: 'text/markdown' },
   txt: { ext: '.txt', mime: 'text/plain' },
   xlsx: { ext: '.xlsx', mime: XLSX_MIME, binary: true },
@@ -38,7 +39,7 @@ function sheetJson(content) {
 
 export async function saveFile(c, { tenantId, agentId, filename, format, content, actor }) {
   const type = FILE_TYPES[String(format || '').toLowerCase()];
-  if (!type) return { error: 'format must be csv, md, txt or xlsx.' };
+  if (!type) return { error: 'format must be csv, md, txt, html or xlsx.' };
   let stored;
   if (type.binary) {
     const parsed = sheetJson(String(content || '').slice(0, 400000));
