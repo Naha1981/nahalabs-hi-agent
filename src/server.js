@@ -8,7 +8,7 @@ import { withTenant, withSystem, audit, auditFor, closePool, assertSchemaReady }
 import { hashPassword, verifyPassword, newToken, tokenHash, makeLimiter } from './auth.js';
 import { page, esc, fdate, safeUrl, drivePage } from './views.js';
 import { ingest } from './ingest.js';
-import { runViewingReminders } from './reminders.js';
+import { runViewingReminders, runDocExpiryReminders } from './reminders.js';
 import { matchTenant, matchAllTenants } from './match.js';
 import { buildBriefsForAll, decideApproval, setEmergencyStop, emergencyStopped, vaultAlerts } from './core.js';
 import { explainFit, modelEnabled } from './gateway.js';
@@ -47,7 +47,7 @@ const secretEq = (a, b) => { const x = Buffer.from(String(a || '')), y = Buffer.
 const csrfFor = (token) => tokenHash(token + (process.env.SESSION_SECRET || 'dev-only')).slice(0, 40);
 const lines = (s) => String(s || '').split(/[\n,]/).map((x) => x.trim()).filter(Boolean).slice(0, 40).map((x) => x.slice(0, 80));
 const STATUSES = ['new', 'saved', 'dismissed', 'applied', 'won', 'lost'];
-const DOC_TYPES = ['CSD supplier report', 'Tax compliance status (SARS)', 'B-BBEE certificate or affidavit', 'CIPC registration', 'Bank confirmation letter', 'Other'];
+const DOC_TYPES = ['CSD supplier report', 'Tax compliance status (SARS)', 'B-BBEE certificate or affidavit', 'CIPC registration', 'Bank confirmation letter', 'FICA - ID document', 'FICA - proof of address', 'PPRA Fidelity Fund Certificate', 'Other'];
 
 export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaultChat, lookup } = {}) {
   const app = Fastify({ logger, trustProxy: true, bodyLimit: 100 * 1024 });
@@ -73,7 +73,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const token = req.cookies?.[COOKIE];
     if (!token) return null;
     const r = await withSystem((c) => c.query(
-      `SELECT u.id user_id, u.email, u.tenant_id, t.name tenant_name, t.paused, t.morning_brief_auto, t.viewing_reminders_auto
+      `SELECT u.id user_id, u.email, u.tenant_id, t.name tenant_name, t.paused, t.morning_brief_auto, t.viewing_reminders_auto, t.document_reminders_auto
        FROM sessions s JOIN users u ON u.id=s.user_id JOIN tenants t ON t.id=s.tenant_id
        WHERE s.token_hash=$1 AND s.expires_at > now()`, [tokenHash(token)]));
     const u = r.rows[0];
@@ -428,6 +428,8 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       <form method="post" action="/app/settings/morning-brief">${csrf(u)}<button name="on" value="${u.morning_brief_auto ? 'false' : 'true'}" class="sec">${u.morning_brief_auto ? 'Switch off auto-send' : 'Auto-send my morning brief to my own address'}</button></form></div>
       <div class="card"><b>Viewing reminders</b><p class="mut">${u.viewing_reminders_auto ? 'HI emails your own address up to 24 hours before each scheduled viewing.' : 'HI can email your own address up to 24 hours before each scheduled viewing. It never emails your clients.'}</p>
       <form method="post" action="/app/settings/viewing-reminders">${csrf(u)}<button name="on" value="${u.viewing_reminders_auto ? 'false' : 'true'}" class="sec">${u.viewing_reminders_auto ? 'Switch off viewing reminders' : 'Email me viewing reminders'}</button></form></div>
+      <div class="card"><b>Document expiry reminders</b><p class="mut">${u.document_reminders_auto ? 'HI emails your own address when a document in Documents is 30 days out, 7 days out, or expired.' : 'HI can email your own address when a document in Documents (FICA, licences, compliance) is 30 days out, 7 days out, or expired.'}</p>
+      <form method="post" action="/app/settings/doc-reminders">${csrf(u)}<button name="on" value="${u.document_reminders_auto ? 'false' : 'true'}" class="sec">${u.document_reminders_auto ? 'Switch off expiry reminders' : 'Email me expiry reminders'}</button></form></div>
       <div class="card"><b>Connections</b><ul><li>${u.desk_active ? 'Official tender open data: active' : 'Opportunity Desk: inactive until you set keywords in Profile'}</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
   });
   app.post('/app/settings/morning-brief', { preHandler: guard }, async (req, reply) => {
@@ -441,6 +443,12 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     await withSystem((c) => c.query('UPDATE tenants SET viewing_reminders_auto=$2 WHERE id=$1', [u.tenant_id, on]));
     await auditFor(u.tenant_id, `user:${u.user_id}`, on ? 'tenant.viewing_reminders_auto.on' : 'tenant.viewing_reminders_auto.off', {});
     return reply.redirect('/app/settings?m=' + encodeURIComponent(on ? 'Viewing reminders will be emailed to your own address.' : 'Viewing reminders are off.'));
+  });
+  app.post('/app/settings/doc-reminders', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, on = req.body?.on === 'true';
+    await withSystem((c) => c.query('UPDATE tenants SET document_reminders_auto=$2 WHERE id=$1', [u.tenant_id, on]));
+    await auditFor(u.tenant_id, `user:${u.user_id}`, on ? 'tenant.doc_reminders_auto.on' : 'tenant.doc_reminders_auto.off', {});
+    return reply.redirect('/app/settings?m=' + encodeURIComponent(on ? 'Document expiry reminders will be emailed to your own address.' : 'Document expiry reminders are off.'));
   });
   app.post('/app/settings/pause', { preHandler: guard }, async (req, reply) => {
     const u = req.user, paused = req.body?.paused === 'true';
@@ -946,6 +954,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     if (job === 'tasks' || job === 'all') out.tasks = await runDueTasks({ llm, fetchImpl, lookup });
     if (job === 'morning-brief') out.morning_brief = await buildMorningBriefs({ fetchImpl });
     if (job === 'viewing-reminders' || job === 'all') out.viewing_reminders = await runViewingReminders({ fetchImpl });
+    if (job === 'doc-reminders' || job === 'all') out.doc_reminders = await runDocExpiryReminders({ fetchImpl });
     return out;
   });
   app.post('/internal/stop', { preHandler: cronAuth }, async (req) => { await setEmergencyStop(req.query.on !== 'false'); return { emergency_stop: req.query.on !== 'false' }; });

@@ -125,3 +125,53 @@ test('settings desk status follows profile keywords through RLS', async () => {
   const onPage = await app.inject({ url: '/app/settings', headers: { cookie: B.cookie } });
   assert.match(onPage.body, /Official tender open data: active/);
 });
+
+test('document expiry digest: thresholds advance, no resend, date edit resets, opt-out skipped', async () => {
+  const { runDocExpiryReminders } = await import('../src/reminders.js');
+  const o = owner(db.ownerUrl); await o.connect();
+  await o.query('UPDATE tenants SET document_reminders_auto=true WHERE id=$1', [A.tenantId]);
+  await o.end();
+  const addDoc = (t, title, expiresOn) => withTenant(t, (c) => c.query(
+    "INSERT INTO vault_docs (tenant_id, doc_type, title, expires_on) VALUES (current_setting('app.tenant_id')::uuid, 'PPRA Fidelity Fund Certificate', $1, $2) RETURNING id", [title, expiresOn]).then((r) => r.rows[0].id));
+  const d30 = await addDoc(A.tenantId, 'FFC 2026', '+30d' && new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10));
+  const d7 = await addDoc(A.tenantId, 'FICA licence', new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10));
+  const dOld = await addDoc(A.tenantId, 'Old FFC', new Date(Date.now() - 864e5).toISOString().slice(0, 10));
+  await addDoc(A.tenantId, 'Far away', new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10));
+  await addDoc(B.tenantId, 'Beta FFC', new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10)); // Beta not opted in
+
+  const before = sent.length;
+  const r1 = await runDocExpiryReminders({ fetchImpl: fakeFetch });
+  assert.equal(r1.length, 1);
+  assert.equal(r1[0].status, 'sent');
+  assert.equal(r1[0].count, 3); // 30-day, 7-day and expired; the 90-day one is not due
+  assert.equal(sent.length, before + 1);
+  assert.equal(sent[sent.length - 1].to[0], A.email);
+  assert.match(sent[sent.length - 1].text, /FFC 2026/);
+  assert.match(sent[sent.length - 1].text, /EXPIRED Old FFC/);
+  // second sweep: nothing new
+  const r2 = await runDocExpiryReminders({ fetchImpl: fakeFetch });
+  assert.deepEqual(r2, []);
+  assert.equal(sent.length, before + 1);
+  // editing the expiry date resets the stage and re-reminds at the right threshold
+  await withTenant(A.tenantId, (c) => c.query('UPDATE vault_docs SET expires_on = $1 WHERE id = $2', [new Date(Date.now() + 6 * 864e5).toISOString().slice(0, 10), d30]));
+  const r3 = await runDocExpiryReminders({ fetchImpl: fakeFetch });
+  assert.equal(r3.length, 1);
+  assert.equal(r3[0].count, 1); // only the edited doc
+  assert.match(sent[sent.length - 1].text, /FFC 2026/);
+});
+
+test('document expiry digest: daily cap sends nothing and does not advance stages', async () => {
+  const { runDocExpiryReminders } = await import('../src/reminders.js');
+  await withTenant(A.tenantId, (c) => c.query("INSERT INTO vault_docs (tenant_id, doc_type, title, expires_on) VALUES (current_setting('app.tenant_id')::uuid, 'Other', 'Capped doc', $1)", [new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10)]));
+  process.env.HI_EMAIL_DAILY_CAP = '1';
+  try {
+    const before = sent.length;
+    const r = await runDocExpiryReminders({ fetchImpl: fakeFetch });
+    assert.equal(r[0].status, 'daily cap reached');
+    assert.equal(sent.length, before);
+    const stage = await withTenant(A.tenantId, (c) => c.query("SELECT expiry_reminder_stage FROM vault_docs WHERE title='Capped doc'").then((x) => x.rows[0].expiry_reminder_stage));
+    assert.equal(stage, 0);
+  } finally {
+    delete process.env.HI_EMAIL_DAILY_CAP;
+  }
+});

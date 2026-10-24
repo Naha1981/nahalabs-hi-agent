@@ -111,6 +111,9 @@ CREATE TABLE IF NOT EXISTS vault_docs (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE vault_docs ADD COLUMN IF NOT EXISTS expiry_reminder_stage smallint NOT NULL DEFAULT 0;  -- 0 none, 1 sent 30-day, 2 sent 7-day, 3 sent expired
+ALTER TABLE vault_docs ADD COLUMN IF NOT EXISTS expiry_reminder_for date;  -- the expires_on value the stage belongs to; a changed date resets the stage
+
 CREATE TABLE IF NOT EXISTS memory_notes (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -511,6 +514,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON integrations TO hi_app;
 -- Column additions for existing databases (CREATE TABLE IF NOT EXISTS cannot add columns)
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS morning_brief_auto boolean NOT NULL DEFAULT false;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS viewing_reminders_auto boolean NOT NULL DEFAULT false;  -- Settings opt-in: email own address before viewings
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS document_reminders_auto boolean NOT NULL DEFAULT false;  -- Settings opt-in: email own address on document expiry
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS doc_reminders_auto boolean NOT NULL DEFAULT false;  -- Settings opt-in: email own address on document expiry
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS surfaced_at timestamptz;
 
 -- ===== Real estate module =====
