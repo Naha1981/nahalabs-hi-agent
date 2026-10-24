@@ -213,8 +213,28 @@ test('mandate deck: facts only, agency name, real match count, downloadable html
   assert.match(html, /3 bedrooms/);
   assert.match(html, /Alpha/);               // agency = tenant name
   assert.match(html, /class="big">1</);      // Buyer One matches; Buyer Two does not
+  assert.match(html, /recorded requirements matching this property on budget, bedrooms and area/);
+  assert.doesNotMatch(html, /today\.|already looking/i); // no recency or active-interest claims
   assert.doesNotMatch(html, /NahaLabs/i);    // no platform branding in a seller-facing document
   assert.doesNotMatch(html, /HI by/);
+  // the deck never discloses buyer identities or contact details - only a count
+  assert.doesNotMatch(html, /Buyer One|Buyer Two/);
+  assert.doesNotMatch(html, /082\d{7}/);
+
+  // a buyer whose budget alone covers the price does NOT count: partial requirements are not a match
+  await call(A, 'estate_update_contact', { name: 'Buyer Three', budget: 'R2,000,000' });
+  const r2 = await call(A, 'estate_mandate_deck', { property: '8 Jacaranda' });
+  assert.match(r2, /1 buyer matching on budget, bedrooms and area/);
+  const f2 = await withTenant(A, (c) => c.query("SELECT content FROM files WHERE filename LIKE 'Mandate proposal%' ORDER BY created_at DESC LIMIT 1").then((x) => x.rows[0]));
+  assert.match(String(f2.content), /class="big">1</);
+
+  // tenant text is HTML-escaped in the deck
+  await call(A, 'estate_add_property', { title: '9 Script <script>alert(1)</script> Lane' });
+  await call(A, 'estate_update_property', { title: '9 Script', price: 500000 });
+  await call(A, 'estate_mandate_deck', { property: '9 Script' });
+  const f3 = await withTenant(A, (c) => c.query("SELECT content FROM files WHERE filename LIKE 'Mandate proposal%' ORDER BY created_at DESC LIMIT 1").then((x) => x.rows[0]));
+  assert.doesNotMatch(String(f3.content), /<script>alert/);
+  assert.match(String(f3.content), /&lt;script&gt;/);
   // buyers without recorded requirements are never claimed as matches
   const forProp2 = await call(A, 'estate_match', { property: '8 Jacaranda' });
   assert.doesNotMatch(forProp2, /Sipho Dube/);

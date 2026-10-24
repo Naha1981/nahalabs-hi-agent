@@ -5,7 +5,7 @@ import { audit } from './db.js';
 import { proposeBrowserJob } from './browser.js';
 import { proposePhoneTask } from './phone.js';
 import { saveFile } from './files.js';
-import { buildMandateDeck } from './deck.js';
+import { buildMandateDeck, andList } from './deck.js';
 import { listUploads, readUpload } from './uploads.js';
 import { mailSearch, calendarUpcoming, proposeAccountEmail, proposeCalendarEvent } from './integrations.js';
 
@@ -101,7 +101,7 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_update_property', description: 'Real estate: update a listing - price (tracks the change date), bedrooms, suburb, status, or a note. Identify by title.', parameters: { type: 'object', properties: { title: { type: 'string' }, price: { type: 'string' }, bedrooms: { type: 'number' }, suburb: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, note: { type: 'string' } }, required: ['title'] } },
   { name: 'estate_match', description: 'Real estate: structured matching. Give a property to find matching buyers (budget covers price, bedrooms met, area fits), or a buyer/contact name to find matching listings.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' } } } },
   { name: 'estate_find_duplicates', description: 'Real estate: list likely duplicate contacts (same normalized name, phone or email) so the agent can decide what to merge.', parameters: { type: 'object', properties: {} } },
-  { name: 'estate_merge_contacts', description: 'Real estate: merge one duplicate contact into another. Deals, viewings and details move to the kept contact; the duplicate is hidden but never deleted.', parameters: { type: 'object', properties: { keep: { type: 'string', description: 'Name of the contact to keep' }, merge: { type: 'string', description: 'Name of the duplicate to merge into it' } }, required: ['keep', 'merge'] } },
+  { name: 'estate_merge_contacts', description: 'Real estate: merge one duplicate contact into another. Deals, viewings and details move to the kept contact; the duplicate is hidden but never deleted. Without confirm this only previews the change; run with confirm true only after the customer explicitly confirms that exact merge.', parameters: { type: 'object', properties: { keep: { type: 'string', description: 'Name, phone or email of the contact to keep' }, merge: { type: 'string', description: 'Name, phone or email of the duplicate to merge into it' }, confirm: { type: 'boolean', description: 'True only after the customer explicitly confirmed this exact merge' } }, required: ['keep', 'merge'] } },
   { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, record the sale price and commission, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, sale_price: { type: 'string', description: 'Sale price in rands, e.g. "R1,250,000" or "1250000"' }, commission_pct: { type: 'number', description: 'Commission percent, e.g. 5 for 5%' }, note: { type: 'string' } } } },
   { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
@@ -295,20 +295,23 @@ export async function runTool(name, args, ctx) {
       const key = clip(a.property, 200).replace(/[%_]/g, '').trim();
       const prop = (await c.query("SELECT title, asking_price, bedrooms, suburb, notes, price_cents FROM re_properties WHERE title ILIKE '%' || $1 || '%' ORDER BY updated_at DESC LIMIT 1", [key])).rows[0];
       if (!prop) return 'No property found with that name. Save it first.';
-      const matchCount = (await c.query(
-        `SELECT count(*)::int n FROM re_contacts
-         WHERE role IN ('buyer','tenant') AND merged_into IS NULL
-           AND (budget_cents IS NOT NULL OR bedrooms_needed IS NOT NULL OR areas <> '')
-           AND (budget_cents IS NULL OR $1::bigint IS NULL OR budget_cents >= $1::bigint)
-           AND (bedrooms_needed IS NULL OR $2::smallint IS NULL OR ($3::smallint IS NOT NULL AND $3::smallint >= bedrooms_needed))
-           AND (areas = '' OR $4 = '' OR EXISTS (SELECT 1 FROM unnest(string_to_array(areas, ',')) ar WHERE $4 ILIKE '%' || trim(ar) || '%'))`,
-        [prop.price_cents, prop.bedrooms, prop.bedrooms, prop.suburb || ''])).rows[0].n;
+      // A criterion is only claimed when it is recorded on the property AND the buyer:
+      // partial requirements never count as a match on that criterion.
+      const criteria = [];
+      let where = "role IN ('buyer','tenant') AND merged_into IS NULL";
+      const vals = [];
+      if (prop.price_cents != null) { criteria.push('budget'); where += ` AND budget_cents IS NOT NULL AND budget_cents >= $${vals.push(prop.price_cents)}`; }
+      if (prop.bedrooms != null) { criteria.push('bedrooms'); where += ` AND bedrooms_needed IS NOT NULL AND bedrooms_needed <= $${vals.push(prop.bedrooms)}`; }
+      if (String(prop.suburb || '').trim()) { criteria.push('area'); where += ` AND areas <> '' AND EXISTS (SELECT 1 FROM unnest(string_to_array(areas, ',')) ar WHERE $${vals.push(prop.suburb)} ILIKE '%' || trim(ar) || '%')`; }
+      const matchCount = criteria.length
+        ? (await c.query(`SELECT count(*)::int n FROM re_contacts WHERE ${where}`, vals)).rows[0].n
+        : 0;
       const agency = (await c.query('SELECT name FROM tenants WHERE id = current_setting(\'app.tenant_id\')::uuid')).rows[0]?.name || 'Your agent';
-      const html = buildMandateDeck({ agency, property: prop, matchCount });
+      const html = buildMandateDeck({ agency, property: prop, matchCount, criteria });
       const fname = `Mandate proposal - ${prop.title}`.slice(0, 90);
       const r = await saveFile(c, { tenantId, agentId: ctx.agentId, filename: fname, format: 'html', content: html, actor: `agent:${ctx.agentName || 'hi'}` });
       if (r.error) return r.error;
-      return `Mandate pitch saved as "${r.filename}" - download it from the Files page and open it in any browser (it prints to PDF). It uses only facts on record${matchCount ? `, including ${matchCount} matching ${matchCount === 1 ? 'buyer' : 'buyers'}` : ''}.`;
+      return `Mandate pitch saved as "${r.filename}" - download it from the Files page and open it in any browser (it prints to PDF). It uses only facts on record${criteria.length ? `, including ${matchCount} ${matchCount === 1 ? 'buyer' : 'buyers'} matching on ${andList(criteria)}` : ''}.`;
     }
     case 'list_uploads': {
       const rows = await listUploads(tenantId);
@@ -469,24 +472,45 @@ export async function runTool(name, args, ctx) {
       return `Likely duplicates (${out.length} group${out.length === 1 ? '' : 's'}):\n` + out.map((g, i) => `${i + 1}) ${g}`).join('\n') + '\nMerge with estate_merge_contacts (keep, merge) after the agent confirms; use the phone numbers shown to tell same-name duplicates apart.';
     }
     case 'estate_merge_contacts': {
-      const findOne = async (v) => {
+      // Identifiers may be a name, phone or email. A bare name that matches more than one
+      // active contact is ambiguous: merging on a name alone is not allowed.
+      const identify = async (v) => {
         const key = clip(v, 120).replace(/[%_]/g, '').trim();
-        if (!key) return null;
+        if (!key) return {};
         const digits = key.replace(/[^0-9+]/g, '');
         if (digits.replace(/\D/g, '').length >= 6) {
           const byPhone = (await c.query("SELECT * FROM re_contacts WHERE (phone=$1 OR replace(phone,' ','')=$1) AND merged_into IS NULL ORDER BY updated_at DESC LIMIT 1", [digits])).rows[0];
-          if (byPhone) return byPhone;
+          if (byPhone) return { row: byPhone };
         }
         if (key.includes('@')) {
           const byEmail = (await c.query('SELECT * FROM re_contacts WHERE email ILIKE $1 AND merged_into IS NULL ORDER BY updated_at DESC LIMIT 1', [key])).rows[0];
-          if (byEmail) return byEmail;
+          if (byEmail) return { row: byEmail };
         }
-        return (await c.query("SELECT * FROM re_contacts WHERE name ILIKE '%' || $1 || '%' AND merged_into IS NULL ORDER BY updated_at DESC LIMIT 1", [key])).rows[0];
+        const named = (await c.query("SELECT * FROM re_contacts WHERE name ILIKE '%' || $1 || '%' AND merged_into IS NULL ORDER BY updated_at DESC LIMIT 5", [key])).rows;
+        if (named.length > 1) return { ambiguous: named };
+        return { row: named[0] };
       };
-      const keep = await findOne(a.keep);
-      const dup = await findOne(a.merge);
-      if (!keep || !dup) return 'Could not find both contacts by name.';
+      const kp = await identify(a.keep);
+      const dp = await identify(a.merge);
+      const ambMsg = (v, rows) => `"${clip(v, 60)}" matches several contacts: ` + rows.map((r) => `${r.name}${r.phone ? ` (${r.phone})` : ''}${r.email ? ` (${r.email})` : ''}`).join('; ') + '. Identify the exact one by phone or email - a name alone is not enough to merge.';
+      if (kp.ambiguous) return ambMsg(a.keep, kp.ambiguous);
+      if (dp.ambiguous) return ambMsg(a.merge, dp.ambiguous);
+      const keep = kp.row, dup = dp.row;
+      if (!keep || !dup) return 'Could not find both contacts. Use the exact name, phone or email from the duplicates list.';
       if (keep.id === dup.id) return 'Those are the same contact.';
+      const deals = (await c.query('SELECT count(*)::int n FROM re_deals WHERE contact_id=$1', [dup.id])).rows[0].n;
+      const viewings = (await c.query('SELECT count(*)::int n FROM re_viewings WHERE contact_id=$1', [dup.id])).rows[0].n;
+      if (a.confirm !== true) {
+        const fills = [];
+        if (!keep.phone && dup.phone) fills.push(`phone ${dup.phone}`);
+        if (!keep.email && dup.email) fills.push(`email ${dup.email}`);
+        if (!keep.source && dup.source) fills.push(`source ${dup.source}`);
+        if (!keep.fica_status && dup.fica_status) fills.push(`FICA ${dup.fica_status}`);
+        if (keep.budget_cents == null && dup.budget_cents != null) fills.push(`budget ${randFmt(dup.budget_cents)}`);
+        if (keep.bedrooms_needed == null && dup.bedrooms_needed != null) fills.push(`bedrooms ${dup.bedrooms_needed}`);
+        if (!keep.areas && dup.areas) fills.push(`areas ${dup.areas}`);
+        return `Merge preview - nothing changed yet.\nKeep: ${keep.name}${keep.phone ? ` (${keep.phone})` : ''}\nMerge in: ${dup.name}${dup.phone ? ` (${dup.phone})` : ''}\nWould move ${deals} deal${deals === 1 ? '' : 's'} and ${viewings} viewing${viewings === 1 ? '' : 's'} to ${keep.name}${fills.length ? `; fill in ${fills.join(', ')}` : ''}${dup.notes ? '; append its notes' : ''}. The duplicate is then hidden but kept on record (reversible).\nAsk the customer to confirm this exact merge, then run again with confirm: true.`;
+      }
       await c.query('UPDATE re_deals SET contact_id=$1, updated_at=now() WHERE contact_id=$2', [keep.id, dup.id]);
       await c.query('UPDATE re_viewings SET contact_id=$1, updated_at=now() WHERE contact_id=$2', [keep.id, dup.id]);
       await c.query(
@@ -503,8 +527,8 @@ export async function runTool(name, args, ctx) {
          WHERE id=$1`,
         [keep.id, dup.phone, dup.email, dup.source, dup.fica_status, dup.budget_cents, dup.bedrooms_needed, dup.areas, dup.notes ? `[merged from ${dup.name}] ${dup.notes}` : '']);
       await c.query('UPDATE re_contacts SET merged_into=$1, updated_at=now() WHERE id=$2', [keep.id, dup.id]);
-      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contacts_merged', { kept: keep.id, merged: dup.id });
-      return `Merged ${dup.name} into ${keep.name}. Deals and viewings moved across; the duplicate is hidden but kept on record.`;
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contacts_merged', { kept: keep.id, merged: dup.id, deals, viewings });
+      return `Merged ${dup.name} into ${keep.name}. ${deals} deal${deals === 1 ? '' : 's'} and ${viewings} viewing${viewings === 1 ? '' : 's'} moved across; the duplicate is hidden but kept on record.`;
     }
     case 'estate_add_deal': {
       const prop = await estateGetOrCreateProperty(c, a.property, clip);
