@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   kind text NOT NULL,                  -- send_brief
   summary text NOT NULL,
   payload jsonb NOT NULL DEFAULT '{}',
-  status text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','approved','rejected','executed','failed','cancelled')),
+  status text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','approved','executing','rejected','executed','failed','cancelled')),
   proposed_by text NOT NULL,           -- 'agent:<name>' or 'user:<id>'
   decided_by uuid,
   decided_at timestamptz,
@@ -410,6 +410,51 @@ BEGIN
   END LOOP;
 END $$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON skills, plans TO hi_app;
+
+-- ===== Desktop skill recorder (phase 5) =====
+-- Recording content is allowlisted UI metadata only, not typed values, screenshots or clipboard data.
+CREATE TABLE IF NOT EXISTS desktop_recordings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  title text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 120),
+  status text NOT NULL DEFAULT 'recording' CHECK (status IN ('recording','stopped','published')),
+  actions jsonb NOT NULL DEFAULT '[]',
+  skill_id uuid REFERENCES skills(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS desktop_recordings_active_tenant_idx
+  ON desktop_recordings (tenant_id) WHERE status='recording';
+ALTER TABLE desktop_recordings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE desktop_recordings FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON desktop_recordings;
+CREATE POLICY tenant_isolation ON desktop_recordings
+  USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON desktop_recordings TO hi_app;
+
+CREATE TABLE IF NOT EXISTS desktop_skills (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  skill_id uuid NOT NULL UNIQUE REFERENCES skills(id) ON DELETE CASCADE,
+  source_recording_id uuid REFERENCES desktop_recordings(id) ON DELETE SET NULL,
+  actions jsonb NOT NULL DEFAULT '[]',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE desktop_skills ENABLE ROW LEVEL SECURITY;
+ALTER TABLE desktop_skills FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON desktop_skills;
+CREATE POLICY tenant_isolation ON desktop_skills
+  USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON desktop_skills TO hi_app;
+
+-- Upgrade existing installations as well as new databases. The approval claim is leased so
+-- another companion can recover a task if its original worker disappears for 15 minutes.
+ALTER TABLE approvals DROP CONSTRAINT IF EXISTS approvals_status_check;
+ALTER TABLE approvals ADD CONSTRAINT approvals_status_check
+  CHECK (status IN ('proposed','approved','executing','rejected','executed','failed','cancelled'));
 
 -- ===== Public keyed API (phase 3) =====
 CREATE TABLE IF NOT EXISTS api_keys (
