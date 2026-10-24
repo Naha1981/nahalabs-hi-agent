@@ -147,7 +147,7 @@ test('document expiry digest: thresholds advance, no resend, date edit resets, o
   assert.equal(sent.length, before + 1);
   assert.equal(sent[sent.length - 1].to[0], A.email);
   assert.match(sent[sent.length - 1].text, /FFC 2026/);
-  assert.match(sent[sent.length - 1].text, /EXPIRED Old FFC/);
+  assert.match(sent[sent.length - 1].text, /Old FFC \(PPRA Fidelity Fund Certificate\): EXPIRED/);
   // second sweep: nothing new
   const r2 = await runDocExpiryReminders({ fetchImpl: fakeFetch });
   assert.deepEqual(r2, []);

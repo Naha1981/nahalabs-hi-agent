@@ -64,7 +64,7 @@ test('journey: signup to working estate desk with boundaries intact', async () =
   assert.match(r.body, /12 Oak Street, Sandton/);
   assert.match(r.body, /5 Flat Road/);
   assert.match(r.body, /Overdue and upcoming follow-ups/);
-  assert.match(r.body, /portal: 1/);
+  assert.match(r.body, /<td>portal<\/td><td>1<\/td>/);
 
   // 5. The deck file downloads as a sandboxed attachment, never inline HTML
   const fileId = await withTenant(A.tenantId, (c) => c.query("SELECT id FROM files WHERE filename LIKE 'Mandate proposal%' LIMIT 1").then((x) => x.rows[0].id));

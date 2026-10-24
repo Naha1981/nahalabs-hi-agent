@@ -624,6 +624,12 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const f = await withTenant(u.tenant_id, (c) => c.query('SELECT filename, mime, content FROM files WHERE id=$1', [req.params.id]).then((r) => r.rows[0]));
     if (!f) return reply.redirect('/app/files?m=' + encodeURIComponent('File not found.'));
     reply.header('content-disposition', `attachment; filename="${f.filename.replace(/"/g, '')}"`);
+    if (f.mime === 'text/html') {
+      // Agent-generated HTML (e.g. mandate decks) downloads as an attachment, never renders
+      // inside the app origin: sandbox CSP + nosniff keep it inert until the customer opens it locally.
+      reply.header('content-security-policy', "sandbox; default-src 'none'");
+      reply.header('x-content-type-options', 'nosniff');
+    }
     return reply.type(f.mime).send(f.mime === XLSX_MIME ? Buffer.from(f.content, 'base64') : f.content);
   });
 
@@ -676,7 +682,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const moneyCard = (payRows || invRows || data.monthExpenses.n) ? `<div class="card"><b>Money records</b>${data.monthExpenses.n ? `<p class="mut" style="margin:6px 0 0">Expenses this month: <b>${fmtR(data.monthExpenses.total)}</b> across ${data.monthExpenses.n} entr${data.monthExpenses.n === 1 ? 'y' : 'ies'}.</p>` : ''}${payRows ? `<p class="mut" style="margin:10px 0 0"><b>Recent payments</b></p><table style="margin-top:4px">${payRows}</table>` : ''}${invRows ? `<p class="mut" style="margin:10px 0 0"><b>Unpaid invoices</b></p><table style="margin-top:4px">${invRows}</table>` : ''}</div>` : '';
     return render(reply, u, 'Estate', `
       <h1><b>Estate</b> deals, viewings and follow-ups.</h1>${attnCard}${srcCard}
-      <p class="mut">${data.props} properties, ${data.contacts} contacts on record. Manage it by talking to HI - for example: <i>"Add a deal for 12 Oak Street with buyer Sipho, offer stage, next action: bank docs by Friday"</i> or <i>"seller report for 12 Oak Street"</i>.</p>
+      <p class="mut">${data.props} ${data.props === 1 ? 'property' : 'properties'}, ${data.contacts} contact${data.contacts === 1 ? '' : 's'} on record. Manage it by talking to HI - for example: <i>"Add a deal for 12 Oak Street with buyer Sipho, offer stage, next action: bank docs by Friday"</i> or <i>"seller report for 12 Oak Street"</i>.</p>
       ${empty ? '<div class="card empty">Nothing tracked yet. Tell HI about a property, a buyer or a deal and it appears here.</div>' : ''}
       ${dueRows ? `<div class="card"><b>Overdue and upcoming follow-ups</b><table style="margin-top:8px"><tr><th>Due</th><th>Property</th><th>Who</th><th>Action</th></tr>${dueRows}</table></div>` : ''}
       ${leaseRows ? `<div class="card"><b>Active leases</b><table style="margin-top:8px"><tr><th>Property</th><th>Tenant</th><th>Rent</th><th>Ends</th></tr>${leaseRows}</table></div>` : ''}

@@ -10,13 +10,16 @@
   "scripts": {
     "start": "node src/server.js",
     "migrate": "node src/migrate.js",
-    "test": "node --test --test-concurrency=1 tests/isolation.test.js tests/flows.test.js tests/agent.test.js tests/browser.test.js tests/whatsapp.test.js tests/api.test.js tests/integrations.test.js tests/voice.test.js tests/xlsx.test.js tests/reset.test.js tests/realestate.test.js tests/uploads.test.js tests/reminders.test.js tests/bootguard.test.js tests/estate-dedupe.test.js tests/journey.test.js tests/estate-qualify-spend.test.js"
+    "test": "node --test --test-concurrency=1 tests/isolation.test.js tests/flows.test.js tests/agent.test.js tests/browser.test.js tests/whatsapp.test.js tests/api.test.js tests/integrations.test.js tests/voice.test.js tests/xlsx.test.js tests/reset.test.js tests/realestate.test.js tests/uploads.test.js tests/reminders.test.js tests/brief.test.js tests/bootguard.test.js tests/estate-dedupe.test.js tests/journey.test.js tests/estate-qualify-spend.test.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
     "@fastify/cookie": "^11.1.3",
     "@fastify/formbody": "^9.0.1",
+    "@fastify/multipart": "^10.1.6",
     "fastify": "^5.12.7",
+    "mammoth": "^1.13.0",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.23.1"
   },
   "devDependencies": {

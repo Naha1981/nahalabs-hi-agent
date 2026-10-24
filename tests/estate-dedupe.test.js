@@ -39,7 +39,15 @@ test('estate dedupe: find duplicates, merge keeps data, lists hide merged rows',
     await c.query("INSERT INTO re_deals (tenant_id, contact_id, property_id, stage) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,'viewing')", [dup.id, prop.id]);
   });
 
-  const merge = await call(A, 'estate_merge_contacts', { keep: '0821110001', merge: '0821110002' });
+  // without confirm the tool only previews - nothing changes
+  const preview = await call(A, 'estate_merge_contacts', { keep: '0821110001', merge: '0821110002' });
+  assert.match(preview, /Merge preview - nothing changed yet/);
+  assert.match(preview, /Would move 1 deal and 0 viewings/);
+  assert.match(preview, /confirm: true/);
+  const stillTwo = await withTenant(A, (c) => c.query("SELECT count(*)::int n FROM re_contacts WHERE name='John Smit' AND merged_into IS NULL").then((x) => x.rows[0].n));
+  assert.equal(stillTwo, 2);
+
+  const merge = await call(A, 'estate_merge_contacts', { keep: '0821110001', merge: '0821110002', confirm: true });
   assert.match(merge, /Merged John Smit into John Smit/);
   assert.match(merge, /hidden but kept on record/);
 
@@ -47,7 +55,7 @@ test('estate dedupe: find duplicates, merge keeps data, lists hide merged rows',
   assert.equal(counts.active, 1);
   assert.equal(counts.total, 2);
 
-  const deals = await call(A, 'estate_list', { what: 'deals' });
+  const deals = await call(A, 'estate_list', { what: 'pipeline' });
   assert.match(deals, /John Smit/);
   const dealRow = await withTenant(A, (c) => c.query("SELECT c.phone FROM re_deals d JOIN re_contacts c ON c.id=d.contact_id").then((x) => x.rows[0]));
   assert.equal(dealRow.phone, '0821110001');
@@ -75,7 +83,18 @@ test('estate dedupe: merge guards and tenant isolation', async () => {
   assert.match(await call(A, 'estate_merge_contacts', { keep: 'John Smit', merge: 'No Such Person' }), /Could not find both/);
 
   // merging a contact into itself is rejected
-  assert.match(await call(A, 'estate_merge_contacts', { keep: 'John Smit', merge: 'John Smit' }), /same contact/);
+  assert.match(await call(A, 'estate_merge_contacts', { keep: 'John Smit', merge: 'John Smit', confirm: true }), /same contact/);
+
+  // a bare name matching several contacts is ambiguous: no merge on a name alone
+  await call(A, 'estate_add_contact', { name: 'Jane Botha', role: 'buyer', phone: '0840000001' });
+  await call(A, 'estate_add_contact', { name: 'Jane Botha', role: 'buyer', phone: '0840000002' });
+  const amb = await call(A, 'estate_merge_contacts', { keep: 'Jane Botha', merge: '0840000002', confirm: true });
+  assert.match(amb, /matches several contacts/);
+  assert.match(amb, /0840000001/);
+  const janes = await withTenant(A, (c) => c.query("SELECT count(*)::int n FROM re_contacts WHERE name='Jane Botha' AND merged_into IS NULL").then((x) => x.rows[0].n));
+  assert.equal(janes, 2);
+  // phone-identified merge of the same pair works
+  assert.match(await call(A, 'estate_merge_contacts', { keep: '0840000001', merge: '0840000002', confirm: true }), /Merged Jane Botha/);
 });
 
 test('estate attention: overdue follow-ups, stalled deals, stale listings surface read-only', async () => {
