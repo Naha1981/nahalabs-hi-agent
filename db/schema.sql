@@ -620,6 +620,26 @@ CREATE TABLE IF NOT EXISTS re_leases (
 );
 ALTER TABLE re_leases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_leases FORCE ROW LEVEL SECURITY;
+CREATE TABLE IF NOT EXISTS re_expenses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  property_id uuid REFERENCES re_properties(id) ON DELETE SET NULL,
+  category text NOT NULL DEFAULT 'other' CHECK (category IN ('marketing','travel','office','maintenance','professional','other')),
+  amount_cents bigint,
+  mileage_km numeric(8,1),
+  vendor text NOT NULL DEFAULT '',
+  spent_on date NOT NULL DEFAULT current_date,
+  notes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE re_expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE re_expenses FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON re_expenses;
+CREATE POLICY tenant_isolation ON re_expenses USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON re_expenses TO hi_app;
+
 CREATE TABLE IF NOT EXISTS re_lease_payments (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,

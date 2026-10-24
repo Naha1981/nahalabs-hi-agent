@@ -129,14 +129,14 @@ test('estate leases: record, list, validate, tenant-isolated', async () => {
 test('rent arrears: recorded payments vs due, honest labels, isolation', async () => {
   // the active lease on 3 Rental Road (rent R12,500/mo from 2026-01-01) has no payments yet
   let out = await call(A, 'estate_list', { what: 'attention' });
-  assert.match(out, /3 Rental Road \(Tandi Tenant\): recorded rent payments R0 of R125 000 due since 2026-01-01 - R125 000 short/);
+  assert.match(out, /3 Rental Road \(Tandi Tenant\): recorded rent payments R0 of R125 000 due since 2026-01-01 - R125 000 short, assuming monthly rent from the lease start/);
 
   const rec = await call(A, 'estate_record_payment', { property: '3 Rental Road', amount: 'R12,500', period: '2026-01' });
   assert.match(rec, /Recorded R12 500 on 3 Rental Road \(Tandi Tenant\) for 2026-01/);
   assert.match(rec, /HI only knows payments you record/);
 
   out = await call(A, 'estate_list', { what: 'attention' });
-  assert.match(out, /recorded rent payments R12 500 of R125 000 due since 2026-01-01 - R112 500 short/);
+  assert.match(out, /recorded rent payments R12 500 of R125 000 due since 2026-01-01 - R112 500 short, assuming monthly rent from the lease start/);
 
   const pays = await call(A, 'estate_list', { what: 'payments' });
   assert.match(pays, /3 Rental Road \| Tandi Tenant \| R12 500 \| 2026-01/);
@@ -178,4 +178,26 @@ test('maintenance: log, list, update, stale surfaces in attention, isolation', a
   // tenant B sees nothing of A's requests
   const ctxB = { agentId: AGENT, agentName: 'hi', userEmail: 'b@b.c', sources: [], steps: [], mode: 'chat' };
   assert.match(await withTenant(B, (c) => runTool('estate_list', { what: 'maintenance' }, { ...ctxB, c, tenantId: B })), /No maintenance requests on record/);
+});
+
+test('expenses: record, list with month total, validation, isolation', async () => {
+  const r = await call(A, 'estate_add_expense', { amount: 'R850', category: 'marketing', vendor: 'Local Printers', property: '3 Rental Road', spent_on: '2026-10-20' });
+  assert.match(r, /Expense recorded: marketing R850 at Local Printers for 3 Rental Road/);
+  assert.match(r, /HI does not calculate tax or claims/);
+
+  const km = await call(A, 'estate_add_expense', { mileage_km: 42.5, category: 'travel', notes: 'show house round trip' });
+  assert.match(km, /Expense recorded: travel 42.5 km/);
+
+  const list = await call(A, 'estate_list', { what: 'expenses' });
+  assert.match(list, /2026-10-20 \| marketing \| R850 \| Local Printers \| 3 Rental Road/);
+  assert.match(list, /travel \| 42.5 km/);
+  assert.match(list, /Recorded this month: R850/);
+
+  assert.match(await call(A, 'estate_add_expense', {}), /Give an amount, kilometres, or both/);
+  assert.match(await call(A, 'estate_add_expense', { amount: 'lots' }), /rand amount/);
+  assert.match(await call(A, 'estate_add_expense', { mileage_km: 9999 }), /kilometres/);
+  assert.match(await call(A, 'estate_add_expense', { amount: 100, property: 'Nowhere' }), /No property found/);
+
+  const ctxB = { agentId: AGENT, agentName: 'hi', userEmail: 'b@b.c', sources: [], steps: [], mode: 'chat' };
+  assert.match(await withTenant(B, (c) => runTool('estate_list', { what: 'expenses' }, { ...ctxB, c, tenantId: B })), /No expenses recorded/);
 });

@@ -52,7 +52,7 @@ export async function estateAttention(c) {
     const shortfall = expected - Number(r.paid_cents);
     if (shortfall > 0) {
       const fmt = (x) => 'R' + Math.round(x / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-      items.push({ kind: 'rent_arrears', text: `${r.property}${r.tenant_name ? ` (${r.tenant_name})` : ''}: recorded rent payments ${fmt(r.paid_cents)} of ${fmt(expected)} due since ${dateFmt(r.start_date)} - ${fmt(shortfall)} short` });
+      items.push({ kind: 'rent_arrears', text: `${r.property}${r.tenant_name ? ` (${r.tenant_name})` : ''}: recorded rent payments ${fmt(r.paid_cents)} of ${fmt(expected)} due since ${dateFmt(r.start_date)} - ${fmt(shortfall)} short, assuming monthly rent from the lease start; check the lease for actual due dates, and recorded payments may not cover every period` });
     }
   }
   // Maintenance requests sitting unresolved.
