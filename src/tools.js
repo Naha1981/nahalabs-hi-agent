@@ -4,6 +4,7 @@ import net from 'node:net';
 import { audit } from './db.js';
 import { proposeBrowserJob } from './browser.js';
 import { proposePhoneTask } from './phone.js';
+import { proposeDesktopTask } from './desktop.js';
 import { saveFile } from './files.js';
 import { mailSearch, calendarUpcoming, proposeAccountEmail, proposeCalendarEvent } from './integrations.js';
 
@@ -77,6 +78,7 @@ export const TOOL_SCHEMAS = [
   { name: 'browser_results', description: 'Read the results of the most recent browser tasks.', parameters: { type: 'object', properties: {} } },
   { name: 'create_file', description: 'Save a file (csv, md, txt or a genuine xlsx workbook) into the customer account for download, e.g. a tender comparison spreadsheet or a report. For xlsx, content must be JSON: {"sheets":[{"name":"Sheet1","rows":[["Heading 1","Heading 2"],["value",1]]}]}. For csv, md and txt give the full file content.', parameters: { type: 'object', properties: { filename: { type: 'string' }, format: { type: 'string', enum: ['csv', 'md', 'txt', 'xlsx'] }, content: { type: 'string' } }, required: ['filename', 'format', 'content'] } },
   { name: 'phone_task', description: 'Ask to run a task on the customer\'s paired Android phone: open apps, read what is on screen, tap and type. Nothing runs until the customer approves it in the queue, and anything that sends a message or pays always needs that approval first. The phone must be paired through the customer\'s own bridge app.', parameters: { type: 'object', properties: { instruction: { type: 'string' } }, required: ['instruction'] } },
+  { name: 'desktop_task', description: 'Run a saved desktop workflow on the customer\'s paired Windows computer. Pass the exact skill_name from /v1/desktop/skills. This creates an approval request; the local companion executes only after approval, asks for values locally, never replays captured secrets and pauses for risky or ambiguous actions.', parameters: { type: 'object', properties: { skill_name: { type: 'string', description: 'Exact saved desktop skill name, such as fill-invoice.' } }, required: ['skill_name'] } },
   { name: 'phone_results', description: 'Check the status and results of recent phone tasks.', parameters: { type: 'object', properties: {} } },
   { name: 'mail_search', description: 'Search connected Gmail and Outlook inboxes (read only). During the scheduled estate enquiry watch, results include provider, account email and message ID.', parameters: { type: 'object', properties: { query: { type: 'string' } } } },
   { name: 'estate_mark_message_processed', description: 'During the scheduled estate enquiry watch, mark one current mail_search result reviewed. Call only after applicable contact, deal and reply-draft work is complete; also mark reviewed non-enquiries. Use the provider, account email and message ID exactly as returned by mail_search.', parameters: { type: 'object', properties: { provider: { type: 'string', enum: ['gmail', 'outlook'] }, account_email: { type: 'string' }, message_id: { type: 'string' } }, required: ['provider', 'account_email', 'message_id'] } },
@@ -226,6 +228,13 @@ export async function runTool(name, args, ctx) {
     case 'browser_results': {
       const r = await c.query("SELECT start_url, goal, status, result, created_at FROM browser_jobs ORDER BY created_at DESC LIMIT 3");
       return UNTRUSTED(r.rowCount ? r.rows.map((j) => `- [${j.status}] ${j.goal.slice(0, 120)} (${new URL(j.start_url).hostname}): ${clip(j.result || 'no result yet', 600)}`).join('\n') : 'No browser tasks yet.');
+    }
+    case 'desktop_task': {
+      if (ctx.mode === 'task') return 'Scheduled runs cannot start desktop tasks. Ask in chat so the customer can approve and supervise the run.';
+      if (ctx.voice) return 'Desktop tasks cannot be started from a hands-free voice turn. Ask in chat so the customer can review the skill and approve it.';
+      const r = await proposeDesktopTask(c, { tenantId, agentName: ctx.agentName || 'hi', skillName: clip(a.skill_name, 40) });
+      if (r.error) return r.error;
+      return 'Desktop skill "' + r.skill_name + '" is waiting in the HI approval queue. The paired Windows companion must be running, and it will execute only after the customer approves the task.';
     }
     case 'phone_task': {
       if (ctx.mode === 'task') return 'Unattended runs cannot propose phone tasks.';
