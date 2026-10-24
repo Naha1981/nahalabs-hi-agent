@@ -485,6 +485,32 @@ def run_approved_task(client: HIClient, task: dict[str, Any]) -> tuple[str, str]
         return "failed", "Execution stopped safely after " + str(completed) + " steps (" + type(exc).__name__ + ")."
     return "executed", "Completed " + str(completed) + " steps; " + str(manual) + " step(s) required manual handling."
 
+def review_recording(client: HIClient, recording_id: str) -> None:
+    payload = client.request("GET", "/v1/desktop/recordings/" + recording_id)
+    recording = payload.get("recording") or {}
+    actions = recording.get("actions") if isinstance(recording.get("actions"), list) else []
+    print("\\nRecording review: " + safe_text(recording.get("title"), 100))
+    print("Status: " + str(recording.get("status")) + " | steps: " + str(len(actions)))
+    for index, action in enumerate(actions, start=1):
+        target = action.get("target") or {}
+        label = safe_text(target.get("control_name") or target.get("control_type") or "control", 90)
+        window = safe_text(target.get("window_title") or "window", 90)
+        detail = str(action.get("type", "unknown"))
+        if action.get("type") == "type":
+            detail += " -> runtime input " + safe_text(action.get("parameter"), 40) + " (value not recorded)"
+        elif action.get("type") == "key":
+            detail += " -> " + safe_text(action.get("key"), 20)
+        elif action.get("type") == "scroll":
+            detail += " -> scroll " + str(action.get("delta_y", 0))
+        if target.get("sensitive"):
+            detail += " [sensitive target: manual handling only]"
+        if target.get("control_type") == "Coordinate":
+            detail += " [coordinate fallback: requires local confirmation]"
+        print(str(index) + ". " + detail + " | " + label + " | " + window)
+    print("No text values or screenshots are included in this review.")
+    if not actions:
+        print("Nothing can be published until at least one supported action is recorded.")
+
 def publish_recording(client: HIClient, recording_id: str) -> None:
     name = input("Skill name (lowercase slug, e.g. process-invoice): ").strip()
     description = input("Short description (no customer data): ").strip()
@@ -500,6 +526,8 @@ def main() -> int:
     rec.add_argument("--title", required=True, help="Short workflow title")
     pub = sub.add_parser("publish", help="Publish a stopped recording as a saved HI skill")
     pub.add_argument("recording_id")
+    rev = sub.add_parser("review", help="Review a recording's sanitized actions before publishing")
+    rev.add_argument("recording_id")
     sub.add_parser("worker", help="Poll HI for approved tasks and execute them locally")
     sub.add_parser("list", help="List recordings and saved desktop skills")
     args = parser.parse_args()
@@ -512,11 +540,20 @@ def main() -> int:
                 raise RuntimeError("HI did not return a recording id.")
             recorder = Recorder(client, recording_id)
             recorder.run()
-            if not recorder.last_error and input("Publish this stopped recording as a reusable skill now? [y/N] ").strip().lower() == "y":
-                publish_recording(client, recording_id)
+            if not recorder.last_error:
+                review_recording(client, recording_id)
+                if input("Publish this reviewed recording as a reusable skill now? [y/N] ").strip().lower() == "y":
+                    publish_recording(client, recording_id)
             return 0
         if args.command == "publish":
+            review_recording(client, args.recording_id)
+            if input("Publish this reviewed recording as a reusable skill? [y/N] ").strip().lower() != "y":
+                print("No skill was published.")
+                return 0
             publish_recording(client, args.recording_id)
+            return 0
+        if args.command == "review":
+            review_recording(client, args.recording_id)
             return 0
         if args.command == "list":
             recs = client.request("GET", "/v1/desktop/recordings").get("recordings", [])
