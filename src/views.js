@@ -40,6 +40,10 @@ code{background:var(--chip);border-radius:6px;padding:1px 6px;font-size:14px}
 @media(min-width:700px){.feat{grid-template-columns:1fr 1fr}}
 .auth{max-width:400px;margin:32px auto}
 .auth .card{overflow-x:visible}
+@media(max-width:480px){
+.card{padding:14px 12px;scroll-margin-top:70px}
+td,th{padding:7px 5px;font-size:14px}
+}
 .auth h1{text-align:center}
 /* signed-in shell */
 .topbar{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--line);background:#fff;position:sticky;top:0;z-index:20}

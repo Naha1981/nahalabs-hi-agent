@@ -883,7 +883,7 @@ export async function runTool(name, args, ctx) {
           const cpe = x.enquiries > 0 && x.spend > 0 ? ` | cost per enquiry ${fmtC(Number(x.spend) / x.enquiries)}` : '';
           return `- ${x.src}: ${x.enquiries} enquir${x.enquiries === 1 ? 'y' : 'ies'} | recorded spend ${fmtC(x.spend)}${cpe}`;
         });
-        lines.push('Cost per enquiry uses recorded marketing spend divided by recorded enquiries - it is not ROI: HI has no revenue attribution.');
+        lines.push('Cost per enquiry uses all recorded marketing spend on a channel divided by all recorded enquiries from it (all time, both sides) - it is not ROI: HI has no revenue attribution.');
         return lines.join('\n');
       }
       if (a.what === 'contacts') {
