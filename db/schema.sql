@@ -532,6 +532,9 @@ CREATE TABLE IF NOT EXISTS re_contacts (
 );
 ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT '' CHECK (source IN ('','portal','website','referral','signboard','walk_in','other'));  -- enquiry source for ad-spend tracking
 ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS fica_status text NOT NULL DEFAULT '' CHECK (fica_status IN ('','requested','received','verified'));  -- FICA state per contact; documents themselves live in Documents
+ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS budget_cents bigint CHECK (budget_cents >= 0);
+ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS bedrooms_needed smallint CHECK (bedrooms_needed BETWEEN 0 AND 20);
+ALTER TABLE re_contacts ADD COLUMN IF NOT EXISTS areas text NOT NULL DEFAULT '';  -- comma-separated preferred suburbs
 ALTER TABLE re_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_contacts FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON re_contacts;
@@ -549,6 +552,10 @@ CREATE TABLE IF NOT EXISTS re_properties (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE re_properties ADD COLUMN IF NOT EXISTS price_cents bigint CHECK (price_cents >= 0);
+ALTER TABLE re_properties ADD COLUMN IF NOT EXISTS bedrooms smallint CHECK (bedrooms BETWEEN 0 AND 20);
+ALTER TABLE re_properties ADD COLUMN IF NOT EXISTS suburb text NOT NULL DEFAULT '';
+ALTER TABLE re_properties ADD COLUMN IF NOT EXISTS price_updated_at timestamptz;  -- last time price_cents changed; listing age is created_at
 ALTER TABLE re_properties ENABLE ROW LEVEL SECURITY;
 ALTER TABLE re_properties FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON re_properties;

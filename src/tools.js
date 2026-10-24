@@ -95,8 +95,10 @@ export const TOOL_SCHEMAS = [
   { name: 'propose_calendar_event', description: 'Propose creating an event on one of the customer\'s connected calendars. It is created only after the customer approves.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, title: { type: 'string' }, starts_at: { type: 'string' }, ends_at: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'starts_at', 'ends_at'] } },
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
   { name: 'estate_add_contact', description: 'Real estate: save a contact such as a buyer, seller, landlord or tenant. source: how the enquiry arrived - portal, website, referral, signboard, walk_in or other - when known.', parameters: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['buyer', 'seller', 'landlord', 'tenant', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, source: { type: 'string', enum: ['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'] }, fica_status: { type: 'string', enum: ['requested', 'received', 'verified'] }, notes: { type: 'string' } }, required: ['name'] } },
-  { name: 'estate_update_contact', description: 'Real estate: update a contact - FICA status (requested, received, verified), source, phone, email, or add a note. Identify by name.', parameters: { type: 'object', properties: { name: { type: 'string' }, fica_status: { type: 'string', enum: ['requested', 'received', 'verified'] }, source: { type: 'string', enum: ['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, note: { type: 'string' } }, required: ['name'] } },
-  { name: 'estate_add_property', description: 'Real estate: save a property or listing.', parameters: { type: 'object', properties: { title: { type: 'string', description: 'Address or short name, e.g. "12 Oak Street, Sandton"' }, asking_price: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, notes: { type: 'string' } }, required: ['title'] } },
+  { name: 'estate_update_contact', description: 'Real estate: update a contact - FICA status (requested, received, verified), source, phone, email, or add a note. Identify by name.', parameters: { type: 'object', properties: { name: { type: 'string' }, fica_status: { type: 'string', enum: ['requested', 'received', 'verified'] }, source: { type: 'string', enum: ['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, budget: { type: 'string', description: 'Budget ceiling in rands, e.g. "R1.8m"' }, bedrooms_needed: { type: 'number' }, areas: { type: 'string', description: 'Comma-separated preferred suburbs' }, note: { type: 'string' } }, required: ['name'] } },
+  { name: 'estate_add_property', description: 'Real estate: save a property or listing. price: rand amount like "R1,250,000" (kept structured for matching); asking_price stays the display text.', parameters: { type: 'object', properties: { title: { type: 'string', description: 'Address or short name, e.g. "12 Oak Street, Sandton"' }, asking_price: { type: 'string' }, price: { type: 'string' }, bedrooms: { type: 'number' }, suburb: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, notes: { type: 'string' } }, required: ['title'] } },
+  { name: 'estate_update_property', description: 'Real estate: update a listing - price (tracks the change date), bedrooms, suburb, status, or a note. Identify by title.', parameters: { type: 'object', properties: { title: { type: 'string' }, price: { type: 'string' }, bedrooms: { type: 'number' }, suburb: { type: 'string' }, status: { type: 'string', enum: ['active', 'sole_mandate', 'sold', 'withdrawn'] }, note: { type: 'string' } }, required: ['title'] } },
+  { name: 'estate_match', description: 'Real estate: structured matching. Give a property to find matching buyers (budget covers price, bedrooms met, area fits), or a buyer/contact name to find matching listings.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' } } } },
   { name: 'estate_add_deal', description: 'Real estate: start tracking a deal on a property. The property (and contact, when given) is matched by name or created when new. stage: enquiry, viewing, offer, otp_signed, bond_pending, transfer_attorneys, registered or fallen_through.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, notes: { type: 'string' } }, required: ['property'] } },
   { name: 'estate_update_deal', description: 'Real estate: move a deal to a new stage, set its next action and date, record the sale price and commission, or add a note. Identify the deal by deal_id or by the property name.', parameters: { type: 'object', properties: { deal_id: { type: 'string' }, property: { type: 'string' }, stage: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string', description: 'YYYY-MM-DD' }, sale_price: { type: 'string', description: 'Sale price in rands, e.g. "R1,250,000" or "1250000"' }, commission_pct: { type: 'number', description: 'Commission percent, e.g. 5 for 5%' }, note: { type: 'string' } } } },
   { name: 'estate_add_viewing', description: 'Real estate: schedule a viewing of a property.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact: { type: 'string' }, starts_at: { type: 'string', description: 'ISO date-time, e.g. 2026-10-24T14:00' }, notes: { type: 'string' } }, required: ['property', 'starts_at'] } },
@@ -325,8 +327,19 @@ export async function runTool(name, args, ctx) {
       }
       if (a.phone != null) sets.push(`phone=$${vals.push(clip(a.phone, 40))}`);
       if (a.email != null) sets.push(`email=$${vals.push(clip(a.email, 120))}`);
+      if (a.budget != null) {
+        const cents = estatePriceCents(a.budget);
+        if (!Number.isFinite(cents)) return 'Budget must be a rand amount like R1,800,000.';
+        sets.push(`budget_cents=$${vals.push(cents)}`);
+      }
+      if (a.bedrooms_needed != null) {
+        const beds = Number(a.bedrooms_needed);
+        if (!Number.isInteger(beds) || beds < 0 || beds > 20) return 'Bedrooms needed must be a whole number 0-20.';
+        sets.push(`bedrooms_needed=$${vals.push(beds)}`);
+      }
+      if (a.areas != null) sets.push(`areas=$${vals.push(clip(a.areas, 200))}`);
       if (a.note != null && String(a.note).trim()) sets.push(`notes = CASE WHEN notes='' THEN $${vals.push(clip(a.note, 1000))} ELSE notes || E'\n[' || to_char(now(),'YYYY-MM-DD') || '] ' || $${vals.push(clip(a.note, 1000))} END`);
-      if (!sets.length) return 'Nothing to update. Give a FICA status, source, phone, email or note.';
+      if (!sets.length) return 'Nothing to update. Give a FICA status, source, phone, email, budget, bedrooms needed, areas or note.';
       vals.push(con.id);
       await c.query(`UPDATE re_contacts SET ${sets.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals);
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.contact_updated', { contact_id: con.id });
@@ -336,11 +349,78 @@ export async function runTool(name, args, ctx) {
       const title = clip(a.title, 200).trim();
       if (!title) return 'A property needs an address or name.';
       const status = ['active', 'sole_mandate', 'sold', 'withdrawn'].includes(a.status) ? a.status : 'active';
+      const priceCents = a.price != null && a.price !== '' ? estatePriceCents(a.price) : null;
+      if (a.price != null && a.price !== '' && !Number.isFinite(priceCents)) return 'Price must be a rand amount like R1,250,000.';
+      const beds = a.bedrooms != null ? Number(a.bedrooms) : null;
+      if (beds != null && (!Number.isInteger(beds) || beds < 0 || beds > 20)) return 'Bedrooms must be a whole number 0-20.';
+      const asking = a.asking_price ? clip(a.asking_price, 60) : (priceCents != null ? randFmt(priceCents) : '');
       const r = await c.query(
-        "INSERT INTO re_properties (tenant_id, title, asking_price, status, notes) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4) RETURNING id",
-        [title, clip(a.asking_price, 60), status, clip(a.notes, 1000)]);
+        "INSERT INTO re_properties (tenant_id, title, asking_price, status, notes, price_cents, bedrooms, suburb, price_updated_at) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6,$7,CASE WHEN $5::bigint IS NULL THEN NULL ELSE now() END) RETURNING id",
+        [title, asking, status, clip(a.notes, 1000), priceCents, beds, clip(a.suburb, 80)]);
       await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.property_saved', { property_id: r.rows[0].id });
-      return `Saved property "${title}"${a.asking_price ? ` at ${clip(a.asking_price, 60)}` : ''}.`;
+      return `Saved property "${title}"${asking ? ` at ${asking}` : ''}${beds != null ? `, ${beds} bed` : ''}${a.suburb ? `, ${clip(a.suburb, 80)}` : ''}.`;
+    }
+    case 'estate_update_property': {
+      const key = clip(a.title, 200).replace(/[%_]/g, '').trim();
+      if (!key) return 'Give the property title.';
+      const prop = (await c.query("SELECT id, title, price_cents FROM re_properties WHERE title ILIKE '%' || $1 || '%' ORDER BY updated_at DESC LIMIT 1", [key])).rows[0];
+      if (!prop) return 'No property found with that name.';
+      const sets = [], vals = [];
+      if (a.price != null) {
+        const cents = estatePriceCents(a.price);
+        if (!Number.isFinite(cents)) return 'Price must be a rand amount like R1,250,000.';
+        sets.push(`price_cents=$${vals.push(cents)}`, `asking_price=$${vals.push(randFmt(cents))}`);
+        if (prop.price_cents == null || Number(prop.price_cents) !== cents) sets.push('price_updated_at=now()');
+      }
+      if (a.bedrooms != null) {
+        const beds = Number(a.bedrooms);
+        if (!Number.isInteger(beds) || beds < 0 || beds > 20) return 'Bedrooms must be a whole number 0-20.';
+        sets.push(`bedrooms=$${vals.push(beds)}`);
+      }
+      if (a.suburb != null) sets.push(`suburb=$${vals.push(clip(a.suburb, 80))}`);
+      if (a.status != null) {
+        if (!['active', 'sole_mandate', 'sold', 'withdrawn'].includes(a.status)) return 'Status must be active, sole_mandate, sold or withdrawn.';
+        sets.push(`status=$${vals.push(a.status)}`);
+      }
+      if (a.note != null && String(a.note).trim()) sets.push(`notes = CASE WHEN notes='' THEN $${vals.push(clip(a.note, 1000))} ELSE notes || E'\n[' || to_char(now(),'YYYY-MM-DD') || '] ' || $${vals.push(clip(a.note, 1000))} END`);
+      if (!sets.length) return 'Nothing to update. Give a price, bedrooms, suburb, status or note.';
+      vals.push(prop.id);
+      await c.query(`UPDATE re_properties SET ${sets.join(', ')}, updated_at=now() WHERE id=$${vals.length}`, vals);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'estate.property_updated', { property_id: prop.id });
+      return `Property "${prop.title}" updated.`;
+    }
+    case 'estate_match': {
+      if (String(a.property ?? '').trim()) {
+        const key = clip(a.property, 200).replace(/[%_]/g, '').trim();
+        const prop = (await c.query("SELECT id, title, price_cents, bedrooms, suburb FROM re_properties WHERE title ILIKE '%' || $1 || '%' ORDER BY updated_at DESC LIMIT 1", [key])).rows[0];
+        if (!prop) return 'No property found with that name.';
+        const buyers = (await c.query(
+          `SELECT name, budget_cents, bedrooms_needed, areas, phone, email FROM re_contacts
+           WHERE role IN ('buyer','tenant')
+             AND (budget_cents IS NULL OR $1::bigint IS NULL OR budget_cents >= $1::bigint)
+             AND (bedrooms_needed IS NULL OR $2::smallint IS NULL OR ($3::smallint IS NOT NULL AND $3::smallint >= bedrooms_needed))
+             AND (areas = '' OR $4 = '' OR EXISTS (SELECT 1 FROM unnest(string_to_array(areas, ',')) ar WHERE $4 ILIKE '%' || trim(ar) || '%'))
+           ORDER BY updated_at DESC LIMIT 20`,
+          [prop.price_cents, prop.bedrooms, prop.bedrooms, prop.suburb || ''])).rows;
+        if (!buyers.length) return `No matching buyers on record for "${prop.title}" yet.`;
+        return `Buyers matching "${prop.title}" (${buyers.length}):\n` + buyers.map((b) => `- ${b.name}${b.budget_cents ? ` | budget ${randFmt(b.budget_cents)}` : ''}${b.bedrooms_needed != null ? ` | ${b.bedrooms_needed}+ bed` : ''}${b.areas ? ` | ${b.areas}` : ''}${b.phone ? ` | ${b.phone}` : ''}`).join('\n');
+      }
+      if (String(a.contact ?? '').trim()) {
+        const key = clip(a.contact, 120).replace(/[%_]/g, '').trim();
+        const buyer = (await c.query("SELECT name, budget_cents, bedrooms_needed, areas FROM re_contacts WHERE name ILIKE '%' || $1 || '%' ORDER BY updated_at DESC LIMIT 1", [key])).rows[0];
+        if (!buyer) return 'No contact found with that name.';
+        const props = (await c.query(
+          `SELECT title, price_cents, bedrooms, suburb, asking_price FROM re_properties
+           WHERE status IN ('active','sole_mandate')
+             AND ($1::bigint IS NULL OR price_cents IS NULL OR price_cents <= $1::bigint)
+             AND ($2::smallint IS NULL OR bedrooms IS NULL OR bedrooms >= $2::smallint)
+             AND ($3 = '' OR suburb = '' OR EXISTS (SELECT 1 FROM unnest(string_to_array($3, ',')) ar WHERE suburb ILIKE '%' || trim(ar) || '%'))
+           ORDER BY updated_at DESC LIMIT 20`,
+          [buyer.budget_cents, buyer.bedrooms_needed, buyer.areas || ''])).rows;
+        if (!props.length) return `No listings match ${buyer.name}'s requirements yet.`;
+        return `Listings matching ${buyer.name} (${props.length}):\n` + props.map((p) => `- ${p.title}${p.price_cents ? ` | ${randFmt(p.price_cents)}` : (p.asking_price ? ` | ${p.asking_price}` : '')}${p.bedrooms != null ? ` | ${p.bedrooms} bed` : ''}${p.suburb ? ` | ${p.suburb}` : ''}`).join('\n');
+      }
+      return 'Give a property to find buyers, or a contact name to find listings.';
     }
     case 'estate_add_deal': {
       const prop = await estateGetOrCreateProperty(c, a.property, clip);

@@ -165,3 +165,39 @@ test('contact FICA status: set on add, updated, listed, validated', async () => 
   const row = await withTenant(A, (c) => c.query("SELECT fica_status FROM re_contacts WHERE name='FICA Fred'").then((x) => x.rows[0]));
   assert.equal(row.fica_status, 'verified');
 });
+
+test('structured matching: buyers for a property, listings for a buyer, price tracking', async () => {
+  await call(A, 'estate_add_property', { title: '8 Jacaranda Ave, Sandton', price: 'R1,500,000', bedrooms: 3, suburb: 'Sandton' });
+  await call(A, 'estate_add_property', { title: '22 Palm Heights, Midrand', price: 'R950,000', bedrooms: 2, suburb: 'Midrand' });
+  await call(A, 'estate_add_property', { title: '1 Fig Lane, Cape Town', price: 'R3,200,000', bedrooms: 4, suburb: 'Cape Town' });
+  await call(A, 'estate_add_contact', { name: 'Buyer One', role: 'buyer' });
+  await call(A, 'estate_update_contact', { name: 'Buyer One', budget: 'R1.8m', bedrooms_needed: 3, areas: 'Sandton, Bryanston' });
+  await call(A, 'estate_add_contact', { name: 'Buyer Two', role: 'buyer' });
+  await call(A, 'estate_update_contact', { name: 'Buyer Two', budget: 'R1,000,000' });
+
+  const forProp = await call(A, 'estate_match', { property: '8 Jacaranda' });
+  assert.match(forProp, /Buyer One/);               // budget 1.8m covers 1.5m, 3 bed met, Sandton fits
+  assert.doesNotMatch(forProp, /Buyer Two/);        // budget 1.0m too low
+
+  const forBuyer = await call(A, 'estate_match', { contact: 'Buyer One' });
+  assert.match(forBuyer, /8 Jacaranda Ave/);        // fits budget + beds + area
+  assert.doesNotMatch(forBuyer, /22 Palm Heights/); // only 2 bed
+  assert.doesNotMatch(forBuyer, /1 Fig Lane/);      // over budget and wrong area
+
+  const two = await call(A, 'estate_match', { contact: 'Buyer Two' });
+  assert.match(two, /22 Palm Heights/);
+  assert.doesNotMatch(two, /8 Jacaranda/);
+
+  // price update tracks the change date and refreshes display price
+  const up = await call(A, 'estate_update_property', { title: '8 Jacaranda', price: 'R1,400,000' });
+  assert.match(up, /updated/);
+  const row = await withTenant(A, (c) => c.query("SELECT price_cents, asking_price, price_updated_at FROM re_properties WHERE title ILIKE '%Jacaranda%'").then((x) => x.rows[0]));
+  assert.equal(String(row.price_cents), '140000000');
+  assert.equal(row.asking_price, 'R1 400 000');
+  assert.ok(row.price_updated_at);
+  // validation
+  assert.match(await call(A, 'estate_update_property', { title: '8 Jacaranda', price: 'free' }), /rand amount/);
+  assert.match(await call(A, 'estate_update_contact', { name: 'Buyer One', budget: 'lots' }), /rand amount/);
+  // RLS: Beta sees none of Alpha's records through match
+  assert.match(await call(B, 'estate_match', { property: '8 Jacaranda' }), /No property found/);
+});
