@@ -126,9 +126,45 @@ export const TOOL_SCHEMAS = [
   { name: 'list_uploads', description: 'List documents the customer uploaded (offers to purchase, FICA packs, leases, sheets) with name, type, size and whether the text is readable.', parameters: { type: 'object', properties: {} } },
   { name: 'read_upload', description: 'Read the extracted text of one uploaded document, by upload_id or exact filename. Use before recording facts from a document the customer uploaded. Record only facts the document states; if something is missing, say so.', parameters: { type: 'object', properties: { upload_id: { type: 'string' }, filename: { type: 'string' } } } },  { name: 'estate_public_listings', description: 'List properties currently advertised: title, suburb, bedrooms and asking price only. No internal notes, no other clients.', parameters: { type: 'object', properties: {} } },
   { name: 'estate_request_viewing', description: 'Send a client viewing request for an advertised property to the business for confirmation. Needs the property name and the client name; a preferred time helps.', parameters: { type: 'object', properties: { property: { type: 'string' }, contact_name: { type: 'string' }, preferred_time: { type: 'string' } }, required: ['property', 'contact_name'] } },
+
+  { name: 'growth_add_prospect', description: 'Sandton Growth Engine: save a source-backed agency or estate-agent prospect. Use public business contact details only. Never guess facts or send outreach. Scores are 0-20 each and total to 100.', parameters: { type: 'object', properties: { agency_name: { type: 'string' }, agent_name: { type: 'string' }, role: { type: 'string' }, office_branch: { type: 'string' }, suburb: { type: 'string' }, market_scope: { type: 'string', enum: ['core_sandton', 'surrounding'] }, website_url: { type: 'string' }, profile_url: { type: 'string' }, public_email: { type: 'string' }, public_phone: { type: 'string' }, social_urls: { type: 'array', items: { type: 'string' } }, source_urls: { type: 'array', items: { type: 'string' } }, opportunity_evidence: { type: 'string' }, relevance_score: { type: 'integer' }, inventory_score: { type: 'integer' }, marketing_gap_score: { type: 'integer' }, contactability_score: { type: 'integer' }, pilot_fit_score: { type: 'integer' }, verification_notes: { type: 'string' } }, required: ['agency_name', 'suburb', 'market_scope', 'source_urls', 'opportunity_evidence'] } },
+  { name: 'growth_add_listing', description: 'Sandton Growth Engine: record one public property listing with its source URL. Mandate status defaults to not_stated. Verified sole/exclusive mandate requires explicit source evidence; never infer it.', parameters: { type: 'object', properties: { listing_url: { type: 'string' }, source_urls: { type: 'array', items: { type: 'string' } }, prospect_id: { type: 'string' }, property_type: { type: 'string' }, suburb: { type: 'string' }, advertised_price: { type: 'string' }, features: { type: 'string' }, listing_status: { type: 'string', enum: ['active', 'inactive', 'unknown'] }, mandate_status: { type: 'string', enum: ['verified', 'unverified', 'not_stated'] }, mandate_evidence: { type: 'string' }, marketing_gap: { type: 'string' }, last_checked_at: { type: 'string' } }, required: ['listing_url', 'source_urls', 'suburb'] } },
+  { name: 'growth_update_prospect', description: 'Sandton Growth Engine: update an outreach draft or consent/opt-out status. This tool never sends messages. Do not mark a prospect contacted or replied; record only events actually completed through an authorised channel.', parameters: { type: 'object', properties: { prospect_id: { type: 'string' }, outreach_status: { type: 'string', enum: ['draft_ready', 'awaiting_consent', 'opted_out', 'closed'] }, outreach_draft: { type: 'string' }, outreach_evidence: { type: 'string' }, next_action: { type: 'string' }, next_action_date: { type: 'string' } }, required: ['prospect_id', 'outreach_status'] } },
+  { name: 'growth_create_campaign', description: 'Create a draft property marketing campaign. Property-specific campaigns remain awaiting_authorisation until the listing agent approves the media and copy. Never publish from this tool.', parameters: { type: 'object', properties: { campaign_name: { type: 'string' }, prospect_id: { type: 'string' }, listing_id: { type: 'string' }, deliverables: { type: 'array', items: { type: 'string' } }, asset_manifest: { type: 'array', items: { type: 'string' } } }, required: ['campaign_name', 'deliverables'] } },
+  { name: 'growth_record_metric', description: 'Record a campaign metric with evidence. Every value is unverified until checked by a human; never invent reach, views, enquiries, viewings or sales.', parameters: { type: 'object', properties: { campaign_id: { type: 'string' }, metric_name: { type: 'string', enum: ['assets_produced', 'assets_approved', 'posts_published', 'reach', 'video_views', 'shares', 'comments', 'enquiries', 'qualified_enquiries', 'viewing_requests', 'viewings_completed', 'sales', 'seconds_worked', 'cost_rand'] }, metric_value: { type: 'number' }, evidence_url: { type: 'string' }, evidence_note: { type: 'string' } }, required: ['campaign_id', 'metric_name', 'metric_value'] } },
+  { name: 'growth_list_database', description: 'List the saved Sandton growth engine prospects, property listings, campaigns, or metrics, including source links and verification status.', parameters: { type: 'object', properties: { dataset: { type: 'string', enum: ['prospects', 'listings', 'campaigns', 'metrics'] }, limit: { type: 'integer' } }, required: ['dataset'] } },
+  { name: 'growth_export_csv', description: 'Export a bounded CSV of saved Sandton growth engine records to the HI Files page. Dangerous spreadsheet formula cells are neutralised.', parameters: { type: 'object', properties: { dataset: { type: 'string', enum: ['prospects', 'listings', 'campaigns', 'metrics'] }, limit: { type: 'integer' } }, required: ['dataset'] } },
 ];
 
 const clip = (s, n) => String(s ?? '').slice(0, n);
+
+const GROWTH_METRICS = new Set(['assets_produced','assets_approved','posts_published','reach','video_views','shares','comments','enquiries','qualified_enquiries','viewing_requests','viewings_completed','sales','seconds_worked','cost_rand']);
+const growthUrl = (raw) => {
+  let u;
+  try { u = new URL(String(raw || '').trim()); } catch { return null; }
+  if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return null;
+  const host = u.hostname.replace(/^\\[|\\]$/g, '').toLowerCase();
+  if (/(^localhost$|\\.local$|\\.internal$)/i.test(host) || (net.isIP(host) && isPrivateIp(host))) return null;
+  u.hash = '';
+  for (const key of [...u.searchParams.keys()]) {
+    if (/^(utm_.+|fbclid|gclid|dclid|mc_cid|mc_eid|ref_src)$/i.test(key)) u.searchParams.delete(key);
+  }
+  return u.toString();
+};
+const growthUrlList = (raw, max = 10) => [...new Set((Array.isArray(raw) ? raw : []).map(growthUrl).filter(Boolean))].slice(0, max);
+const growthScorePart = (v) => {
+  const n = Number(v == null ? 0 : v);
+  return Number.isFinite(n) ? Math.max(0, Math.min(20, Math.round(n))) : 0;
+};
+const growthCsvCell = (v) => {
+  let s = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+  if (/^\\s*[=+\\-@]/.test(s)) s = "'" + s;
+  return '"' + s.replace(/"/g, '""') + '"';
+};
+const growthCsv = (rows) => rows.map((row) => row.map(growthCsvCell).join(',')).join('\\r\\n');
+const growthListLimit = (v) => Math.max(1, Math.min(500, Number.isInteger(Number(v)) ? Number(v) : 100));
+const jsonArray = (v) => Array.isArray(v) ? v : (typeof v === 'string' ? (() => { try { const p=JSON.parse(v); return Array.isArray(p)?p:[]; } catch { return []; } })() : []);
+const mergeUnique = (a, b, max = 20) => [...new Set([...jsonArray(a), ...jsonArray(b)])].slice(0, max);
 
 // ---- Real estate module ----
 export const ESTATE_STAGES = ['enquiry', 'viewing', 'offer', 'otp_signed', 'bond_pending', 'transfer_attorneys', 'registered', 'fallen_through'];
@@ -191,6 +227,165 @@ export async function runTool(name, args, ctx) {
   const { c, tenantId } = ctx;
   if (ctx.principal && ctx.principal !== 'owner' && !EXTERNAL_CONTACT_TOOLS.includes(name)) return 'Not available in this conversation.';
   switch (name) {
+    case 'growth_add_prospect': {
+      const agency = clip(a.agency_name, 180).trim();
+      const agent = clip(a.agent_name, 120).trim();
+      const suburb = clip(a.suburb, 100).trim();
+      const scope = ['core_sandton','surrounding'].includes(a.market_scope) ? a.market_scope : '';
+      const evidence = clip(a.opportunity_evidence, 1500).trim();
+      const sourceUrls = growthUrlList(a.source_urls);
+      if (!agency || !suburb || !scope || !evidence || !sourceUrls.length) return 'Not saved: agency, suburb, market scope, evidence and at least one valid HTTPS source URL are required.';
+      const email = clip(a.public_email, 180).trim().toLowerCase();
+      if (email && !/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email)) return 'Not saved: the public business email is not in a valid format.';
+      const phone = clip(a.public_phone, 50).replace(/[^\\d+]/g, '');
+      const socialUrls = growthUrlList(a.social_urls, 8);
+      const website = growthUrl(a.website_url) || '';
+      const profile = growthUrl(a.profile_url) || '';
+      const scores = {
+        relevance_score: growthScorePart(a.relevance_score),
+        inventory_score: growthScorePart(a.inventory_score),
+        marketing_gap_score: growthScorePart(a.marketing_gap_score),
+        contactability_score: growthScorePart(a.contactability_score),
+        pilot_fit_score: growthScorePart(a.pilot_fit_score)
+      };
+      const score = Object.values(scores).reduce((sum, v) => sum + v, 0);
+      const verificationNotes = clip(a.verification_notes, 1000).trim();
+      const found = (await c.query(
+        "SELECT * FROM growth_prospects WHERE ($1 <> '' AND lower(btrim(public_email))=$1) OR ($2 <> '' AND lower(btrim(agency_name))=lower(btrim($3)) AND lower(btrim(agent_name))=lower(btrim($2))) ORDER BY (lower(btrim(public_email))=$1) DESC NULLS LAST LIMIT 1",
+        [email, agent, agency]
+      )).rows[0];
+      let row, duplicate = false;
+      if (found) {
+        duplicate = true;
+        row = (await c.query(
+          "UPDATE growth_prospects SET public_email=CASE WHEN public_email='' THEN $2 ELSE public_email END, public_phone=CASE WHEN public_phone='' THEN $3 ELSE public_phone END, website_url=CASE WHEN website_url='' THEN $4 ELSE website_url END, profile_url=CASE WHEN profile_url='' THEN $5 ELSE profile_url END, social_urls=$6::jsonb, source_urls=$7::jsonb, opportunity_evidence=CASE WHEN $8='' THEN opportunity_evidence ELSE $8 END, verification_notes=CASE WHEN $9='' THEN verification_notes ELSE $9 END, relevance_score=GREATEST(relevance_score,$10), inventory_score=GREATEST(inventory_score,$11), marketing_gap_score=GREATEST(marketing_gap_score,$12), contactability_score=GREATEST(contactability_score,$13), pilot_fit_score=GREATEST(pilot_fit_score,$14), priority_score=GREATEST(priority_score,$15), last_checked_at=now(), updated_at=now() WHERE id=$1 RETURNING id, agency_name, agent_name, priority_score",
+          [found.id,email,phone,website,profile,JSON.stringify(mergeUnique(found.social_urls,socialUrls,12)),JSON.stringify(mergeUnique(found.source_urls,sourceUrls,20)),evidence,verificationNotes,scores.relevance_score,scores.inventory_score,scores.marketing_gap_score,scores.contactability_score,scores.pilot_fit_score,score]
+        )).rows[0];
+      } else {
+        row = (await c.query(
+          "INSERT INTO growth_prospects (tenant_id,agency_name,agent_name,role,office_branch,suburb,market_scope,website_url,profile_url,public_email,public_phone,social_urls,source_urls,opportunity_evidence,verification_notes,verification_status,relevance_score,inventory_score,marketing_gap_score,contactability_score,pilot_fit_score,priority_score,last_checked_at) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14,'unverified',$15,$16,$17,$18,$19,$20,now()) RETURNING id,agency_name,agent_name,priority_score",
+          [agency,agent,clip(a.role,100),clip(a.office_branch,120),suburb,scope,website,profile,email,phone,JSON.stringify(socialUrls),JSON.stringify(sourceUrls),evidence,verificationNotes,scores.relevance_score,scores.inventory_score,scores.marketing_gap_score,scores.contactability_score,scores.pilot_fit_score,score]
+        )).rows[0];
+      }
+      await audit(c, tenantId, 'agent:' + (ctx.agentName || 'hi'), duplicate ? 'growth.prospect_enriched' : 'growth.prospect_added', { prospect_id: row.id, priority_score: row.priority_score, market_scope: scope });
+      return (duplicate ? 'Existing prospect enriched: ' : 'Prospect saved: ') + row.agency_name + (row.agent_name ? ' / ' + row.agent_name : '') + '. Scope: ' + scope + '; priority score ' + row.priority_score + '/100; status unverified; sources recorded: ' + sourceUrls.length + '. No outreach was sent.';
+    }
+    case 'growth_add_listing': {
+      const url = growthUrl(a.listing_url);
+      const sources = growthUrlList(a.source_urls);
+      const suburb = clip(a.suburb, 100).trim();
+      if (!url || !suburb || !sources.length) return 'Not saved: listing URL and suburb are required, and at least one valid HTTPS source URL must be recorded.';
+      const prospectId = clip(a.prospect_id, 50).trim();
+      if (prospectId && !/^[0-9a-f-]{36}$/i.test(prospectId)) return 'Not saved: invalid prospect id.';
+      if (prospectId && !(await c.query('SELECT 1 FROM growth_prospects WHERE id=$1', [prospectId])).rowCount) return 'Not saved: prospect not found in this account.';
+      const mandate = ['verified','unverified','not_stated'].includes(a.mandate_status) ? a.mandate_status : 'not_stated';
+      const mandateEvidence = clip(a.mandate_evidence, 1000).trim();
+      if (mandate === 'verified' && (!mandateEvidence || !sources.length)) return 'Not saved: a verified mandate requires explicit mandate wording and its source evidence.';
+      const listingStatus = ['active','inactive','unknown'].includes(a.listing_status) ? a.listing_status : 'unknown';
+      const checkedAt = a.last_checked_at && !Number.isNaN(Date.parse(a.last_checked_at)) ? new Date(a.last_checked_at).toISOString() : null;
+      const existing = (await c.query('SELECT * FROM growth_listings WHERE listing_url=$1 ORDER BY created_at DESC LIMIT 1', [url])).rows[0];
+      let row, duplicate = false;
+      if (existing) {
+        duplicate = true;
+        row = (await c.query(
+          "UPDATE growth_listings SET source_urls=$2::jsonb, prospect_id=COALESCE(prospect_id,$3), property_type=CASE WHEN property_type='' THEN $4 ELSE property_type END, suburb=CASE WHEN suburb='' THEN $5 ELSE suburb END, advertised_price=CASE WHEN advertised_price='' THEN $6 ELSE advertised_price END, features=CASE WHEN features='' THEN $7 ELSE features END, listing_status=CASE WHEN $8='unknown' THEN listing_status ELSE $8 END, mandate_status=CASE WHEN $9='verified' AND $10<>'' THEN 'verified' WHEN $9='unverified' AND mandate_status<>'verified' THEN 'unverified' ELSE mandate_status END, mandate_evidence=CASE WHEN $10='' THEN mandate_evidence ELSE $10 END, marketing_gap=CASE WHEN $11='' THEN marketing_gap ELSE $11 END, last_checked_at=COALESCE($12::timestamptz,now()), updated_at=now() WHERE id=$1 RETURNING id,listing_url,suburb,mandate_status,listing_status",
+          [existing.id,JSON.stringify(mergeUnique(existing.source_urls,sources,20)),prospectId||null,clip(a.property_type,100),suburb,clip(a.advertised_price,100),clip(a.features,1200),listingStatus,mandate,mandateEvidence,clip(a.marketing_gap,1000),checkedAt]
+        )).rows[0];
+      } else {
+        row = (await c.query(
+          "INSERT INTO growth_listings (tenant_id,prospect_id,listing_url,source_urls,property_type,suburb,advertised_price,features,listing_status,mandate_status,mandate_evidence,marketing_gap,last_checked_at) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,COALESCE($12::timestamptz,now())) RETURNING id,listing_url,suburb,mandate_status,listing_status",
+          [prospectId||null,url,JSON.stringify(sources),clip(a.property_type,100),suburb,clip(a.advertised_price,100),clip(a.features,1200),listingStatus,mandate,mandateEvidence,clip(a.marketing_gap,1000),checkedAt]
+        )).rows[0];
+      }
+      await audit(c, tenantId, 'agent:' + (ctx.agentName || 'hi'), duplicate ? 'growth.listing_enriched' : 'growth.listing_added', { listing_id: row.id, mandate_status: row.mandate_status, listing_status: row.listing_status });
+      return (duplicate ? 'Existing listing enriched: ' : 'Listing saved: ') + row.suburb + '; status ' + row.listing_status + '; mandate ' + row.mandate_status + '. ' + row.listing_url;
+    }
+    case 'growth_update_prospect': {
+      const id = clip(a.prospect_id, 50).trim();
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return 'Prospect not updated: invalid prospect id.';
+      const status = ['draft_ready','awaiting_consent','opted_out','closed'].includes(a.outreach_status) ? a.outreach_status : '';
+      if (!status) return 'Prospect not updated: unsupported status.';
+      const current = (await c.query('SELECT id,outreach_status,opted_out_at FROM growth_prospects WHERE id=$1 FOR UPDATE', [id])).rows[0];
+      if (!current) return 'Prospect not found in this account.';
+      if (current.opted_out_at && status !== 'opted_out') return 'This prospect opted out and cannot be reactivated by the agent tool.';
+      const draft = clip(a.outreach_draft, 6000).trim(), evidence = clip(a.outreach_evidence, 1200).trim();
+      if (status === 'draft_ready' && !draft) return 'A personalised outreach draft is required for draft_ready.';
+      if (status === 'closed' && !evidence) return 'A short reason is required before closing a prospect.';
+      if (status === 'awaiting_consent' && !evidence) return 'Record the lawful contact channel or required consent step before placing this in awaiting_consent.';
+      const nextDate = a.next_action_date && /^\\d{4}-\\d{2}-\\d{2}$/.test(String(a.next_action_date)) ? String(a.next_action_date) : null;
+      await c.query(
+        "UPDATE growth_prospects SET outreach_status=$2, outreach_draft=CASE WHEN $3='' THEN outreach_draft ELSE $3 END, outreach_evidence=CASE WHEN $4='' THEN outreach_evidence ELSE $4 END, next_action=CASE WHEN $5='' THEN next_action ELSE $5 END, next_action_date=$6::date, opted_out_at=CASE WHEN $2='opted_out' THEN COALESCE(opted_out_at,now()) ELSE opted_out_at END, updated_at=now() WHERE id=$1",
+        [id,status,draft,evidence,clip(a.next_action,250).trim(),nextDate]
+      );
+      await audit(c, tenantId, 'agent:' + (ctx.agentName || 'hi'), status === 'opted_out' ? 'growth.prospect_opted_out' : 'growth.prospect_updated', { prospect_id: id, outreach_status: status });
+      return 'Prospect updated to ' + status + '. No message was sent.';
+    }
+    case 'growth_create_campaign': {
+      const campaignName = clip(a.campaign_name, 180).trim();
+      const deliverables = Array.isArray(a.deliverables) ? a.deliverables.map((x) => clip(x, 250).trim()).filter(Boolean).slice(0, 20) : [];
+      const manifest = Array.isArray(a.asset_manifest) ? a.asset_manifest.map((x) => clip(x, 500).trim()).filter(Boolean).slice(0, 40) : [];
+      if (!campaignName || !deliverables.length) return 'Campaign not created: a name and at least one deliverable are required.';
+      const prospectId = clip(a.prospect_id, 50).trim(), listingId = clip(a.listing_id, 50).trim();
+      if ((prospectId && !/^[0-9a-f-]{36}$/i.test(prospectId)) || (listingId && !/^[0-9a-f-]{36}$/i.test(listingId))) return 'Campaign not created: invalid prospect or listing id.';
+      if (prospectId && !(await c.query('SELECT 1 FROM growth_prospects WHERE id=$1', [prospectId])).rowCount) return 'Campaign not created: prospect not found in this account.';
+      if (listingId && !(await c.query('SELECT 1 FROM growth_listings WHERE id=$1', [listingId])).rowCount) return 'Campaign not created: listing not found in this account.';
+      const needsApproval = Boolean(listingId);
+      const row = (await c.query(
+        "INSERT INTO growth_campaigns (tenant_id,prospect_id,listing_id,name,status,authorisation_status,deliverables,asset_manifest) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6::jsonb,$7::jsonb) RETURNING id,name,status,authorisation_status",
+        [prospectId||null,listingId||null,campaignName,needsApproval?'awaiting_authorisation':'draft',needsApproval?'pending':'not_requested',JSON.stringify(deliverables),JSON.stringify(manifest)]
+      )).rows[0];
+      await audit(c, tenantId, 'agent:' + (ctx.agentName || 'hi'), 'growth.campaign_created', { campaign_id: row.id, status: row.status, authorisation_status: row.authorisation_status });
+      return 'Campaign saved: ' + row.name + '; status ' + row.status + '; authorisation ' + row.authorisation_status + '. This records a draft only. No posting, account access or media use occurred.';
+    }
+    case 'growth_record_metric': {
+      const id = clip(a.campaign_id, 50).trim();
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return 'Metric not saved: invalid campaign id.';
+      if (!(await c.query('SELECT 1 FROM growth_campaigns WHERE id=$1', [id])).rowCount) return 'Metric not saved: campaign not found in this account.';
+      const name = String(a.metric_name || ''), value = Number(a.metric_value);
+      if (!GROWTH_METRICS.has(name) || !Number.isFinite(value) || value < 0 || value > 1e12) return 'Metric not saved: metric type or non-negative value is invalid.';
+      const evidenceUrl = a.evidence_url ? growthUrl(a.evidence_url) : null;
+      const evidenceNote = clip(a.evidence_note, 1000).trim();
+      if (a.evidence_url && !evidenceUrl) return 'Metric not saved: evidence URL must be a valid public HTTPS URL.';
+      if (!evidenceUrl && !evidenceNote) return 'Metric not saved: provide a source URL or an evidence note.';
+      const row = (await c.query(
+        "INSERT INTO growth_metrics (tenant_id,campaign_id,metric_name,metric_value,evidence_url,evidence_note,verification_status,verified) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5,$6,false) RETURNING id,metric_name,metric_value,verification_status,verified",
+        [id,name,value,evidenceUrl||'',evidenceNote,evidenceUrl?'source_linked':'unverified']
+      )).rows[0];
+      await audit(c, tenantId, 'agent:' + (ctx.agentName || 'hi'), 'growth.metric_recorded', { metric_id: row.id, campaign_id: id, metric: name, verified: false });
+      return 'Recorded ' + row.metric_name + '=' + row.metric_value + '. Verification status ' + row.verification_status + '; verified=false until a human checks the evidence.';
+    }
+    case 'growth_list_database': {
+      const dataset = String(a.dataset || ''), limit = growthListLimit(a.limit);
+      let rows = [];
+      if (dataset === 'prospects') rows = (await c.query('SELECT id,agency_name,agent_name,role,suburb,market_scope,public_email,public_phone,priority_score,verification_status,source_urls,outreach_status,next_action,next_action_date FROM growth_prospects ORDER BY priority_score DESC,created_at DESC LIMIT $1',[limit])).rows;
+      else if (dataset === 'listings') rows = (await c.query('SELECT id,listing_url,suburb,property_type,advertised_price,listing_status,mandate_status,mandate_evidence,source_urls,marketing_gap,last_checked_at FROM growth_listings ORDER BY updated_at DESC LIMIT $1',[limit])).rows;
+      else if (dataset === 'campaigns') rows = (await c.query('SELECT id,name,status,authorisation_status,deliverables,asset_manifest,created_at FROM growth_campaigns ORDER BY created_at DESC LIMIT $1',[limit])).rows;
+      else if (dataset === 'metrics') rows = (await c.query('SELECT id,campaign_id,metric_name,metric_value,evidence_url,evidence_note,verification_status,verified,measured_at FROM growth_metrics ORDER BY measured_at DESC LIMIT $1',[limit])).rows;
+      else return 'Choose a dataset: prospects, listings, campaigns or metrics.';
+      return rows.length ? UNTRUSTED(rows.map((x)=>JSON.stringify(x)).join('\\n')) : 'No ' + dataset + ' records have been saved yet.';
+    }
+    case 'growth_export_csv': {
+      const dataset = String(a.dataset || ''), limit = growthListLimit(a.limit);
+      let cols = [], rows = [];
+      if (dataset === 'prospects') {
+        cols = ['id','agency_name','agent_name','role','office_branch','suburb','market_scope','website_url','profile_url','public_email','public_phone','social_urls','source_urls','opportunity_evidence','verification_notes','verification_status','relevance_score','inventory_score','marketing_gap_score','contactability_score','pilot_fit_score','priority_score','outreach_status','outreach_draft','outreach_evidence','next_action','next_action_date','last_checked_at','last_verified_at'];
+        rows = (await c.query('SELECT id,agency_name,agent_name,role,office_branch,suburb,market_scope,website_url,profile_url,public_email,public_phone,social_urls,source_urls,opportunity_evidence,verification_notes,verification_status,relevance_score,inventory_score,marketing_gap_score,contactability_score,pilot_fit_score,priority_score,outreach_status,outreach_draft,outreach_evidence,next_action,next_action_date,last_checked_at,last_verified_at FROM growth_prospects ORDER BY priority_score DESC,created_at DESC LIMIT $1',[limit])).rows;
+      } else if (dataset === 'listings') {
+        cols = ['id','prospect_id','listing_url','source_urls','property_type','suburb','advertised_price','features','listing_status','mandate_status','mandate_evidence','marketing_gap','last_checked_at'];
+        rows = (await c.query('SELECT id,prospect_id,listing_url,source_urls,property_type,suburb,advertised_price,features,listing_status,mandate_status,mandate_evidence,marketing_gap,last_checked_at FROM growth_listings ORDER BY updated_at DESC LIMIT $1',[limit])).rows;
+      } else if (dataset === 'campaigns') {
+        cols = ['id','prospect_id','listing_id','name','status','authorisation_status','deliverables','asset_manifest','created_at'];
+        rows = (await c.query('SELECT id,prospect_id,listing_id,name,status,authorisation_status,deliverables,asset_manifest,created_at FROM growth_campaigns ORDER BY created_at DESC LIMIT $1',[limit])).rows;
+      } else if (dataset === 'metrics') {
+        cols = ['id','campaign_id','metric_name','metric_value','evidence_url','evidence_note','verification_status','verified','measured_at'];
+        rows = (await c.query('SELECT id,campaign_id,metric_name,metric_value,evidence_url,evidence_note,verification_status,verified,measured_at FROM growth_metrics ORDER BY measured_at DESC LIMIT $1',[limit])).rows;
+      } else return 'Choose a dataset: prospects, listings, campaigns or metrics.';
+      const csv = growthCsv([cols,...rows.map((x)=>cols.map((col)=>x[col]))]);
+      const stamp = new Date().toISOString().slice(0,10);
+      const file = await saveFile(c,{tenantId,agentId:ctx.agentId,filename:'sandton-' + dataset + '-' + stamp,format:'csv',content:csv,actor:'agent:' + (ctx.agentName||'hi')});
+      if (file.error) return file.error;
+      return 'Export saved as "' + file.filename + '" in Files (' + rows.length + ' records, max ' + limit + ').';
+    }
     case 'remember': {
       const kind = a.kind === 'core' ? 'core' : 'archival';
       const content = clip(a.content, 1000).trim();
