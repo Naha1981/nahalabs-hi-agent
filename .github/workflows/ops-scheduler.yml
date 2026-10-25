@@ -1,0 +1,66 @@
+name: HI free-tier scheduler
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+    - cron: '10 * * * *'
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: Job to run manually
+        type: choice
+        required: true
+        options:
+          - tasks
+          - morning-brief
+          - viewing-reminders
+          - doc-reminders
+          - both-reminders
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call HI scheduler when repository secrets are configured
+        env:
+          HI_BASE_URL: ${{ secrets.HI_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          REQUESTED_JOB: ${{ inputs.job }}
+        run: |
+          node --input-type=module <<'NODE'
+          const base = (process.env.HI_BASE_URL || '').trim();
+          const secret = process.env.CRON_SECRET || '';
+          if (!base || !secret) {
+            console.log('Skipped: configure repository Actions secrets HI_BASE_URL and CRON_SECRET.');
+            process.exit(0);
+          }
+          let parsed;
+          try { parsed = new URL(base); } catch { throw new Error('HI_BASE_URL is not a valid URL'); }
+          if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new Error('HI_BASE_URL must be a public HTTPS URL without credentials');
+          let jobs;
+          if (process.env.EVENT_NAME === 'workflow_dispatch') {
+            jobs = [process.env.REQUESTED_JOB || 'tasks'];
+          } else if (process.env.SCHEDULE === '0 5 * * *') {
+            jobs = ['morning-brief'];
+          } else if (process.env.SCHEDULE === '10 * * * *') {
+            jobs = ['viewing-reminders', 'doc-reminders'];
+          } else {
+            jobs = ['tasks'];
+          }
+          for (const job of jobs) {
+            const url = new URL('/internal/run?job=' + encodeURIComponent(job), parsed);
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: { 'x-cron-secret': secret, 'content-type': 'application/json' },
+              body: '{}',
+              signal: AbortSignal.timeout(55000)
+            });
+            const body = await response.text();
+            if (!response.ok) throw new Error('HI scheduler job ' + job + ' failed with HTTP ' + response.status + ': ' + body.slice(0,300));
+            console.log('HI scheduler job ' + job + ' accepted; HTTP ' + response.status);
+          }
+          NODE

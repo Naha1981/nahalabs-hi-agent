@@ -2,25 +2,49 @@ name: browser-job
 on:
   workflow_dispatch:
     inputs:
-      job_id: { required: true }
-      token: { required: true }
-      base_url: { required: true }
+      job_id: { required: true, type: string }
+      token: { required: true, type: string }
+      base_url: { required: true, type: string }
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Mask token
-        run: echo "::add-mask::${{ inputs.token }}"
+        env:
+          JOB_TOKEN: ${{ inputs.token }}
+        run: echo "::add-mask::$JOB_TOKEN"
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with:
+          node-version: 22
       - run: npm i --no-save --no-audit --no-fund playwright-core@1.49.0
       - name: Fetch job
         id: job
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          JOB_TOKEN: ${{ inputs.token }}
+          BASE_URL: ${{ inputs.base_url }}
         run: |
-          START_URL=$(curl -sf -X POST "${{ inputs.base_url }}/internal/browser/start" -H 'content-type: application/json' -d "{\"job_id\":\"${{ inputs.job_id }}\",\"token\":\"${{ inputs.token }}\"}" | jq -r .start_url)
-          echo "::add-mask::$START_URL" ; echo "start_url=$START_URL" >> $GITHUB_OUTPUT
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          let base;
+          try { base = new URL(process.env.BASE_URL); } catch { throw new Error('Invalid base URL'); }
+          if (base.protocol !== 'https:' || base.username || base.password) throw new Error('Base URL must be public HTTPS without credentials');
+          const response = await fetch(new URL('/internal/browser/start', base), {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ job_id: process.env.JOB_ID, token: process.env.JOB_TOKEN })
+          });
+          if (!response.ok) throw new Error('Browser job fetch failed: HTTP ' + response.status);
+          const data = await response.json();
+          const start = new URL(data.start_url);
+          if (start.protocol !== 'https:' || start.username || start.password) throw new Error('Unsafe start URL returned');
+          const line = 'start_url=' + start.toString() + '\n';
+          appendFileSync(process.env.GITHUB_OUTPUT, line);
+          console.log('::add-mask::' + start.toString());
+          NODE
       - name: Run browser
         env:
           JOB_ID: ${{ inputs.job_id }}
