@@ -503,7 +503,8 @@ CREATE TABLE IF NOT EXISTS growth_prospects (
   last_verified_at timestamptz,
   opted_out_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, id)
 );
 CREATE INDEX IF NOT EXISTS growth_prospects_priority ON growth_prospects (tenant_id, priority_score DESC, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS growth_prospects_email_unique ON growth_prospects (tenant_id, lower(btrim(public_email))) WHERE public_email <> '';
@@ -512,7 +513,7 @@ CREATE INDEX IF NOT EXISTS growth_prospects_name_lookup ON growth_prospects (ten
 CREATE TABLE IF NOT EXISTS growth_listings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  prospect_id uuid REFERENCES growth_prospects(id) ON DELETE SET NULL,
+  prospect_id uuid,
   listing_url text NOT NULL,
   source_urls jsonb NOT NULL DEFAULT '[]',
   property_type text NOT NULL DEFAULT '',
@@ -526,7 +527,9 @@ CREATE TABLE IF NOT EXISTS growth_listings (
   last_checked_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (tenant_id, listing_url)
+  UNIQUE (tenant_id, id),
+  UNIQUE (tenant_id, listing_url),
+  FOREIGN KEY (tenant_id, prospect_id) REFERENCES growth_prospects(tenant_id, id)
 );
 CREATE INDEX IF NOT EXISTS growth_listings_suburb ON growth_listings (tenant_id, suburb, listing_status);
 CREATE INDEX IF NOT EXISTS growth_listings_prospect ON growth_listings (tenant_id, prospect_id) WHERE prospect_id IS NOT NULL;
@@ -534,8 +537,8 @@ CREATE INDEX IF NOT EXISTS growth_listings_prospect ON growth_listings (tenant_i
 CREATE TABLE IF NOT EXISTS growth_campaigns (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  prospect_id uuid REFERENCES growth_prospects(id) ON DELETE SET NULL,
-  listing_id uuid REFERENCES growth_listings(id) ON DELETE SET NULL,
+  prospect_id uuid,
+  listing_id uuid,
   name text NOT NULL,
   status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','awaiting_authorisation','approved','published','completed','cancelled')),
   authorisation_status text NOT NULL DEFAULT 'not_requested' CHECK (authorisation_status IN ('not_requested','pending','approved','rejected')),
@@ -543,14 +546,17 @@ CREATE TABLE IF NOT EXISTS growth_campaigns (
   asset_manifest jsonb NOT NULL DEFAULT '[]',
   approval_notes text NOT NULL DEFAULT '',
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, id),
+  FOREIGN KEY (tenant_id, prospect_id) REFERENCES growth_prospects(tenant_id, id),
+  FOREIGN KEY (tenant_id, listing_id) REFERENCES growth_listings(tenant_id, id)
 );
 CREATE INDEX IF NOT EXISTS growth_campaigns_created ON growth_campaigns (tenant_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS growth_metrics (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  campaign_id uuid NOT NULL REFERENCES growth_campaigns(id) ON DELETE CASCADE,
+  campaign_id uuid NOT NULL,
   metric_name text NOT NULL CHECK (metric_name IN ('assets_produced','assets_approved','posts_published','reach','video_views','shares','comments','enquiries','qualified_enquiries','viewing_requests','viewings_completed','sales','seconds_worked','cost_rand')),
   metric_value numeric(14,2) NOT NULL CHECK (metric_value >= 0),
   evidence_url text NOT NULL DEFAULT '',
@@ -558,7 +564,8 @@ CREATE TABLE IF NOT EXISTS growth_metrics (
   verification_status text NOT NULL DEFAULT 'unverified' CHECK (verification_status IN ('unverified','source_linked','human_verified')),
   verified boolean NOT NULL DEFAULT false,
   measured_at timestamptz NOT NULL DEFAULT now(),
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (tenant_id, campaign_id) REFERENCES growth_campaigns(tenant_id, id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS growth_metrics_campaign ON growth_metrics (tenant_id, campaign_id, measured_at DESC);
 

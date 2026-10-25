@@ -50,7 +50,7 @@ test('prospects deduplicate, preserve source links and score transparently', asy
     agency_name:'Different agency label from the same verified email',agent_name:'Sipho Mokoena',
     suburb:'Sandton Central',market_scope:'core_sandton',
     public_email:'SIPHO@ALPHA.EXAMPLE.TEST',
-    source_urls:['https://alpha.example.test/agents/sipho?utm_campaign=second-source'],
+    source_urls:['https://alpha.example.test/agents/sipho/listing-performance'],
     opportunity_evidence:'Second source checked; no direct video observed in the sampled listing pages.'
   });
   assert.match(dup,/Existing prospect enriched/);
