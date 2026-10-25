@@ -7,6 +7,7 @@ import { ensureDefaultAgent, runAgent } from '../src/agent.js';
 import { runTool } from '../src/tools.js';
 import { decideApproval } from '../src/core.js';
 import { buildMorningBriefs } from '../src/brief.js';
+import { ensureBuiltinSkills, getSkill } from '../src/skills.js';
 
 process.env.HI_INVITE_CODES = 'invite-test-code'; process.env.SIGNUP_RATE_MAX = '100';
 process.env.CRON_SECRET = 'cron-test-secret-value'; process.env.SESSION_SECRET = 'session-secret-for-tests';
@@ -245,4 +246,14 @@ test('production boot refuses to start without session or cron secrets', async (
     if (saved.NODE_ENV === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = saved.NODE_ENV;
     process.env.SESSION_SECRET = saved.SESSION_SECRET; process.env.CRON_SECRET = saved.CRON_SECRET;
   }
+});
+test('Sandton growth operator is source-first, R0 and limited to research/export tools', async () => {
+  await ensureBuiltinSkills(A.tenantId);
+  const skill = await getSkill(A.tenantId, 'sandton-growth-operator');
+  assert.ok(skill, 'built-in Sandton growth specialist is available');
+  assert.deepEqual([...skill.tools].sort(), ['create_file', 'fetch_url', 'plan', 'recall', 'web_search'].sort());
+  assert.match(skill.instructions, /R0/);
+  assert.match(skill.instructions, /source URLs and a checked date/);
+  assert.match(skill.instructions, /mandate status only as verified/);
+  assert.match(skill.instructions, /Never publish property content or contact prospects/);
 });

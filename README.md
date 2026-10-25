@@ -8,7 +8,8 @@ HI is NahaLabs' multi-tenant AI employee platform. The Opportunity Desk module f
 - Customer-connected Gmail/Outlook/Calendar over OAuth: the agent can search mail, list upcoming events, and draft emails and events. Sends and creates execute only after approval in the queue.
 - Controlled browser jobs on isolated GitHub Actions runners: read or click through public sites; passwords/cards/codes refused, risky clicks wait for approval, one-job tokens, same-site only.
 - Phone bridge (opt-in): the agent can propose tasks for a paired Android phone - open apps, read the screen, tap and type. Every task waits in the approval queue; the bridge app on the customer's own machine runs only approved tasks and reports back.
-- WhatsApp connector (engine-agnostic): reply-only to saved contacts, caps, no outbound-first messages.
+- WhatsApp connector (engine-agnostic): inbound messages from saved contacts are handled as external contacts with a minimal public-listing/viewing tool allowlist. Model-generated replies are saved as drafts and are sent only after an owner approves them in the approval queue; unknown senders are ignored, with per-contact and per-tenant caps and no outbound-first messages.
+- Sandton Real Estate Growth Operator specialist: source-backed Greater Sandton agent/listing research, explicit mandate-status labels, evidence-based prospect scoring, and CSV/XLSX export. It drafts property marketing copy, caption variants, a poster brief, vertical-video storyboard, lead-tracking sheet and weekly report template. It does not publish property content or send prospect outreach.
 - Voice turns (Drive Companion slice 1): the Drive page records speech, transcribes it (Groq Whisper), runs it through the shared agent with a hands-free driving policy, and speaks the answer (Groq Orpheus TTS with browser-speech fallback). Approvals stay in the queue.
 - Agent file generation (csv, md, txt and genuine xlsx workbooks) with downloads and API reads.
 - Approval queue, per-account pause, global emergency stop, append-only audit log, morning brief (approval-gated, per-tenant auto-send opt-in), public /v1 API with tenant keys.
@@ -19,7 +20,7 @@ No bid submission, no payments, no unofficial WhatsApp techniques, no reading of
 ## Safety design
 - Tenant isolation is enforced in Postgres with row-level security (FORCE RLS). The app connects as `hi_app` (no BYPASSRLS, not table owner). Every tenant query runs in a transaction that sets `app.tenant_id`.
 - Tender, web, email and page content is untrusted data: escaped on screen, redacted before model calls, never allowed to select tools or actions.
-- Every action that leaves the account (email, calendar event, browser task, risky browser click) is a proposal until a signed-in customer approves it. Pause and emergency stop are re-checked at execution time.
+- Every action that leaves the account (email, calendar event, browser task, risky browser click, and model-generated WhatsApp reply) is a proposal until a signed-in customer approves it. Pause and emergency stop are re-checked at execution time.
 
 ## Run locally
 ```

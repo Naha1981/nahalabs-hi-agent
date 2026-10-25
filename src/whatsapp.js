@@ -36,11 +36,19 @@ export async function handleInbound({ to, from, text, externalId, llm, fetchImpl
   const r = await runAgent({ tenantId, userEmail: gate.email, agentId: ch.agent_id, conversationId: gate.conversationId, userText: `WhatsApp message from ${gate.contact.name || 'a saved contact'}: ${gate.body}`, llm, fetchImpl, lookup, principal: 'external_contact' });
   if (r.error) return { status: 200, ignored: r.error };
   const reply = String(r.answer).replace(/\*\*/g, '*').slice(0, 1500);
-  await withTenant(tenantId, (c) => c.query("INSERT INTO wa_messages (tenant_id, phone, direction, body, status, conversation_id) VALUES (current_setting('app.tenant_id')::uuid,$1,'out',$2,'queued',$3)", [fromN, reply, r.conversationId]));
-  let sent = 'queued';
-  try { if (adapter) { await adapter({ engine: ch.engine, from: toN, to: fromN, text: reply }); sent = 'sent'; } } catch { sent = 'failed'; }
-  await withTenant(tenantId, async (c) => { await c.query("UPDATE wa_messages SET status=$2 WHERE tenant_id=current_setting('app.tenant_id')::uuid AND direction='out' AND status='queued' AND phone=$1", [fromN, sent]); await audit(c, tenantId, 'agent:whatsapp', 'wa.replied', { status: sent }); });
-  return { status: 200, replied: true, delivery: sent, reply };
+  // A saved contact is still an external contact, not the account owner. Never send
+  // model-generated text directly to them: persist a draft and require owner approval.
+  const proposal = await withTenant(tenantId, async (c) => {
+    const message = (await c.query(
+      "INSERT INTO wa_messages (tenant_id, phone, direction, body, status, conversation_id) VALUES (current_setting('app.tenant_id')::uuid,$1,'out',$2,'queued',$3) RETURNING id",
+      [fromN, reply, r.conversationId])).rows[0];
+    const approval = (await c.query(
+      "INSERT INTO approvals (tenant_id, kind, summary, payload, proposed_by) VALUES (current_setting('app.tenant_id')::uuid,'send_whatsapp_reply',$1,$2,'agent:whatsapp') RETURNING id",
+      [`WhatsApp reply to ${gate.contact.name || fromN}`, JSON.stringify({ message_id: message.id, from: toN, to: fromN, text: reply, engine: ch.engine })])).rows[0];
+    await audit(c, tenantId, 'agent:whatsapp', 'wa.reply_proposed', { approval_id: approval.id, message_id: message.id });
+    return { approvalId: approval.id };
+  });
+  return { status: 200, replied: false, awaiting_approval: true, delivery: 'awaiting_approval', approval_id: proposal.approvalId, reply };
 }
 
 // Default adapter. The simulator keeps replies in wa_messages only. A real engine plugs in here once a number is linked.
