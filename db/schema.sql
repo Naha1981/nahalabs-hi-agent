@@ -569,7 +569,7 @@ CREATE TABLE IF NOT EXISTS growth_metrics (
 );
 CREATE INDEX IF NOT EXISTS growth_metrics_campaign ON growth_metrics (tenant_id, campaign_id, measured_at DESC);
 
-DO $
+DO $growth_rls$
 DECLARE t text;
 BEGIN
   FOREACH t IN ARRAY ARRAY['growth_prospects','growth_listings','growth_campaigns','growth_metrics']
@@ -581,7 +581,7 @@ BEGIN
       USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
       WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)$f$, t);
   END LOOP;
-END $;
+END $growth_rls$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON growth_prospects, growth_listings, growth_campaigns, growth_metrics TO hi_app;
 
 -- ===== Customer document uploads (Slice 2): OTPs, FICA packs, leases uploaded in the app =====
