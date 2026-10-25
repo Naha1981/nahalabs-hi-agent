@@ -51,13 +51,16 @@ test('prospects deduplicate, preserve source links and score transparently', asy
     suburb:'Sandton Central',market_scope:'core_sandton',
     public_email:'SIPHO@ALPHA.EXAMPLE.TEST',
     source_urls:['https://alpha.example.test/agents/sipho/listing-performance'],
-    opportunity_evidence:'Second source checked; no direct video observed in the sampled listing pages.'
+    opportunity_evidence:'Second source checked; no direct video observed in the sampled listing pages.',
+    relevance_score:20,inventory_score:20,marketing_gap_score:20,contactability_score:20,pilot_fit_score:20
   });
   assert.match(dup,/Existing prospect enriched/);
-  const rows=await withTenant(A.tenantId,c=>c.query("SELECT id,source_urls FROM growth_prospects WHERE public_email='sipho@alpha.example.test'"));
+  const rows=await withTenant(A.tenantId,c=>c.query("SELECT id,source_urls,priority_score,relevance_score,inventory_score,marketing_gap_score,contactability_score,pilot_fit_score FROM growth_prospects WHERE public_email='sipho@alpha.example.test'"));
   assert.equal(rows.rowCount,1);
   assert.equal(rows.rows[0].id,row1.id);
   assert.equal(rows.rows[0].source_urls.length,3);
+  assert.equal(rows.rows[0].priority_score,100);
+  assert.equal([rows.rows[0].relevance_score,rows.rows[0].inventory_score,rows.rows[0].marketing_gap_score,rows.rows[0].contactability_score,rows.rows[0].pilot_fit_score].reduce((sum,n)=>sum+n,0),100);
 });
 
 test('listing mandates default safely, canonical URLs deduplicate, campaigns await permission', async () => {

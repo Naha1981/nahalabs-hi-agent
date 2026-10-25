@@ -58,6 +58,6 @@ Metric rows require a note or HTTPS evidence URL and always store verified=false
 - **Budget:** R0. No subscriptions, paid credits, advertising, or paid APIs were added.
 - **Data and CSV exports:** available as tenant-isolated database tools and downloadable HI Files.
 - **Scheduled jobs:** the repository workflow calls HI’s internal scheduler only after Actions secrets HI_BASE_URL and CRON_SECRET exist. The workflow will skip when they are absent.
-- **Migration:** apply db/schema.sql using the privileged MIGRATE_DATABASE_URL before deploying this branch; never put that URL in browser/public client code.
+- **Migration:** the existing server startup hook applies db/schema.sql when the privileged MIGRATE_DATABASE_URL is configured. Configure it only as a server-side secret; never place it in browser/public client code. A deploy/restart was not performed as part of this change.
 - **Real media production/publishing:** not implemented here. It requires authorised source media and a verified, no-cost tool with commercial rights.
 - **Verification:** source URLs are recorded, but this branch cannot certify that an external listing is still active; manually recheck it before campaign use.

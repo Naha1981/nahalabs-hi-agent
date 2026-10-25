@@ -35,7 +35,7 @@ An external cron service calls `POST /internal/run?job=ingest|match|brief|tasks|
 ## Environment
 Every variable the code reads is documented in `.env.example`, with where to get it and what it costs. Everything on the default path is free tier or open source.
 
-The Sandton operator is research-and-draft-first. Records start unverified, all property-specific campaigns remain awaiting authorisation, performance data remains unverified, and the tools never publish posts or send prospecting messages. Real photo/video production needs media supplied or authorised by the listing agent and a free tool with lawful commercial rights. This branch does not implement an image/video generator.
+The Sandton operator is research-and-draft-first. Records start unverified, all property-specific campaigns remain awaiting authorisation, performance data remains unverified, and the growth tools never publish posts or send prospecting messages. Real photo/video production needs media supplied or authorised by the listing agent and a free tool with lawful commercial rights. This branch does not implement an image/video generator. When `MIGRATE_DATABASE_URL` is configured in the runtime environment, the existing startup migration hook applies `db/schema.sql`; the privileged URL must remain a server-side secret. Do not configure it in client code.
 
 ## Free-tier limits
 Render free web services sleep after 15 minutes idle. Supabase free pauses after a week of low activity. Resend free allows 100 emails a day. Groq free tier caps tokens and audio seconds per day. See the Drive Companion blueprint in Notion for the Oracle Cloud deployment direction.
