@@ -6,6 +6,7 @@ import { buildApp } from '../src/server.js';
 import { ensureDefaultAgent } from '../src/agent.js';
 import { normalisePhone, parseMetaWebhook, makeAdapter } from '../src/whatsapp.js';
 import { createHmac } from 'node:crypto';
+import { decideApproval } from '../src/core.js';
 
 process.env.HI_INVITE_CODES = 'invite-test-code'; process.env.SIGNUP_RATE_MAX = '100'; process.env.CRON_SECRET = 'cron-test-secret-value';
 process.env.SESSION_SECRET = 'session-secret-for-tests'; process.env.WA_INBOUND_SECRET = 'wa-secret-for-tests'; delete process.env.GROQ_API_KEY;
@@ -35,12 +36,35 @@ test('inbound needs the shared secret', async () => {
   assert.equal((await app.inject({ method: 'POST', url: '/internal/wa/inbound', payload: {} })).statusCode, 401);
 });
 
-test('saved contact gets a reply; reply is stored; duplicates are ignored', async () => {
+test('saved contact replies wait for owner approval; approved delivery is tracked; duplicates are ignored', async () => {
   const r = await inbound({ to: '27821110001', from: '27829990001', text: 'What tenders closed today?', id: 'm1' });
-  const j = r.json(); assert.equal(j.replied, true); assert.equal(j.reply, 'Hello from HI');
+  const j = r.json();
+  assert.equal(j.replied, false, 'no model-generated reply is sent automatically');
+  assert.equal(j.awaiting_approval, true);
+  assert.equal(j.reply, 'Hello from HI');
+  assert.ok(j.approval_id);
+  const pending = await withTenant(A.tenantId, (c) => c.query("SELECT status, payload->>'text' AS body FROM approvals WHERE id=$1 AND kind='send_whatsapp_reply'", [j.approval_id])).then((x) => x.rows[0]);
+  assert.equal(pending.status, 'proposed');
+  assert.equal(pending.body, 'Hello from HI');
+  assert.deepEqual((await rows(A)).map((m) => m.direction + ':' + m.status), ['in:received', 'out:queued']);
+
+  const user = await withSystem((c) => c.query("SELECT id FROM users WHERE email='a@example.test'")).then((x) => x.rows[0]);
+  const approved = await decideApproval({ tenantId: A.tenantId, userId: user.id, userEmail: 'a@example.test', approvalId: j.approval_id, decision: 'approve' });
+  assert.equal(approved.status, 'executed');
+  assert.deepEqual((await rows(A)).map((m) => m.direction + ':' + m.status), ['in:received', 'out:sent']);
+
   const before = calls; const dup = (await inbound({ to: '27821110001', from: '27829990001', text: 'again', id: 'm1' })).json();
   assert.equal(dup.ignored, 'duplicate'); assert.equal(calls, before);
-  assert.deepEqual((await rows(A)).map((m) => m.direction + ':' + m.status), ['in:received', 'out:sent']);
+});
+
+test('rejecting a WhatsApp reply leaves it unsent and marks its draft failed', async () => {
+  const r = (await inbound({ to: '27821110001', from: '27829990001', text: 'Can I view tomorrow?', id: 'm2' })).json();
+  assert.equal(r.awaiting_approval, true);
+  const user = await withSystem((c) => c.query("SELECT id FROM users WHERE email='a@example.test'")).then((x) => x.rows[0]);
+  const rejected = await decideApproval({ tenantId: A.tenantId, userId: user.id, userEmail: 'a@example.test', approvalId: r.approval_id, decision: 'reject' });
+  assert.equal(rejected.status, 'rejected');
+  const out = await withTenant(A.tenantId, (c) => c.query("SELECT status FROM wa_messages WHERE direction='out' ORDER BY id DESC LIMIT 1")).then((x) => x.rows[0]);
+  assert.equal(out.status, 'failed');
 });
 
 test('unknown senders are logged and ignored, never answered; no cross-tenant routing', async () => {
@@ -103,7 +127,9 @@ test('meta webhook POST verifies the signature and delivers inbound text', async
   assert.equal(r.statusCode, 200); assert.equal(r.json().received, 1, 'reaction skipped');
   const msgs = await rows(A);
   assert.ok(msgs.some((m) => m.direction === 'in' && m.phone === '27829990001'), 'inbound stored');
-  assert.ok(msgs.some((m) => m.direction === 'out'), 'reply stored');
+  assert.ok(msgs.some((m) => m.direction === 'out' && m.status === 'queued'), 'reply is held for owner approval');
+  const pending = await withTenant(A.tenantId, (c) => c.query("SELECT status FROM approvals WHERE kind='send_whatsapp_reply' ORDER BY created_at DESC LIMIT 1")).then((x) => x.rows[0]);
+  assert.equal(pending.status, 'proposed');
 });
 
 test('parseMetaWebhook ignores statuses and non-text', () => {
