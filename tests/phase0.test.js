@@ -108,6 +108,14 @@ test('API chat proposes email to the account owner address, not a literal api ad
   assert.equal(chat.statusCode, 200);
   const ap = await withTenant(A.tenantId, (c) => c.query("SELECT payload->>'to' AS to_addr FROM approvals WHERE kind='send_email' ORDER BY created_at DESC LIMIT 1")).then((x) => x.rows[0]);
   assert.equal(ap.to_addr, 'a@example.test');
+
+  const resB = await app.inject({ method: 'POST', url: '/app/api-keys', headers: { cookie: B.cookie, ...H }, payload: form({ csrf: B.csrf, name: 'Phase0-Beta' }) });
+  const keyB = /Your new key[\s\S]*?<pre>(hi_[0-9a-f]{48})<\/pre>/.exec(resB.body)[1];
+  script = [call('propose_email', { subject: 'Beta hello', body: 'Only for Beta' }), say('drafted')];
+  const chatB = await app.inject({ method: 'POST', url: '/v1/chat', headers: { authorization: 'Bearer ' + keyB, 'content-type': 'application/json' }, payload: JSON.stringify({ message: 'draft an email for Beta' }) });
+  assert.equal(chatB.statusCode, 200);
+  const apB = await withTenant(B.tenantId, (c) => c.query("SELECT payload->>'to' AS to_addr FROM approvals WHERE kind='send_email' ORDER BY created_at DESC LIMIT 1")).then((x) => x.rows[0]);
+  assert.equal(apB.to_addr, 'b@example.test', 'API chat must use this tenant owner address');
 });
 
 async function proposeSend(u, to) {
@@ -115,7 +123,7 @@ async function proposeSend(u, to) {
     "INSERT INTO approvals (tenant_id, kind, summary, payload, proposed_by) VALUES (current_setting('app.tenant_id')::uuid,'send_email','t',$1,'agent:hi') RETURNING id",
     [JSON.stringify({ to, subject: 's', body: 'b' })])).then((x) => x.rows[0].id);
 }
-const ownerId = (u) => withTenant(u.tenantId, (c) => c.query('SELECT id FROM users ORDER BY created_at LIMIT 1')).then((x) => x.rows[0].id);
+const ownerId = (u) => withTenant(u.tenantId, (c) => c.query('SELECT id FROM users WHERE tenant_id=current_setting(\'app.tenant_id\')::uuid ORDER BY created_at LIMIT 1')).then((x) => x.rows[0].id);
 
 test('per-account cap blocks only that account; the platform ceiling blocks everyone', async () => {
   await withSystem((c) => c.query("INSERT INTO email_log (tenant_id, to_addr, subject) SELECT $1, 'x@y.z', 's' FROM generate_series(1, 5)", [A.tenantId]));

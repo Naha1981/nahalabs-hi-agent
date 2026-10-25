@@ -334,8 +334,18 @@ CREATE TABLE IF NOT EXISTS wa_channels (
   number text NOT NULL UNIQUE CHECK (number ~ '^[0-9]{8,15}$' AND number !~ '^27(67|61)'),  -- the 067 and 061 outreach lines are never used for HI
   engine text NOT NULL DEFAULT 'simulator' CHECK (engine IN ('simulator','own_engine','meta_cloud')),
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused')),
+  owner_phone text NOT NULL DEFAULT '',
+  owner_verified_at timestamptz,
+  owner_verification_hash text,
+  owner_verification_expires_at timestamptz,
+  owner_verification_attempts smallint NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE wa_channels ADD COLUMN IF NOT EXISTS owner_phone text NOT NULL DEFAULT '';
+ALTER TABLE wa_channels ADD COLUMN IF NOT EXISTS owner_verified_at timestamptz;
+ALTER TABLE wa_channels ADD COLUMN IF NOT EXISTS owner_verification_hash text;
+ALTER TABLE wa_channels ADD COLUMN IF NOT EXISTS owner_verification_expires_at timestamptz;
+ALTER TABLE wa_channels ADD COLUMN IF NOT EXISTS owner_verification_attempts smallint NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS wa_contacts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,

@@ -77,6 +77,9 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
       await c.query("UPDATE approvals SET status='rejected', decided_by=$2, decided_at=now() WHERE id=$1", [approvalId, userId]);
       if (ap.kind === 'send_brief') await c.query("UPDATE briefs SET status='rejected' WHERE id=$1", [ap.payload.brief_id]);
       if (ap.kind.startsWith('browser_')) await applyBrowserDecision(c, { tenantId, approval: ap, decision: 'reject', fetchImpl });
+      if (ap.kind === 'wa_reply' && ap.payload?.wa_message_id) {
+        await c.query("UPDATE wa_messages SET status='failed' WHERE id=$1 AND status='queued'", [String(ap.payload.wa_message_id)]);
+      }
       await audit(c, tenantId, `user:${userId}`, 'approval.rejected', { approval_id: approvalId });
       return { status: 'rejected' };
     }
@@ -96,6 +99,48 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
       if (r.error) { await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]); return { status: 'failed', reason: r.error }; }
       await c.query("UPDATE approvals SET status='executed' WHERE id=$1", [approvalId]);
       return { status: 'executed' };
+    }
+    if (ap.kind === 'wa_reply') {
+      const stopped = (await c.query("SELECT value FROM system_flags WHERE key='emergency_stop'")).rows[0]?.value === 'on';
+      const tenant = (await c.query("SELECT paused FROM tenants WHERE id=current_setting('app.tenant_id')::uuid")).rows[0];
+      const messageId = String(ap.payload?.wa_message_id || '');
+      const to = String(ap.payload?.to_phone || '');
+      const body = String(ap.payload?.body || '').trim().slice(0, 1500);
+      const channelId = String(ap.payload?.channel_id || '');
+      const fail = async (status, reason) => {
+        await c.query("UPDATE approvals SET status=$2 WHERE id=$1", [approvalId, status]);
+        if (messageId) await c.query("UPDATE wa_messages SET status='failed' WHERE id=$1 AND status='queued'", [messageId]);
+        await audit(c, tenantId, 'system', 'wa.reply_blocked', { approval_id: approvalId, reason });
+        return { status, reason };
+      };
+      if (stopped || !tenant || tenant.paused) return fail('cancelled', stopped ? 'emergency stop is on' : 'tenant is paused');
+      if (!/^[0-9]{8,15}$/.test(to) || !/^[0-9a-f-]{36}$/i.test(channelId) || !body) return fail('failed', 'invalid WhatsApp reply payload');
+      const channel = (await c.query("SELECT id, number, engine, owner_phone, owner_verified_at FROM wa_channels WHERE id=$1 AND status='active'", [channelId])).rows[0];
+      if (!channel) return fail('cancelled', 'WhatsApp channel is no longer active');
+      const queuedMessage = (await c.query(
+        "SELECT id FROM wa_messages WHERE id=$1 AND phone=$2 AND direction='out' AND status='queued' AND body=$3",
+        [messageId, to, body]
+      )).rows[0];
+      if (!queuedMessage) return fail('failed', 'queued message no longer exists');
+      const isVerifiedOwner = Boolean(channel.owner_verified_at && channel.owner_phone === to);
+      const isSavedContact = (await c.query('SELECT 1 FROM wa_contacts WHERE phone=$1', [to])).rowCount > 0;
+      if (!isVerifiedOwner && !isSavedContact) return fail('cancelled', 'recipient is no longer an authorised contact');
+      const sentToday = (await c.query("SELECT count(*)::int n FROM wa_messages WHERE direction='out' AND status='sent' AND created_at > now() - interval '1 day'")).rows[0].n;
+      const cap = Math.max(1, Number(process.env.WA_MAX_REPLIES_PER_TENANT_DAY || 100));
+      if (sentToday >= cap) return fail('failed', 'daily WhatsApp reply cap reached');
+      try {
+        const { makeAdapter } = await import('./whatsapp.js');
+        await makeAdapter(fetchImpl)({ engine: channel.engine, from: channel.number, to, text: body });
+        await c.query("UPDATE wa_messages SET status='sent' WHERE id=$1 AND status='queued'", [messageId]);
+        await c.query("UPDATE approvals SET status='executed' WHERE id=$1", [approvalId]);
+        await audit(c, tenantId, 'agent:whatsapp', 'wa.reply_sent', { approval_id: approvalId, message_id: messageId });
+        return { status: 'executed' };
+      } catch (e) {
+        await c.query("UPDATE wa_messages SET status='failed' WHERE id=$1 AND status='queued'", [messageId]);
+        await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]);
+        await audit(c, tenantId, 'agent:whatsapp', 'wa.reply_failed', { approval_id: approvalId, reason: String(e.message).slice(0, 120) });
+        return { status: 'failed', reason: String(e.message).slice(0, 120) };
+      }
     }
     if (!['send_brief', 'send_email'].includes(ap.kind)) return { status: 'approved' };
     // Execute only after approval. Re-check stops at execution time.

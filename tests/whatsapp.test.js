@@ -5,7 +5,8 @@ import { withTenant, withSystem } from '../src/db.js';
 import { buildApp } from '../src/server.js';
 import { ensureDefaultAgent } from '../src/agent.js';
 import { normalisePhone, parseMetaWebhook, makeAdapter } from '../src/whatsapp.js';
-import { createHmac } from 'node:crypto';
+import { decideApproval } from '../src/core.js';
+import { createHash, createHmac } from 'node:crypto';
 
 process.env.HI_INVITE_CODES = 'invite-test-code'; process.env.SIGNUP_RATE_MAX = '100'; process.env.CRON_SECRET = 'cron-test-secret-value';
 process.env.SESSION_SECRET = 'session-secret-for-tests'; process.env.WA_INBOUND_SECRET = 'wa-secret-for-tests'; delete process.env.GROQ_API_KEY;
@@ -35,11 +36,16 @@ test('inbound needs the shared secret', async () => {
   assert.equal((await app.inject({ method: 'POST', url: '/internal/wa/inbound', payload: {} })).statusCode, 401);
 });
 
-test('saved contact gets a reply; reply is stored; duplicates are ignored', async () => {
+test('saved contact gets a draft reply; only an owner approval sends it; duplicates are ignored', async () => {
   const r = await inbound({ to: '27821110001', from: '27829990001', text: 'What tenders closed today?', id: 'm1' });
-  const j = r.json(); assert.equal(j.replied, true); assert.equal(j.reply, 'Hello from HI');
+  const j = r.json(); assert.equal(j.queued, true); assert.equal(j.replied, false); assert.equal(j.reply, 'Hello from HI');
   const before = calls; const dup = (await inbound({ to: '27821110001', from: '27829990001', text: 'again', id: 'm1' })).json();
   assert.equal(dup.ignored, 'duplicate'); assert.equal(calls, before);
+  assert.deepEqual((await rows(A)).map((m) => m.direction + ':' + m.status), ['in:received', 'out:queued']);
+  const approval = (await withTenant(A.tenantId, (c) => c.query("SELECT id FROM approvals WHERE kind='wa_reply' ORDER BY created_at DESC LIMIT 1"))).rows[0];
+  const userId = (await withTenant(A.tenantId, (c) => c.query("SELECT id FROM users WHERE tenant_id=current_setting('app.tenant_id')::uuid ORDER BY created_at LIMIT 1"))).rows[0].id;
+  const sent = await decideApproval({ tenantId: A.tenantId, userId, userEmail: 'a@example.test', approvalId: approval.id, decision: 'approve', fetchImpl: async () => ({ ok: true }) });
+  assert.equal(sent.status, 'executed');
   assert.deepEqual((await rows(A)).map((m) => m.direction + ':' + m.status), ['in:received', 'out:sent']);
 });
 
@@ -86,6 +92,23 @@ test('meta_cloud adapter posts a text message to the Graph API', async () => {
   assert.equal(body.text.body, 'Your brief is ready');
   const bad = makeAdapter(async () => ({ ok: false, status: 401 }));
   await assert.rejects(() => bad({ engine: 'meta_cloud', from: '1', to: '2', text: 'x' }), /meta_cloud http 401/);
+});
+
+test('owner number needs a one-time code before owner privileges; its generated replies still queue', async () => {
+  const codeHash = createHash('sha256').update('123456').digest('hex');
+  await withTenant(A.tenantId, (c) => c.query(
+    "UPDATE wa_channels SET owner_phone=$2, owner_verification_hash=$3, owner_verification_expires_at=now() + interval '10 minutes', owner_verification_attempts=0 WHERE number=$1",
+    ['27821110001', '27829990002', codeHash]
+  ));
+  const wrongSender = (await inbound({ to: '27821110001', from: '27820000000', text: 'HI VERIFY 123456', id: 'verify-wrong' })).json();
+  assert.match(wrongSender.ignored, /verification/);
+  const verified = (await inbound({ to: '27821110001', from: '27829990002', text: 'HI VERIFY 123456', id: 'verify-ok' })).json();
+  assert.equal(verified.owner_verified, true);
+  const channel = (await withTenant(A.tenantId, (c) => c.query("SELECT owner_verified_at, owner_verification_hash FROM wa_channels WHERE number='27821110001'"))).rows[0];
+  assert.ok(channel.owner_verified_at); assert.equal(channel.owner_verification_hash, null);
+  const ownerReply = (await inbound({ to: '27821110001', from: '27829990002', text: 'Give me a summary', id: 'owner-command' })).json();
+  assert.equal(ownerReply.queued, true);
+  assert.equal(ownerReply.replied, false);
 });
 
 test('meta webhook GET verifies with the token', async () => {

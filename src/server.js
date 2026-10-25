@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
 import cookie from '@fastify/cookie';
-import { timingSafeEqual, createHash, createHmac } from 'node:crypto';
+import { timingSafeEqual, createHash, createHmac, randomInt } from 'node:crypto';
 const require_hash = (t) => createHash('sha256').update(String(t || '')).digest('hex');
 import { withTenant, withSystem, audit, auditFor, closePool, assertSchemaReady } from './db.js';
 import { hashPassword, verifyPassword, newToken, tokenHash, makeLimiter } from './auth.js';
@@ -963,14 +963,52 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   app.get('/app/whatsapp', { preHandler: guard }, async (req, reply) => {
     const u = req.user; await ensureDefaultAgent(u.tenant_id);
     const d = await withTenant(u.tenant_id, async (c) => ({
-      channels: (await c.query('SELECT number, engine, status FROM wa_channels')).rows,
+      channels: (await c.query('SELECT id, number, engine, status, owner_phone, owner_verified_at FROM wa_channels')).rows,
       contacts: (await c.query('SELECT id, phone, name FROM wa_contacts ORDER BY created_at')).rows,
-      msgs: (await c.query('SELECT phone, direction, body, status, created_at FROM wa_messages ORDER BY id DESC LIMIT 30')).rows }));
-    return render(reply, u, 'WhatsApp', `<h1>WhatsApp</h1><p class="mut">Your agent answers WhatsApp messages from the people you add here, and only replies. It never starts a conversation, and anyone not on this list is ignored. ${d.channels.length ? '' : 'No WhatsApp number is linked yet; a number is linked by NahaLabs when you are ready.'}</p>
-      <div class="card"><b>Linked number</b><ul>${d.channels.map((x) => `<li>${esc(x.number)} (${esc(x.engine)}, ${esc(x.status)})</li>`).join('') || '<li class="mut">None yet</li>'}</ul></div>
-      <div class="card"><b>People HI may reply to</b><table>${d.contacts.map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.phone)}</td><td><form method="post" action="/app/whatsapp/contacts/${x.id}/delete">${csrf(u)}<button class="sec">Remove</button></form></td></tr>`).join('') || '<tr><td class="mut">No contacts yet</td></tr>'}</table>
-        <form method="post" action="/app/whatsapp/contacts">${csrf(u)}<label>Name</label><input name="name" maxlength="60"><label>Phone number with country code, e.g. 27821234567</label><input name="phone" required><p><button>Add contact</button></p></form></div>
-      <div class="card"><b>Recent messages</b><table>${d.msgs.map((m) => `<tr><td>${fdate(m.created_at)}</td><td>${m.direction === 'in' ? 'from' : 'to'} ${esc(m.phone)}</td><td>${esc(m.body.slice(0, 200))}</td><td>${esc(m.status)}</td></tr>`).join('') || '<tr><td class="mut">Nothing yet</td></tr>'}</table></div>`, flashOf(req));
+      msgs: (await c.query('SELECT phone, direction, body, status, created_at FROM wa_messages ORDER BY id DESC LIMIT 30')).rows
+    }));
+    const channelCards = d.channels.map((x) =>
+      '<li><b>' + esc(x.number) + '</b> (' + esc(x.engine) + ', ' + esc(x.status) + ')<br>' +
+      (x.owner_verified_at
+        ? '<span class="tag">Owner verified: ' + esc(x.owner_phone) + '</span>'
+        : '<span class="mut">' + (x.owner_phone ? 'Verification pending for ' + esc(x.owner_phone) : 'No owner number verified') + '</span>') +
+      '<form method="post" action="/app/whatsapp/owner-verification" class="card">' + csrf(u) +
+      '<input type="hidden" name="channel_id" value="' + esc(x.id) + '">' +
+      '<label>Owner personal WhatsApp number (with country code)</label><input name="owner_phone" value="' + esc(x.owner_phone || '') + '" inputmode="numeric" required placeholder="27821234567">' +
+      '<p><button>Generate one-time verification code</button></p></form></li>'
+    ).join('');
+    return render(reply, u, 'WhatsApp',
+      '<h1>WhatsApp</h1><p class="mut">Unknown senders are ignored. Saved-contact messages are handled with public-facing tools only. HI never sends a model-generated WhatsApp reply until you approve it in the Approval queue.</p>' +
+      '<div class="card"><b>Linked number and owner verification</b><ul>' + (channelCards || '<li class="mut">No WhatsApp number is linked yet; a number is linked by NahaLabs when you are ready.</li>') + '</ul></div>' +
+      '<div class="card"><b>People HI may reply to</b><table>' +
+      (d.contacts.map((x) => '<tr><td>' + esc(x.name) + '</td><td>' + esc(x.phone) + '</td><td><form method="post" action="/app/whatsapp/contacts/' + x.id + '/delete">' + csrf(u) + '<button class="sec">Remove</button></form></td></tr>').join('') || '<tr><td class="mut">No contacts yet</td></tr>') +
+      '</table><form method="post" action="/app/whatsapp/contacts">' + csrf(u) + '<label>Name</label><input name="name" maxlength="60"><label>Phone number with country code, e.g. 27821234567</label><input name="phone" required><p><button>Add contact</button></p></form></div>' +
+      '<div class="card"><b>Recent messages</b><table>' +
+      (d.msgs.map((m) => '<tr><td>' + fdate(m.created_at) + '</td><td>' + (m.direction === 'in' ? 'from' : 'to') + ' ' + esc(m.phone) + '</td><td>' + esc(m.body.slice(0, 200)) + '</td><td>' + esc(m.status) + '</td></tr>').join('') || '<tr><td class="mut">Nothing yet</td></tr>') +
+      '</table></div>', flashOf(req));
+  });
+  app.post('/app/whatsapp/owner-verification', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const channelId = String(req.body?.channel_id || '');
+    const phone = normalisePhone(req.body?.owner_phone);
+    if (!uuidOk(channelId) || !/^[0-9]{8,15}$/.test(phone)) {
+      return reply.redirect('/app/whatsapp?m=' + encodeURIComponent('Enter a valid owner WhatsApp number with country code.'));
+    }
+    const code = String(randomInt(0, 1000000)).padStart(6, '0');
+    const saved = await withTenant(u.tenant_id, async (c) => {
+      const row = (await c.query(
+        "UPDATE wa_channels SET owner_phone=$2, owner_verified_at=NULL, owner_verification_hash=$3, owner_verification_expires_at=now() + interval '10 minutes', owner_verification_attempts=0 WHERE id=$1 RETURNING number",
+        [channelId, phone, require_hash(code)]
+      )).rows[0];
+      if (row) await audit(c, u.tenant_id, 'user:' + u.user_id, 'wa.owner_verification_started', { channel_number: row.number });
+      return row;
+    });
+    if (!saved) return reply.redirect('/app/whatsapp?m=' + encodeURIComponent('Linked WhatsApp channel not found.'));
+    const html = '<h1>Verify the owner number</h1><div class="card"><p>From ' + esc(phone) + ', send this exact message to your linked HI WhatsApp business number ' + esc(saved.number) + ':</p>' +
+      '<p><code style="font-size:28px;letter-spacing:5px">HI VERIFY ' + esc(code) + '</code></p>' +
+      '<p>This code expires in 10 minutes and works once. Do not share it. Generating another code invalidates this one.</p>' +
+      '<p>After verification, model-generated WhatsApp replies still require your approval in HI.</p><p><a href="/app/whatsapp">Return to WhatsApp settings</a></p></div>';
+    return render(reply, u, 'Verify WhatsApp owner', html, flashOf(req));
   });
   app.post('/app/whatsapp/contacts', { preHandler: guard }, async (req, reply) => {
     const u = req.user, phone = normalisePhone(req.body?.phone);
