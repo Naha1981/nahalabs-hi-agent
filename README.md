@@ -8,9 +8,10 @@ HI is NahaLabs' multi-tenant AI employee platform. The Opportunity Desk module f
 - Customer-connected Gmail/Outlook/Calendar over OAuth: the agent can search mail, list upcoming events, and draft emails and events. Sends and creates execute only after approval in the queue.
 - Controlled browser jobs on isolated GitHub Actions runners: read or click through public sites; passwords/cards/codes refused, risky clicks wait for approval, one-job tokens, same-site only.
 - Phone bridge (opt-in): the agent can propose tasks for a paired Android phone - open apps, read the screen, tap and type. Every task waits in the approval queue; the bridge app on the customer's own machine runs only approved tasks and reports back.
-- WhatsApp connector (engine-agnostic): reply-only to saved contacts, caps, no outbound-first messages.
+- WhatsApp connector (engine-agnostic): unknown senders are ignored; owner access requires one-time number verification; generated replies are queued for owner approval before sending; caps and the emergency stop remain in force.
 - Voice turns (Drive Companion slice 1): the Drive page records speech, transcribes it (Groq Whisper), runs it through the shared agent with a hands-free driving policy, and speaks the answer (Groq Orpheus TTS with browser-speech fallback). Approvals stay in the queue.
-- Agent file generation (csv, md, txt and genuine xlsx workbooks) with downloads and API reads.
+- Agent file generation (csv, md, txt, HTML and genuine xlsx workbooks) with downloads and API reads.
+- Sandton Growth Engine: tenant-scoped, source-linked agency/agent prospects, property listings, mandate evidence, campaign authorisation states, outreach opt-outs and evidence-tagged metrics; CSV exports are saved in Files.
 - Approval queue, per-account pause, global emergency stop, append-only audit log, morning brief (approval-gated, per-tenant auto-send opt-in), public /v1 API with tenant keys.
 
 ## What it does not do
@@ -33,6 +34,8 @@ An external cron service calls `POST /internal/run?job=ingest|match|brief|tasks|
 
 ## Environment
 Every variable the code reads is documented in `.env.example`, with where to get it and what it costs. Everything on the default path is free tier or open source.
+
+The Sandton operator is research-and-draft-first. Records start unverified, all property-specific campaigns remain awaiting authorisation, performance data remains unverified, and the tools never publish posts or send prospecting messages. Real photo/video production needs media supplied or authorised by the listing agent and a free tool with lawful commercial rights. This branch does not implement an image/video generator.
 
 ## Free-tier limits
 Render free web services sleep after 15 minutes idle. Supabase free pauses after a week of low activity. Resend free allows 100 emails a day. Groq free tier caps tokens and audio seconds per day. See the Drive Companion blueprint in Notion for the Oracle Cloud deployment direction.

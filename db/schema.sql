@@ -468,6 +468,115 @@ CREATE POLICY tenant_isolation ON files USING (tenant_id = NULLIF(current_settin
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON files TO hi_app;
 
+-- ===== NahaLabs Sandton Real Estate Growth Engine =====
+-- Source-linked records are tenant-scoped. They begin unverified until checked by a human.
+CREATE TABLE IF NOT EXISTS growth_prospects (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agency_name text NOT NULL,
+  agent_name text NOT NULL DEFAULT '',
+  role text NOT NULL DEFAULT '',
+  office_branch text NOT NULL DEFAULT '',
+  suburb text NOT NULL,
+  market_scope text NOT NULL CHECK (market_scope IN ('core_sandton','surrounding')),
+  website_url text NOT NULL DEFAULT '',
+  profile_url text NOT NULL DEFAULT '',
+  public_email text NOT NULL DEFAULT '',
+  public_phone text NOT NULL DEFAULT '',
+  social_urls jsonb NOT NULL DEFAULT '[]',
+  source_urls jsonb NOT NULL DEFAULT '[]',
+  opportunity_evidence text NOT NULL,
+  verification_notes text NOT NULL DEFAULT '',
+  verification_status text NOT NULL DEFAULT 'unverified' CHECK (verification_status IN ('verified','unverified')),
+  relevance_score smallint NOT NULL DEFAULT 0 CHECK (relevance_score BETWEEN 0 AND 20),
+  inventory_score smallint NOT NULL DEFAULT 0 CHECK (inventory_score BETWEEN 0 AND 20),
+  marketing_gap_score smallint NOT NULL DEFAULT 0 CHECK (marketing_gap_score BETWEEN 0 AND 20),
+  contactability_score smallint NOT NULL DEFAULT 0 CHECK (contactability_score BETWEEN 0 AND 20),
+  pilot_fit_score smallint NOT NULL DEFAULT 0 CHECK (pilot_fit_score BETWEEN 0 AND 20),
+  priority_score smallint NOT NULL DEFAULT 0 CHECK (priority_score BETWEEN 0 AND 100),
+  outreach_status text NOT NULL DEFAULT 'not_contacted' CHECK (outreach_status IN ('not_contacted','draft_ready','awaiting_consent','contacted','replied','pilot_accepted','pilot_active','opted_out','closed')),
+  outreach_draft text NOT NULL DEFAULT '',
+  outreach_evidence text NOT NULL DEFAULT '',
+  next_action text NOT NULL DEFAULT '',
+  next_action_date date,
+  last_checked_at timestamptz,
+  last_verified_at timestamptz,
+  opted_out_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS growth_prospects_priority ON growth_prospects (tenant_id, priority_score DESC, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS growth_prospects_email_unique ON growth_prospects (tenant_id, lower(btrim(public_email))) WHERE public_email <> '';
+CREATE INDEX IF NOT EXISTS growth_prospects_name_lookup ON growth_prospects (tenant_id, lower(btrim(agency_name)), lower(btrim(agent_name)));
+
+CREATE TABLE IF NOT EXISTS growth_listings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  prospect_id uuid REFERENCES growth_prospects(id) ON DELETE SET NULL,
+  listing_url text NOT NULL,
+  source_urls jsonb NOT NULL DEFAULT '[]',
+  property_type text NOT NULL DEFAULT '',
+  suburb text NOT NULL,
+  advertised_price text NOT NULL DEFAULT '',
+  features text NOT NULL DEFAULT '',
+  listing_status text NOT NULL DEFAULT 'unknown' CHECK (listing_status IN ('active','inactive','unknown')),
+  mandate_status text NOT NULL DEFAULT 'not_stated' CHECK (mandate_status IN ('verified','unverified','not_stated')),
+  mandate_evidence text NOT NULL DEFAULT '',
+  marketing_gap text NOT NULL DEFAULT '',
+  last_checked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, listing_url)
+);
+CREATE INDEX IF NOT EXISTS growth_listings_suburb ON growth_listings (tenant_id, suburb, listing_status);
+CREATE INDEX IF NOT EXISTS growth_listings_prospect ON growth_listings (tenant_id, prospect_id) WHERE prospect_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS growth_campaigns (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  prospect_id uuid REFERENCES growth_prospects(id) ON DELETE SET NULL,
+  listing_id uuid REFERENCES growth_listings(id) ON DELETE SET NULL,
+  name text NOT NULL,
+  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','awaiting_authorisation','approved','published','completed','cancelled')),
+  authorisation_status text NOT NULL DEFAULT 'not_requested' CHECK (authorisation_status IN ('not_requested','pending','approved','rejected')),
+  deliverables jsonb NOT NULL DEFAULT '[]',
+  asset_manifest jsonb NOT NULL DEFAULT '[]',
+  approval_notes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS growth_campaigns_created ON growth_campaigns (tenant_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS growth_metrics (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  campaign_id uuid NOT NULL REFERENCES growth_campaigns(id) ON DELETE CASCADE,
+  metric_name text NOT NULL CHECK (metric_name IN ('assets_produced','assets_approved','posts_published','reach','video_views','shares','comments','enquiries','qualified_enquiries','viewing_requests','viewings_completed','sales','seconds_worked','cost_rand')),
+  metric_value numeric(14,2) NOT NULL CHECK (metric_value >= 0),
+  evidence_url text NOT NULL DEFAULT '',
+  evidence_note text NOT NULL DEFAULT '',
+  verification_status text NOT NULL DEFAULT 'unverified' CHECK (verification_status IN ('unverified','source_linked','human_verified')),
+  verified boolean NOT NULL DEFAULT false,
+  measured_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS growth_metrics_campaign ON growth_metrics (tenant_id, campaign_id, measured_at DESC);
+
+DO $
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['growth_prospects','growth_listings','growth_campaigns','growth_metrics']
+  LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+    EXECUTE format($f$CREATE POLICY tenant_isolation ON %I
+      USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+      WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)$f$, t);
+  END LOOP;
+END $;
+GRANT SELECT, INSERT, UPDATE, DELETE ON growth_prospects, growth_listings, growth_campaigns, growth_metrics TO hi_app;
+
 -- ===== Customer document uploads (Slice 2): OTPs, FICA packs, leases uploaded in the app =====
 CREATE TABLE IF NOT EXISTS uploads (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

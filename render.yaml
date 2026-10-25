@@ -12,6 +12,8 @@ services:
         value: production
       - key: DATABASE_URL        # hi_app role connection string (set manually)
         sync: false
+      - key: MIGRATE_DATABASE_URL # privileged migration URL; required to apply schema updates before startup
+        sync: false
       - key: SESSION_SECRET
         sync: false
       - key: CRON_SECRET

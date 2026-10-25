@@ -143,8 +143,8 @@ const growthUrl = (raw) => {
   let u;
   try { u = new URL(String(raw || '').trim()); } catch { return null; }
   if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return null;
-  const host = u.hostname.replace(/^\\[|\\]$/g, '').toLowerCase();
-  if (/(^localhost$|\\.local$|\\.internal$)/i.test(host) || (net.isIP(host) && isPrivateIp(host))) return null;
+  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (/(^localhost$|\.local$|\.internal$)/i.test(host) || (net.isIP(host) && isPrivateIp(host))) return null;
   u.hash = '';
   for (const key of [...u.searchParams.keys()]) {
     if (/^(utm_.+|fbclid|gclid|dclid|mc_cid|mc_eid|ref_src)$/i.test(key)) u.searchParams.delete(key);
@@ -158,10 +158,10 @@ const growthScorePart = (v) => {
 };
 const growthCsvCell = (v) => {
   let s = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
-  if (/^\\s*[=+\\-@]/.test(s)) s = "'" + s;
+  if (/^\s*[=+\-@]/.test(s)) s = "'" + s;
   return '"' + s.replace(/"/g, '""') + '"';
 };
-const growthCsv = (rows) => rows.map((row) => row.map(growthCsvCell).join(',')).join('\\r\\n');
+const growthCsv = (rows) => rows.map((row) => row.map(growthCsvCell).join(',')).join('\r\n');
 const growthListLimit = (v) => Math.max(1, Math.min(500, Number.isInteger(Number(v)) ? Number(v) : 100));
 const jsonArray = (v) => Array.isArray(v) ? v : (typeof v === 'string' ? (() => { try { const p=JSON.parse(v); return Array.isArray(p)?p:[]; } catch { return []; } })() : []);
 const mergeUnique = (a, b, max = 20) => [...new Set([...jsonArray(a), ...jsonArray(b)])].slice(0, max);
@@ -236,8 +236,8 @@ export async function runTool(name, args, ctx) {
       const sourceUrls = growthUrlList(a.source_urls);
       if (!agency || !suburb || !scope || !evidence || !sourceUrls.length) return 'Not saved: agency, suburb, market scope, evidence and at least one valid HTTPS source URL are required.';
       const email = clip(a.public_email, 180).trim().toLowerCase();
-      if (email && !/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email)) return 'Not saved: the public business email is not in a valid format.';
-      const phone = clip(a.public_phone, 50).replace(/[^\\d+]/g, '');
+      if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return 'Not saved: the public business email is not in a valid format.';
+      const phone = clip(a.public_phone, 50).replace(/[^\d+]/g, '');
       const socialUrls = growthUrlList(a.social_urls, 8);
       const website = growthUrl(a.website_url) || '';
       const profile = growthUrl(a.profile_url) || '';
@@ -312,7 +312,7 @@ export async function runTool(name, args, ctx) {
       if (status === 'draft_ready' && !draft) return 'A personalised outreach draft is required for draft_ready.';
       if (status === 'closed' && !evidence) return 'A short reason is required before closing a prospect.';
       if (status === 'awaiting_consent' && !evidence) return 'Record the lawful contact channel or required consent step before placing this in awaiting_consent.';
-      const nextDate = a.next_action_date && /^\\d{4}-\\d{2}-\\d{2}$/.test(String(a.next_action_date)) ? String(a.next_action_date) : null;
+      const nextDate = a.next_action_date && /^\d{4}-\d{2}-\d{2}$/.test(String(a.next_action_date)) ? String(a.next_action_date) : null;
       await c.query(
         "UPDATE growth_prospects SET outreach_status=$2, outreach_draft=CASE WHEN $3='' THEN outreach_draft ELSE $3 END, outreach_evidence=CASE WHEN $4='' THEN outreach_evidence ELSE $4 END, next_action=CASE WHEN $5='' THEN next_action ELSE $5 END, next_action_date=$6::date, opted_out_at=CASE WHEN $2='opted_out' THEN COALESCE(opted_out_at,now()) ELSE opted_out_at END, updated_at=now() WHERE id=$1",
         [id,status,draft,evidence,clip(a.next_action,250).trim(),nextDate]
@@ -362,7 +362,7 @@ export async function runTool(name, args, ctx) {
       else if (dataset === 'campaigns') rows = (await c.query('SELECT id,name,status,authorisation_status,deliverables,asset_manifest,created_at FROM growth_campaigns ORDER BY created_at DESC LIMIT $1',[limit])).rows;
       else if (dataset === 'metrics') rows = (await c.query('SELECT id,campaign_id,metric_name,metric_value,evidence_url,evidence_note,verification_status,verified,measured_at FROM growth_metrics ORDER BY measured_at DESC LIMIT $1',[limit])).rows;
       else return 'Choose a dataset: prospects, listings, campaigns or metrics.';
-      return rows.length ? UNTRUSTED(rows.map((x)=>JSON.stringify(x)).join('\\n')) : 'No ' + dataset + ' records have been saved yet.';
+      return rows.length ? UNTRUSTED(rows.map((x)=>JSON.stringify(x)).join('\n')) : 'No ' + dataset + ' records have been saved yet.';
     }
     case 'growth_export_csv': {
       const dataset = String(a.dataset || ''), limit = growthListLimit(a.limit);
