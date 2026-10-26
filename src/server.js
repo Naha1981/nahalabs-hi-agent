@@ -15,6 +15,7 @@ import { buildBriefsForAll, decideApproval, setEmergencyStop, emergencyStopped, 
 import { explainFit, modelEnabled } from './gateway.js';
 import { mailConfigured, sendMail } from './mail.js';
 import { handleInbound, makeAdapter, normalisePhone, parseMetaWebhook } from './whatsapp.js';
+import { handleStripeWebhook, fmtMoney } from './stripe.js';
 import { browserStep, browserPoll } from './browser.js';
 import { runAgent, runDueTasks, ensureDefaultAgent, toolLabel } from './agent.js';
 import { buildMorningBriefs } from './brief.js';
@@ -23,7 +24,7 @@ import { registerApi, newApiKey } from './api.js';
 import { ensureBuiltinSkills } from './skills.js';
 import { voiceConfigured, voiceMaxBytes, transcribe, speak } from './voice.js';
 import { buildXlsx, XLSX_MIME } from './xlsx.js';
-import { authUrlFor, connectAccount, providerConfigured, PROVIDERS, integrationsConfigured } from './integrations.js';
+import { authUrlFor, connectAccount, providerConfigured, PROVIDERS, integrationsConfigured, enc } from './integrations.js';
 import { saveUpload, listUploads, uploadTypeFor, tenantUploadQuota, UPLOAD_TYPES } from './uploads.js';
 import { createHash as _ch } from 'node:crypto';
 
@@ -80,7 +81,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const token = req.cookies?.[COOKIE];
     if (!token) return null;
     const r = await withSystem((c) => c.query(
-      `SELECT u.id user_id, u.email, u.tenant_id, t.name tenant_name, t.paused, t.morning_brief_auto, t.viewing_reminders_auto, t.document_reminders_auto
+      `SELECT u.id user_id, u.email, u.tenant_id, t.name tenant_name, t.paused, t.morning_brief_auto, t.viewing_reminders_auto, t.document_reminders_auto, t.stripe_notifications_auto
        FROM sessions s JOIN users u ON u.id=s.user_id JOIN tenants t ON t.id=s.tenant_id
        WHERE s.token_hash=$1 AND s.expires_at > now()`, [tokenHash(token)]));
     const u = r.rows[0];
@@ -398,7 +399,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const u = req.user;
     const rows = (await withTenant(u.tenant_id, (c) => c.query('SELECT a.*, b.body_text, (SELECT j.screenshots->-1->>\'img\' FROM browser_jobs j WHERE j.id = (a.payload->>\'job_id\')::uuid) shot FROM approvals a LEFT JOIN briefs b ON b.id = (a.payload->>\'brief_id\')::uuid ORDER BY a.created_at DESC LIMIT 50'))).rows;
     const html = rows.map((a) => `<div class="card"><div class="row"><b>${esc(a.summary)}</b><span class="tag">${esc(a.status)}</span></div><div class="mut">Proposed by ${esc(a.proposed_by)} on ${fdate(a.created_at)}</div>
-      ${a.shot && /^[A-Za-z0-9+/=]+$/.test(a.shot) ? `<img alt="What the browser sees now" style="max-width:100%;border:1px solid var(--line);border-radius:8px" src="data:image/jpeg;base64,${a.shot}">` : ''}${(a.body_text || a.payload?.body || a.payload?.instruction) ? `<pre>${esc(a.body_text || a.payload?.body || a.payload?.instruction)}</pre>` : ''}${a.status === 'proposed' ? `<form method="post" action="/app/approvals/${a.id}">${csrf(u)}<p>${a.kind.startsWith('browser_') ? 'Approving lets the isolated browser continue.' : a.kind === 'phone_task' ? 'Approving lets your paired phone run this task. Nothing else runs on it.' : `Approving will carry out the action shown in this approval. Check the destination and action before approving.`}</p><button name="decision" value="approve">${a.kind === 'phone_task' ? 'Approve and run' : a.kind === 'calendar_event' ? 'Approve and create event' : a.kind === 'account_email' ? 'Approve and send email' : a.kind.startsWith('browser_') ? 'Approve and continue' : 'Approve and send'}</button> <button name="decision" value="reject" class="sec">Reject</button></form>` : ''}</div>`).join('');
+      ${a.shot && /^[A-Za-z0-9+/=]+$/.test(a.shot) ? `<img alt="What the browser sees now" style="max-width:100%;border:1px solid var(--line);border-radius:8px" src="data:image/jpeg;base64,${a.shot}">` : ''}${(a.body_text || a.payload?.body || a.payload?.instruction) ? `<pre>${esc(a.body_text || a.payload?.body || a.payload?.instruction)}</pre>` : ''}${a.status === 'proposed' ? `<form method="post" action="/app/approvals/${a.id}">${csrf(u)}<p>${a.kind.startsWith('browser_') ? 'Approving lets the isolated browser continue.' : a.kind === 'phone_task' ? 'Approving lets your paired phone run this task. Nothing else runs on it.' : a.kind === 'whatsapp_reply' ? 'Approving sends this WhatsApp reply to the contact shown. Check the number and the message first.' : `Approving will carry out the action shown in this approval. Check the destination and action before approving.`}</p><button name="decision" value="approve">${a.kind === 'phone_task' ? 'Approve and run' : a.kind === 'calendar_event' ? 'Approve and create event' : a.kind === 'account_email' ? 'Approve and send email' : a.kind === 'whatsapp_reply' ? 'Approve and send WhatsApp reply' : a.kind.startsWith('browser_') ? 'Approve and continue' : 'Approve and send'}</button> <button name="decision" value="reject" class="sec">Reject</button></form>` : ''}</div>`).join('');
     return render(reply, u, 'Approvals', `<h1>Approval queue</h1><p class="mut">HI proposes. You decide. Nothing leaves your account without your approval here.</p>${html || '<div class="card empty">Nothing waiting. When HI drafts something that needs your decision, it lands here.</div>'}`, flashOf(req));
   });
   app.post('/app/approvals/:id', { preHandler: guard }, async (req, reply) => {
@@ -431,6 +432,8 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     u.emails_today = await withTenant(u.tenant_id, (c) => c.query("SELECT count(*)::int n FROM email_log WHERE sent_at > now() - interval '1 day'").then((r) => r.rows[0].n));
     u.email_cap = Number(process.env.HI_EMAIL_DAILY_CAP || 5);
     u.last_cron = await withSystem((c) => c.query("SELECT value FROM system_flags WHERE key='last_cron_run'").then((r) => r.rows[0]?.value || null));
+    u.stripe_links = await withTenant(u.tenant_id, (c) => c.query("SELECT id, label, token, signing_secret_enc IS NOT NULL AS has_secret, status, created_at FROM stripe_links ORDER BY created_at").then((r) => r.rows));
+    u.stripe_events = await withTenant(u.tenant_id, (c) => c.query('SELECT type, amount_cents, currency, description, created_at FROM stripe_events ORDER BY created_at DESC LIMIT 10').then((r) => r.rows));
     return render(reply, u, 'Settings', `<h1>Settings</h1>
       <div class="card"><b>Emergency stop for your account</b><p class="mut">${u.paused ? 'Your account is paused. HI will not match, draft or send anything.' : 'Pause stops all matching, drafting and sending for your account immediately.'}</p>
       <form method="post" action="/app/settings/pause">${csrf(u)}<button name="paused" value="${u.paused ? 'false' : 'true'}" class="${u.paused ? '' : 'danger'}">${u.paused ? 'Resume' : 'Pause my account'}</button></form></div>
@@ -440,6 +443,13 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
       <form method="post" action="/app/settings/viewing-reminders">${csrf(u)}<button name="on" value="${u.viewing_reminders_auto ? 'false' : 'true'}" class="sec">${u.viewing_reminders_auto ? 'Switch off viewing reminders' : 'Email me viewing reminders'}</button></form></div>
       <div class="card"><b>Expiry and lease-end reminders</b><p class="mut">${u.document_reminders_auto ? 'HI emails your own address when a document in Documents is 30 days out, 7 days out or expired, and when a recorded lease is 60 days out, 30 days out or ended.' : 'HI can email your own address when a document in Documents (FICA, licences, compliance) is 30 days out, 7 days out or expired, and when a recorded lease is 60 days out, 30 days out or ended.'}</p>
       <form method="post" action="/app/settings/doc-reminders">${csrf(u)}<button name="on" value="${u.document_reminders_auto ? 'false' : 'true'}" class="sec">${u.document_reminders_auto ? 'Switch off expiry and lease-end reminders' : 'Email me expiry and lease-end reminders'}</button></form></div>
+      <div class="card"><b>Payments (Stripe)</b><p class="mut">HI records payments your own Stripe account receives and can email your own address when one arrives. Create a link, paste its web address into your Stripe dashboard (Developers &gt; Webhooks), choose the payment events, then paste the signing secret Stripe shows here. HI never creates charges, customers or payouts.</p>
+      ${u.stripe_links.map((l) => `<div style="border-top:1px solid var(--line);padding-top:8px;margin-top:8px"><b>${esc(l.label || 'Stripe link')}</b> (${esc(l.status)})<br>Webhook address: <code>https://${esc(req.headers.host || '')}/webhooks/stripe/${l.token}</code><br>Signing secret: ${l.has_secret ? 'saved' : 'not set yet'}
+      <form method="post" action="/app/settings/stripe-links/${l.id}/secret">${csrf(u)}<label>Signing secret (starts with whsec_)</label><input name="secret" required minlength="10"><p><button class="sec">Save secret</button></p></form>
+      <form method="post" action="/app/settings/stripe-links/${l.id}/delete">${csrf(u)}<button class="sec">Remove link and its records</button></form></div>`).join('') || '<p class="mut">No Stripe link yet.</p>'}
+      <form method="post" action="/app/settings/stripe-links">${csrf(u)}<label>Label (e.g. NahaLabs store)</label><input name="label" maxlength="60"><p><button>Create Stripe link</button></p></form>
+      <form method="post" action="/app/settings/stripe-notifications">${csrf(u)}<button name="on" value="${u.stripe_notifications_auto ? 'false' : 'true'}" class="sec">${u.stripe_notifications_auto ? 'Switch off payment emails' : 'Email my own address when a payment arrives'}</button></form>
+      ${u.stripe_events.length ? `<table>${u.stripe_events.map((e) => `<tr><td>${fdate(e.created_at)}</td><td>${esc(fmtMoney(e.amount_cents, e.currency))}</td><td>${esc(e.description || e.type)}</td></tr>`).join('')}</table>` : '<p class="mut">No payments recorded yet.</p>'}</div>
       <div class="card"><b>Connections</b><ul><li>${u.desk_active ? 'Official tender open data: active' : 'Opportunity Desk: inactive until you set keywords in Profile'}</li><li>Email brief delivery: ${mailConfigured() ? 'configured' : 'not configured'}</li><li>AI fit notes: ${modelEnabled() ? 'on (text is redacted first; notes are marked unverified)' : 'off'}</li><li>Email sends today: ${u.emails_today} of ${u.email_cap} allowed per day</li><li>Last scheduled run: ${u.last_cron ? fdate(new Date(u.last_cron)) : 'none recorded yet'}</li><li>WhatsApp: not available in this version</li></ul></div>`, flashOf(req));
   });
   app.post('/app/settings/morning-brief', { preHandler: guard }, async (req, reply) => {
@@ -459,6 +469,38 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     await withSystem((c) => c.query('UPDATE tenants SET document_reminders_auto=$2 WHERE id=$1', [u.tenant_id, on]));
     await auditFor(u.tenant_id, `user:${u.user_id}`, on ? 'tenant.doc_reminders_auto.on' : 'tenant.doc_reminders_auto.off', {});
     return reply.redirect('/app/settings?m=' + encodeURIComponent(on ? 'Expiry and lease-end reminders will be emailed to your own address.' : 'Expiry and lease-end reminders are off.'));
+  });
+  app.post('/app/settings/stripe-links', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const r = await withTenant(u.tenant_id, async (c) => {
+      const row = (await c.query("INSERT INTO stripe_links (tenant_id, label) VALUES (current_setting('app.tenant_id')::uuid, $1) RETURNING token", [String(req.body?.label || '').slice(0, 60)])).rows[0];
+      await audit(c, u.tenant_id, `user:${u.user_id}`, 'stripe.link_created', {});
+      return row;
+    });
+    return reply.redirect('/app/settings?m=' + encodeURIComponent('Stripe link created. Paste this webhook address into your Stripe dashboard: /webhooks/stripe/' + r.token));
+  });
+  app.post('/app/settings/stripe-links/:id/secret', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, secret = String(req.body?.secret || '').trim();
+    if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
+    if (!/^whsec_[A-Za-z0-9]{8,}$/.test(secret)) return reply.redirect('/app/settings?m=' + encodeURIComponent('That does not look like a Stripe signing secret (it starts with whsec_).'));
+    const r = await withTenant(u.tenant_id, async (c) => {
+      const upd = await c.query('UPDATE stripe_links SET signing_secret_enc=$2 WHERE id=$1', [req.params.id, enc(secret)]);
+      if (upd.rowCount) await audit(c, u.tenant_id, `user:${u.user_id}`, 'stripe.secret_saved', {});
+      return upd.rowCount;
+    });
+    return reply.redirect('/app/settings?m=' + encodeURIComponent(r ? 'Signing secret saved. Stripe events will now be verified and recorded.' : 'Link not found.'));
+  });
+  app.post('/app/settings/stripe-links/:id/delete', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
+    await withTenant(u.tenant_id, async (c) => { await c.query('DELETE FROM stripe_links WHERE id=$1', [req.params.id]); await audit(c, u.tenant_id, `user:${u.user_id}`, 'stripe.link_removed', {}); });
+    return reply.redirect('/app/settings?m=' + encodeURIComponent('Stripe link and its recorded events removed.'));
+  });
+  app.post('/app/settings/stripe-notifications', { preHandler: guard }, async (req, reply) => {
+    const u = req.user, on = req.body?.on === 'true';
+    await withSystem((c) => c.query('UPDATE tenants SET stripe_notifications_auto=$2 WHERE id=$1', [u.tenant_id, on]));
+    await auditFor(u.tenant_id, `user:${u.user_id}`, on ? 'tenant.stripe_notifications_auto.on' : 'tenant.stripe_notifications_auto.off', {});
+    return reply.redirect('/app/settings?m=' + encodeURIComponent(on ? 'HI will email your own address when a Stripe payment arrives.' : 'Payment emails are off; receipts still show here and in your morning brief.'));
   });
   app.post('/app/settings/pause', { preHandler: guard }, async (req, reply) => {
     const u = req.user, paused = req.body?.paused === 'true';
@@ -960,7 +1002,19 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     });
   });
 
-  app.get('/app/whatsapp', { preHandler: guard }, async (req, reply) => {
+    // Stripe webhooks: per-tenant unguessable URL token; raw body kept for Stripe-Signature verification.
+  app.register(async (stripe) => {
+    stripe.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
+      req.rawBody = body;
+      try { done(null, JSON.parse(body.toString('utf8') || '{}')); } catch { done(null, {}); }
+    });
+    stripe.post('/webhooks/stripe/:token', async (req, reply) => {
+      const r = await handleStripeWebhook({ token: String(req.params.token || ''), rawBody: req.rawBody, sigHeader: String(req.headers['stripe-signature'] || ''), fetchImpl });
+      return reply.code(r.status || 200).send(r);
+    });
+  });
+
+app.get('/app/whatsapp', { preHandler: guard }, async (req, reply) => {
     const u = req.user; await ensureDefaultAgent(u.tenant_id);
     const d = await withTenant(u.tenant_id, async (c) => ({
       channels: (await c.query('SELECT number, engine, status FROM wa_channels')).rows,

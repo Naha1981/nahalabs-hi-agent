@@ -1,6 +1,7 @@
 // WhatsApp connector. Engine-agnostic: inbound arrives at /internal/wa/inbound (shared secret), replies go through an adapter.
 // Rules: reply-only to saved contacts who messaged first; unknown senders are logged and ignored; no outbound-first messages;
-// per-contact and per-tenant caps; paused tenant or emergency stop silences it.
+// per-contact and per-tenant caps; paused tenant or emergency stop silences it. Approval-first: a drafted
+// reply is never sent automatically - it waits in Approvals and decideApproval executes the send.
 import { withTenant, withSystem, audit } from './db.js';
 import { runAgent } from './agent.js';
 import { emergencyStopped } from './core.js';
@@ -36,40 +37,22 @@ export async function handleInbound({ to, from, text, externalId, llm, fetchImpl
   const r = await runAgent({ tenantId, userEmail: gate.email, agentId: ch.agent_id, conversationId: gate.conversationId, userText: `WhatsApp message from ${gate.contact.name || 'a saved contact'}: ${gate.body}`, llm, fetchImpl, lookup, principal: 'external_contact' });
   if (r.error) return { status: 200, ignored: r.error };
   const reply = String(r.answer).replace(/\*\*/g, '*').slice(0, 1500);
-  await withTenant(tenantId, (c) => c.query("INSERT INTO wa_messages (tenant_id, phone, direction, body, status, conversation_id) VALUES (current_setting('app.tenant_id')::uuid,$1,'out',$2,'queued',$3)", [fromN, reply, r.conversationId]));
-  let sent = 'queued';
-  try { if (adapter) { await adapter({ engine: ch.engine, from: toN, to: fromN, text: reply }); sent = 'sent'; } } catch { sent = 'failed'; }
-  await withTenant(tenantId, async (c) => { await c.query("UPDATE wa_messages SET status=$2 WHERE tenant_id=current_setting('app.tenant_id')::uuid AND direction='out' AND status='queued' AND phone=$1", [fromN, sent]); await audit(c, tenantId, 'agent:whatsapp', 'wa.replied', { status: sent }); });
-  return { status: 200, replied: true, delivery: sent, reply };
+  // Approval-first: a reply to an external contact is never sent automatically. The
+  // draft is stored as a proposal and waits in Approvals; decideApproval executes the
+  // send through executeWhatsAppReply, which re-checks channel, contact, caps and age.
+  const approvalId = await withTenant(tenantId, async (c) => {
+    const msg = (await c.query("INSERT INTO wa_messages (tenant_id, phone, direction, body, status, conversation_id) VALUES (current_setting('app.tenant_id')::uuid,$1,'out',$2,'proposed',$3) RETURNING id", [fromN, reply, r.conversationId])).rows[0];
+    const ap = (await c.query(
+      "INSERT INTO approvals (tenant_id, kind, summary, payload, proposed_by) VALUES (current_setting('app.tenant_id')::uuid,'whatsapp_reply',$1,$2,'agent:whatsapp') RETURNING id",
+      [`WhatsApp reply to ${gate.contact.name || fromN} (${fromN}): "${reply.slice(0, 80)}"`,
+       JSON.stringify({ wa_message_id: msg.id, channel_id: ch.id, engine: ch.engine, from: toN, to: fromN, body: reply })])).rows[0];
+    await audit(c, tenantId, 'agent:whatsapp', 'wa.reply_proposed', { approval_id: ap.id, to: fromN });
+    return ap.id;
+  });
+  return { status: 200, proposed: true, approval_id: approvalId, reply };
 }
 
-// Default adapter. The simulator keeps replies in wa_messages only. A real engine plugs in here once a number is linked.
-export function makeAdapter(fetchImpl = fetch) {
-  return async ({ engine, from, to, text }) => {
-    if (engine === 'simulator') return;
-    if (engine === 'own_engine') {
-      const url = process.env.WA_ENGINE_URL, key = process.env.WA_ENGINE_KEY;
-      if (!url || !key) throw new Error('engine not configured');
-      const res = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify({ from, to, text }), signal: AbortSignal.timeout(15000) });
-      if (!res.ok) throw new Error('engine http ' + res.status);
-      return;
-    }
-    if (engine === 'meta_cloud') {
-      // Official WhatsApp Business Platform (Meta Cloud API). Text replies only; no templates here.
-      const phoneId = process.env.WA_META_PHONE_NUMBER_ID, token = process.env.WA_META_TOKEN;
-      if (!phoneId || !token) throw new Error('meta_cloud not configured');
-      const res = await fetchImpl(`https://graph.facebook.com/v21.0/${phoneId}/messages`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text.slice(0, 4000) } }),
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!res.ok) throw new Error('meta_cloud http ' + res.status);
-      return;
-    }
-    throw new Error('engine not supported yet');
-  };
-}
+export { makeAdapter } from './wa-send.js';
 
 // Parse a Meta Cloud API webhook payload into our inbound shape. Only text messages;
 // everything else (statuses, reactions, media) is skipped. to = our WABA display number.

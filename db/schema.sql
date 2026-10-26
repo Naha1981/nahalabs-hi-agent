@@ -350,7 +350,7 @@ CREATE TABLE IF NOT EXISTS wa_messages (
   phone text NOT NULL,
   direction text NOT NULL CHECK (direction IN ('in','out')),
   body text NOT NULL,
-  status text NOT NULL DEFAULT 'received' CHECK (status IN ('received','ignored','queued','sent','failed')),
+  status text NOT NULL DEFAULT 'received' CHECK (status IN ('received','ignored','queued','proposed','sent','failed','rejected')),
   external_id text,
   conversation_id uuid,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -369,8 +369,9 @@ BEGIN
 END $$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON wa_channels, wa_contacts, wa_messages TO hi_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO hi_app;
-CREATE OR REPLACE FUNCTION wa_channel_lookup(p_number text) RETURNS TABLE (tenant_id uuid, agent_id uuid, engine text) AS $$
-  SELECT c.tenant_id, c.agent_id, c.engine FROM wa_channels c JOIN tenants t ON t.id = c.tenant_id WHERE c.number = p_number AND c.status='active' AND NOT t.paused;
+DROP FUNCTION IF EXISTS wa_channel_lookup(text);
+CREATE OR REPLACE FUNCTION wa_channel_lookup(p_number text) RETURNS TABLE (id uuid, tenant_id uuid, agent_id uuid, engine text) AS $$
+  SELECT c.id, c.tenant_id, c.agent_id, c.engine FROM wa_channels c JOIN tenants t ON t.id = c.tenant_id WHERE c.number = p_number AND c.status='active' AND NOT t.paused;
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 REVOKE ALL ON FUNCTION wa_channel_lookup(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION wa_channel_lookup(text) TO hi_app;
@@ -535,6 +536,9 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS viewing_reminders_auto boolean NOT 
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS document_reminders_auto boolean NOT NULL DEFAULT false;  -- Settings opt-in: email own address on document expiry
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS doc_reminders_auto boolean NOT NULL DEFAULT false;  -- Settings opt-in: email own address on document expiry
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS surfaced_at timestamptz;
+-- Approval-first WhatsApp replies added 'proposed' and 'rejected' to the status set.
+ALTER TABLE wa_messages DROP CONSTRAINT IF EXISTS wa_messages_status_check;
+ALTER TABLE wa_messages ADD CONSTRAINT wa_messages_status_check CHECK (status IN ('received','ignored','queued','proposed','sent','failed','rejected'));
 
 -- ===== Real estate module =====
 CREATE TABLE IF NOT EXISTS re_contacts (
@@ -758,3 +762,55 @@ CREATE INDEX IF NOT EXISTS estate_processed_mail_recent ON estate_processed_mail
 -- Email lookup is case-insensitive. This is deliberately a non-unique index so existing duplicate
 -- records in customer databases cannot cause a migration to fail; application writes merge by email.
 CREATE INDEX IF NOT EXISTS re_contacts_email_lookup ON re_contacts (tenant_id, lower(btrim(email))) WHERE email <> '';
+
+-- ===== Stripe payment-received notifications =====
+-- Each tenant creates a link in Settings, pastes its unique webhook URL into their own
+-- Stripe dashboard (Developers > Webhooks) and stores the signing secret Stripe shows
+-- (kept AES-GCM encrypted). HI verifies the Stripe signature on every delivery and
+-- records payment receipts; it never creates charges, customers or payouts.
+CREATE TABLE IF NOT EXISTS stripe_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  label text NOT NULL DEFAULT '',
+  token uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,  -- unguessable webhook URL path segment
+  signing_secret_enc text,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused')),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE stripe_links ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stripe_links FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON stripe_links;
+CREATE POLICY tenant_isolation ON stripe_links USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON stripe_links TO hi_app;
+
+CREATE TABLE IF NOT EXISTS stripe_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  link_id uuid NOT NULL REFERENCES stripe_links(id) ON DELETE CASCADE,
+  event_id text NOT NULL,
+  type text NOT NULL,
+  amount_cents bigint,
+  currency text NOT NULL DEFAULT '',
+  description text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (link_id, event_id)  -- Stripe retries deliver the same event id; record once
+);
+ALTER TABLE stripe_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stripe_events FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON stripe_events;
+CREATE POLICY tenant_isolation ON stripe_events USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON stripe_events TO hi_app;
+
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_notifications_auto boolean NOT NULL DEFAULT false;  -- Settings opt-in: email own address when a payment arrives
+
+-- The webhook arrives before any tenant context exists, so routing goes through this
+-- owner-side lookup (same shape as wa_channel_lookup), never a direct hi_app table read.
+CREATE OR REPLACE FUNCTION stripe_link_lookup(p_token uuid) RETURNS TABLE (id uuid, tenant_id uuid, signing_secret_enc text, stripe_notifications_auto boolean) AS $$
+  SELECT l.id, l.tenant_id, l.signing_secret_enc, t.stripe_notifications_auto
+  FROM stripe_links l JOIN tenants t ON t.id = l.tenant_id
+  WHERE l.token = p_token AND l.status='active' AND NOT t.paused;
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
+REVOKE ALL ON FUNCTION stripe_link_lookup(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION stripe_link_lookup(uuid) TO hi_app;

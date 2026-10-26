@@ -12,14 +12,14 @@ function key() {
   return crypto.createHash('sha256').update(s).digest();
 }
 export function integrationsConfigured() { return !!key(); }
-const enc = (plain) => {
+export const enc = (plain) => {
   const k = key(); if (!k || !plain) return null;
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', k, iv);
   const out = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
   return [iv.toString('hex'), cipher.getAuthTag().toString('hex'), out.toString('hex')].join('.');
 };
-const dec = (blob) => {
+export const dec = (blob) => {
   const k = key(); if (!k || !blob) return null;
   try {
     const [ivh, tagh, datah] = String(blob).split('.');

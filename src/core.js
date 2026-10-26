@@ -3,6 +3,7 @@ import { withTenant, withSystem, audit } from './db.js';
 import { sendMail } from './mail.js';
 import { applyBrowserDecision } from './browser.js';
 import { executeConnectedApproval } from './integrations.js';
+import { executeWhatsAppReply } from './wa-send.js';
 
 const fmtDate = (d) => d ? new Date(d).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', dateStyle: 'medium', timeStyle: 'short' }) : 'not stated';
 
@@ -76,6 +77,7 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
     if (decision === 'reject') {
       await c.query("UPDATE approvals SET status='rejected', decided_by=$2, decided_at=now() WHERE id=$1", [approvalId, userId]);
       if (ap.kind === 'send_brief') await c.query("UPDATE briefs SET status='rejected' WHERE id=$1", [ap.payload.brief_id]);
+      if (ap.kind === 'whatsapp_reply') await c.query("UPDATE wa_messages SET status='rejected' WHERE id=$1", [ap.payload.wa_message_id]);
       if (ap.kind.startsWith('browser_')) await applyBrowserDecision(c, { tenantId, approval: ap, decision: 'reject', fetchImpl });
       await audit(c, tenantId, `user:${userId}`, 'approval.rejected', { approval_id: approvalId });
       return { status: 'rejected' };
@@ -87,6 +89,19 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
       const paused0 = (await c.query("SELECT paused FROM tenants WHERE id = current_setting('app.tenant_id')::uuid")).rows[0].paused;
       if (stopped0 || paused0) { await c.query("UPDATE approvals SET status='cancelled' WHERE id=$1", [approvalId]); return { status: 'cancelled', reason: stopped0 ? 'emergency stop is on' : 'tenant is paused' }; }
       return applyBrowserDecision(c, { tenantId, approval: ap, decision: 'approve', fetchImpl });
+    }
+    if (ap.kind === 'whatsapp_reply') {
+      const stoppedW = (await c.query("SELECT value FROM system_flags WHERE key='emergency_stop'")).rows[0]?.value === 'on';
+      const pausedW = (await c.query('SELECT paused FROM tenants WHERE id = current_setting(\'app.tenant_id\')::uuid')).rows[0].paused;
+      if (stoppedW || pausedW) {
+        await c.query("UPDATE approvals SET status='cancelled' WHERE id=$1", [approvalId]);
+        await c.query("UPDATE wa_messages SET status='failed' WHERE id=$1", [ap.payload.wa_message_id]);
+        return { status: 'cancelled', reason: stoppedW ? 'emergency stop is on' : 'tenant is paused' };
+      }
+      const r = await executeWhatsAppReply(c, { tenantId, approval: ap, fetchImpl });
+      if (r.error) { await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]); return { status: 'failed', reason: r.error }; }
+      await c.query("UPDATE approvals SET status='executed' WHERE id=$1", [approvalId]);
+      return { status: 'executed' };
     }
     if (['account_email', 'calendar_event'].includes(ap.kind)) {
       const stoppedC = (await c.query("SELECT value FROM system_flags WHERE key='emergency_stop'")).rows[0]?.value === 'on';

@@ -5,6 +5,7 @@ import { withTenant, withSystem } from '../src/db.js';
 import { buildApp } from '../src/server.js';
 import { ensureDefaultAgent } from '../src/agent.js';
 import { normalisePhone, parseMetaWebhook, makeAdapter } from '../src/whatsapp.js';
+import { decideApproval } from '../src/core.js';
 import { createHmac } from 'node:crypto';
 
 process.env.HI_INVITE_CODES = 'invite-test-code'; process.env.SIGNUP_RATE_MAX = '100'; process.env.CRON_SECRET = 'cron-test-secret-value';
@@ -37,10 +38,10 @@ test('inbound needs the shared secret', async () => {
 
 test('saved contact gets a reply; reply is stored; duplicates are ignored', async () => {
   const r = await inbound({ to: '27821110001', from: '27829990001', text: 'What tenders closed today?', id: 'm1' });
-  const j = r.json(); assert.equal(j.replied, true); assert.equal(j.reply, 'Hello from HI');
+  const j = r.json(); assert.equal(j.proposed, true); assert.equal(j.reply, 'Hello from HI'); assert.ok(j.approval_id);
   const before = calls; const dup = (await inbound({ to: '27821110001', from: '27829990001', text: 'again', id: 'm1' })).json();
   assert.equal(dup.ignored, 'duplicate'); assert.equal(calls, before);
-  assert.deepEqual((await rows(A)).map((m) => m.direction + ':' + m.status), ['in:received', 'out:sent']);
+  assert.deepEqual((await rows(A)).map((m) => m.direction + ':' + m.status), ['in:received', 'out:proposed']);
 });
 
 test('unknown senders are logged and ignored, never answered; no cross-tenant routing', async () => {
@@ -103,7 +104,58 @@ test('meta webhook POST verifies the signature and delivers inbound text', async
   assert.equal(r.statusCode, 200); assert.equal(r.json().received, 1, 'reaction skipped');
   const msgs = await rows(A);
   assert.ok(msgs.some((m) => m.direction === 'in' && m.phone === '27829990001'), 'inbound stored');
-  assert.ok(msgs.some((m) => m.direction === 'out'), 'reply stored');
+  assert.ok(msgs.some((m) => m.direction === 'out' && m.status === 'proposed'), 'reply proposed, not sent');
+});
+
+const ownerOf = async (u) => (await withTenant(u.tenantId, (c) => c.query("SELECT id, email FROM users WHERE role='owner' ORDER BY created_at LIMIT 1"))).rows[0];
+const proposeOne = async (u, num, id) => {
+  const j = (await inbound({ to: num, from: '27829990001', text: 'price?', id })).json();
+  assert.equal(j.proposed, true, JSON.stringify(j));
+  return j.approval_id;
+};
+
+test('approving a whatsapp_reply sends it (simulator), rejecting never sends', async () => {
+  const owner = await ownerOf(A);
+  const ap1 = await proposeOne(A, '27821110001', 'ap1');
+  const d1 = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: ap1, decision: 'approve' });
+  assert.equal(d1.status, 'executed', JSON.stringify(d1));
+  assert.ok((await rows(A)).some((m) => m.direction === 'out' && m.status === 'sent'));
+  const ap2 = await proposeOne(A, '27821110001', 'ap2');
+  const d2 = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: ap2, decision: 'reject' });
+  assert.equal(d2.status, 'rejected');
+  const m2 = (await rows(A)).filter((m) => m.direction === 'out');
+  assert.equal(m2.filter((m) => m.status === 'rejected').length, 1);
+  assert.equal((await withTenant(A.tenantId, (c) => c.query("SELECT status FROM approvals WHERE id=$1", [ap2]))).rows[0].status, 'rejected');
+});
+
+test('meta_cloud engine sends only after approval, through the Graph API', async () => {
+  await withTenant(A.tenantId, (c) => c.query("UPDATE wa_channels SET engine='meta_cloud'"));
+  const owner = await ownerOf(A);
+  const ap = await proposeOne(A, '27821110001', 'mc1');
+  const seen = [];
+  const fetchImpl = async (url, opts) => { seen.push({ url: String(url), opts }); return { ok: true, status: 200 }; };
+  const d = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: ap, decision: 'approve', fetchImpl });
+  assert.equal(d.status, 'executed', JSON.stringify(d));
+  assert.equal(seen.length, 1, 'Graph API called exactly once, only after approval');
+  assert.equal(seen[0].url, 'https://graph.facebook.com/v21.0/1234567890/messages');
+  await withTenant(A.tenantId, (c) => c.query("UPDATE wa_channels SET engine='simulator'"));
+});
+
+test('emergency stop cancels at decision time; stale replies fail closed', async () => {
+  const owner = await ownerOf(A);
+  const sentBefore = (await withTenant(A.tenantId, (c) => c.query("SELECT count(*)::int n FROM wa_messages WHERE direction='out' AND status='sent'"))).rows[0].n;
+  const ap1 = await proposeOne(A, '27821110001', 'es1');
+  await withSystem((c) => c.query("INSERT INTO system_flags (key,value) VALUES ('emergency_stop','on') ON CONFLICT (key) DO UPDATE SET value='on'"));
+  const d1 = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: ap1, decision: 'approve' });
+  assert.equal(d1.status, 'cancelled');
+  await withSystem((c) => c.query("UPDATE system_flags SET value='off' WHERE key='emergency_stop'"));
+  assert.equal((await withTenant(A.tenantId, (c) => c.query("SELECT status FROM approvals WHERE id=$1", [ap1]))).rows[0].status, 'cancelled');
+  assert.equal((await withTenant(A.tenantId, (c) => c.query("SELECT count(*)::int n FROM wa_messages WHERE direction='out' AND status='sent'"))).rows[0].n, sentBefore, 'the cancelled reply was never sent');
+  const ap2 = await proposeOne(A, '27821110001', 'st1');
+  await withTenant(A.tenantId, (c) => c.query("UPDATE wa_messages SET created_at = now() - interval '25 hours' WHERE direction='out' AND status='proposed'"));
+  const d2 = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: ap2, decision: 'approve' });
+  assert.equal(d2.status, 'failed');
+  assert.match(d2.reason, /too old/);
 });
 
 test('parseMetaWebhook ignores statuses and non-text', () => {

@@ -28,6 +28,10 @@ export function composeBrief({ date, events, unread, matches, approvals, estate 
     if (matches.length) for (const m of matches.slice(0, 3)) L.push(`- ${m.title || m.ocid} (fit ${m.score}/100)`);
     else L.push('- No new tender matches.');
   }
+  if (estate.payments?.length) {
+    L.push('', 'PAYMENTS RECEIVED');
+    for (const p of estate.payments.slice(0, 5)) L.push(`- ${p.amount_cents == null ? 'Payment' : `${p.currency} ${(p.amount_cents / 100).toFixed(2)}`}${p.description ? ' - ' + p.description : ''}`);
+  }
   L.push('', `APPROVALS WAITING: ${approvals}`);
   if (approvals > 0) L.push('Open HI > Approvals to decide them.');
   L.push('', 'HI by NahaLabs - nothing was sent, booked or bought without your approval.');
@@ -73,6 +77,7 @@ async function briefForTenant(t, fetchImpl, now = new Date()) {
     };
     // The Opportunity Desk section only appears for tenants who told HI what to look
     // for (profile keywords) - matching itself already skips tenants without keywords.
+    estate.payments = (await c.query("SELECT amount_cents, currency, description, created_at FROM stripe_events WHERE created_at > now() - interval '1 day' ORDER BY created_at DESC LIMIT 5")).rows;
     estate.attention = await estateAttention(c);
     const deskActive = Boolean((await c.query('SELECT COALESCE(array_length(keywords,1),0) > 0 AS active FROM profiles LIMIT 1')).rows[0]?.active);
     const approvals = Number((await c.query("SELECT count(*)::int AS n FROM approvals WHERE status='proposed'")).rows[0].n);
