@@ -67,7 +67,19 @@ export async function executeAdCampaign(c, { tenantId, approval, fetchImpl = fet
       ? 'the ads account changed since this draft was made - review and re-draft for the new account'
       : 'the ads account was not connected when this draft was made - connect it, then re-draft so you review against the real account');
   }
-  if (String(p.network) === 'meta') return executeMetaChain(c, { tenantId, approval, payload: p, fetchImpl, fail });
+  if (String(p.network) === 'meta') {
+    // HARD CAPABILITY GATE: Meta request shapes are not yet verified against
+    // official Meta documentation (developers.facebook.com unreachable from
+    // the build environment). Credentials alone must never enable unverified
+    // external calls, so execution additionally requires the explicit ops
+    // switch HI_META_ADS_API_VERIFIED=1, set only after the exact requests are
+    // checked against Meta's official Marketing API docs. The approved draft
+    // is retained on the approval row; nothing is sent while gated.
+    if (process.env.HI_META_ADS_API_VERIFIED !== '1') {
+      return fail('Meta ad execution is not switched on: the exact request shapes are not verified against official Meta documentation yet. Nothing was sent and no campaign exists - this draft is kept in your approvals, and can be re-drafted once Meta support is verified.');
+    }
+    return executeMetaChain(c, { tenantId, approval, payload: p, fetchImpl, fail });
+  }
   if (String(p.network) === 'google') return executeGoogleChain(c, { tenantId, approval, payload: p, fetchImpl, fail });
   return fail('unsupported ads network');
 }
@@ -79,10 +91,13 @@ async function recordCreated(c, approvalId, key, value) {
 }
 
 // Full Meta chain: campaign -> ad set (budget lives here) -> creative -> ad,
-// every object PAUSED. Unverified against current Meta docs from here (docs
-// fetch blocked); shapes reviewed when the real account is connected. On
-// failure everything already created is deleted best-effort; whatever cannot
-// be deleted is named in the failure reason and audit so it is never silent.
+// every object PAUSED. UNVERIFIED against current Meta docs - unreachable
+// behind the capability gate in executeAdCampaign until the exact request
+// shapes are checked against official Meta Marketing API documentation.
+// Cleanup deletes ONLY the objects created by this attempt (tracked in
+// `created`), never pre-existing account objects; anything not deleted is
+// named in the failure reason, audited, and recorded on the approval payload
+// for durable reconciliation - there is no blind re-run.
 async function executeMetaChain(c, { tenantId, approval, payload: p, fetchImpl, fail }) {
   const acct = process.env.META_AD_ACCOUNT_ID, token = process.env.META_ADS_TOKEN, pageId = process.env.META_PAGE_ID;
   if (!acct || !token || !pageId) return fail('the Meta ads account is not connected yet - no campaign exists until it is');
@@ -118,7 +133,9 @@ async function executeMetaChain(c, { tenantId, approval, payload: p, fetchImpl, 
     created.push(ad); await recordCreated(c, approval.id, 'meta_ad', ad);
   } catch (e) {
     for (const id of [...created].reverse()) await del(id);
-    return fail(String(e?.message || e).slice(0, 120) + (created.length ? ` (cleanup attempted for: ${created.join(', ')})` : ''));
+    const err = String(e?.message || e).slice(0, 120);
+    await audit(c, tenantId, 'system', 'ads.chain_failed', { approval_id: approval.id, network: 'meta', created_ids: [...created], cleanup: 'attempted', error: err });
+    return fail(err + (created.length ? ` (cleanup attempted for: ${created.join(', ')})` : ''));
   }
   await audit(c, tenantId, approval.proposed_by, 'ads.campaign_created', { approval_id: approval.id, network: 'meta', ids: created });
   return { ok: true };
@@ -139,11 +156,13 @@ async function executeGoogleChain(c, { tenantId, approval, payload: p, fetchImpl
   const headlines = [p.headline, p.headline_2, p.headline_3].map((h) => String(h || '').trim()).filter(Boolean);
   const descriptions = [p.body, p.description_2].map((d) => String(d || '').trim()).filter(Boolean);
   if (headlines.length < 3 || descriptions.length < 2) return fail('Google search ads need exactly 3 headlines and 2 descriptions - re-draft with headline_2, headline_3 and description_2 so every word is approved');
+  if (headlines.some((h) => h.length > 30)) return fail('a headline is over Google\'s 30-character limit - re-draft with shorter headlines; HI never trims approved words');
+  if (descriptions.some((d) => d.length > 90)) return fail('a description is over Google\'s 90-character limit - re-draft with shorter descriptions; HI never trims approved words');
   if (!p.link) return fail('ad drafts need a destination link before anything is created');
   const integ = (await c.query("SELECT id, access_token_enc FROM integrations WHERE provider='google' AND status='active' AND scopes ILIKE '%adwords%' ORDER BY created_at LIMIT 1")).rows[0];
   const token = integ ? dec(integ.access_token_enc) : null;
   if (!token) return fail('no Google account is connected with the ads permission yet - connect one in Integrations first');
-  const version = process.env.GOOGLE_ADS_API_VERSION || '26';  // v26 = current per Google's upgrade docs, Oct 2026
+  const version = process.env.GOOGLE_ADS_API_VERSION || '26';  // v26 (Latest), released 2026-10-14, sunset Nov 2027 - verified 26 Oct 2026 against developers.google.com/google-ads/api/docs/upgrade and /docs/sunset-dates; re-verify when the account is connected
   const headers = { 'content-type': 'application/json', 'developer-token': devToken, authorization: 'Bearer ' + token, ...(managerId ? { 'login-customer-id': managerId } : {}) };
   const base = `https://googleads.googleapis.com/v${version}/customers/${customerId}`;
   const micros = Math.round(Number(p.daily_budget_cents) * 10000);  // cents -> micros (1 currency unit = 1e6 micros)
@@ -169,12 +188,14 @@ async function executeGoogleChain(c, { tenantId, approval, payload: p, fetchImpl
     created.push(['adGroups', adGroup]); await recordCreated(c, approval.id, 'google_adgroup', adGroup);
     const ad = await mutate('adGroupAds', {
       adGroup, status: 'PAUSED',
-      ad: { responsiveSearchAd: { headlines: headlines.map((t) => ({ text: t.slice(0, 30) })), descriptions: descriptions.map((t) => ({ text: t.slice(0, 90) })) }, finalUrls: [p.link] },
+      ad: { responsiveSearchAd: { headlines: headlines.map((t) => ({ text: t })), descriptions: descriptions.map((t) => ({ text: t })) }, finalUrls: [p.link] },
     });
     created.push(['adGroupAds', ad]); await recordCreated(c, approval.id, 'google_ad', ad);
   } catch (e) {
     for (const [resource, rn] of [...created].reverse()) await remove(resource, rn);
-    return fail(String(e?.message || e).slice(0, 120) + (created.length ? ` (cleanup attempted for: ${created.map(([, rn]) => rn).join(', ')})` : ''));
+    const err = String(e?.message || e).slice(0, 120);
+    await audit(c, tenantId, 'system', 'ads.chain_failed', { approval_id: approval.id, network: 'google', created_ids: created.map(([, rn]) => rn), cleanup: 'attempted', error: err });
+    return fail(err + (created.length ? ` (cleanup attempted for: ${created.map(([, rn]) => rn).join(', ')})` : ''));
   }
   await audit(c, tenantId, approval.proposed_by, 'ads.campaign_created', { approval_id: approval.id, network: 'google', ids: created.map(([, rn]) => rn) });
   return { ok: true };
