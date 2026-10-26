@@ -266,3 +266,34 @@ test('owner line: owner principal replies draft approval-first; auto-reply opt-i
   const r4 = (await inbound({ to: '27821110001', from: '27820000009', text: 'hello?', id: 'om4' })).json();
   assert.equal(r4.ignored, 'sender is not a saved contact');
 });
+
+test('owner line end-to-end through Settings: create code, claim from WhatsApp, toggle auto-reply, unlink', async () => {
+  // Tenant C so the earlier tests' revoked link on A cannot collide
+  const login = await app.inject({ method: 'POST', url: '/signup', headers: H, payload: form({ invite: 'invite-test-code', company: 'Gamma', email: 'g@example.test', password: 'a-long-test-password-1' }) });
+  const res = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'g@example.test', password: 'a-long-test-password-1' }) });
+  const cookie = (res.headers['set-cookie'] || '').toString().split(';')[0];
+  const page1 = await app.inject({ url: '/app/settings', headers: { cookie } });
+  const csrf = /name="csrf" value="([^"]+)"/.exec(page1.body)[1];
+  assert.ok(page1.body.includes('Create a linking code'), 'card offers linking before any link');
+  const make = await app.inject({ method: 'POST', url: '/app/settings/wa-owner/code', headers: { ...H, cookie }, payload: form({ csrf }) });
+  assert.equal(make.statusCode, 302, make.body.slice(0,300));
+  const m = /Your linking code: HI-([A-Z0-9]{6})/.exec(decodeURIComponent(make.headers.location || ''));
+  assert.ok(m, 'code shown once in the redirect flash: ' + make.headers.location);
+  const tenantId = (await withSystem((c) => c.query('SELECT tenant_id FROM users WHERE email=$1', ['g@example.test']))).rows[0].tenant_id;
+  const agent = await ensureDefaultAgent(tenantId);
+  await withTenant(tenantId, (c) => c.query("INSERT INTO wa_channels (tenant_id, agent_id, number) VALUES (current_setting('app.tenant_id')::uuid,$1,'27821110003')", [agent.id]));
+  const r1 = (await inbound({ to: '27821110003', from: '27820000007', text: `HI-${m[1]}`, id: 'e2e1' })).json();
+  assert.equal(r1.proposed, true, 'confirmation drafted: ' + JSON.stringify(r1));
+  const page2 = await app.inject({ url: '/app/settings', headers: { cookie } });
+  assert.ok(page2.body.includes('Linked number: <b>27820000007</b>'), 'settings shows the linked number');
+  const auto = await app.inject({ method: 'POST', url: '/app/settings/wa-owner/auto', headers: { ...H, cookie }, payload: form({ csrf, on: 'true' }) });
+  assert.equal(auto.statusCode, 302);
+  const link = (await withTenant(tenantId, (c) => c.query('SELECT auto_reply FROM wa_owner_links'))).rows[0];
+  assert.equal(link.auto_reply, true);
+  const r2 = (await inbound({ to: '27821110003', from: '27820000007', text: 'What is waiting for me?', id: 'e2e2' })).json();
+  assert.equal(r2.sent, true, 'auto-reply opted in sends directly');
+  const un = await app.inject({ method: 'POST', url: '/app/settings/wa-owner/unlink', headers: { ...H, cookie }, payload: form({ csrf }) });
+  assert.equal(un.statusCode, 302);
+  const link2 = (await withTenant(tenantId, (c) => c.query('SELECT status FROM wa_owner_links'))).rows[0];
+  assert.equal(link2.status, 'revoked');
+});

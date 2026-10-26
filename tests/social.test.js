@@ -5,9 +5,11 @@ import { withTenant, withSystem } from '../src/db.js';
 import { buildApp } from '../src/server.js';
 import { runTool } from '../src/tools.js';
 import { decideApproval } from '../src/core.js';
+import { enc } from '../src/integrations.js';
 
 process.env.HI_INVITE_CODES = 'invite-test-code'; process.env.SIGNUP_RATE_MAX = '100'; process.env.CRON_SECRET = 'cron-test-secret-value';
 process.env.SESSION_SECRET = 'session-secret-for-tests'; delete process.env.GROQ_API_KEY;
+process.env.INTEGRATIONS_SECRET = 'integrations-secret-for-tests-0123456789';
 const H = { 'content-type': 'application/x-www-form-urlencoded' }; const form = (o) => new URLSearchParams(o).toString();
 let db, app, A;
 const llm = async () => ({ content: 'stub', tool_calls: [], model: 'stub' });
@@ -72,7 +74,38 @@ test('propose_ad_campaign drafts; approve fails closed without an ads account; g
   const r2 = await propose('propose_ad_campaign', { network: 'google', headline: 'h', body: 'b', daily_budget_cents: 1000, currency: 'ZAR' });
   const ap2 = await lastApproval();
   const d2 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap2.id, decision: 'approve' });
-  assert.equal(d2.status, 'failed'); assert.match(d2.reason, /not wired yet/);
+  assert.equal(d2.status, 'failed'); assert.match(d2.reason, /not connected yet/, 'fails closed without platform ads config');
+});
+
+test('google executor: names the missing Google connection, then creates budget + PAUSED campaign once configured', async () => {
+  process.env.GOOGLE_ADS_DEVELOPER_TOKEN = 'devtok'; process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
+  const owner = await ownerOf(A);
+  await propose('propose_ad_campaign', { network: 'google', headline: 'Kyalami cottage', body: 'b', daily_budget_cents: 15000, currency: 'ZAR' });
+  const ap = await lastApproval();
+  const d1 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve' });
+  assert.equal(d1.status, 'failed'); assert.match(d1.reason, /ads permission/, 'no Google account with ads scope connected');
+  // Connect a Google account carrying the adwords scope and re-draft
+  await withTenant(A, (c) => c.query("INSERT INTO integrations (tenant_id, provider, account_email, scopes, access_token_enc, expires_at, status) VALUES (current_setting('app.tenant_id')::uuid,'google','a@example.test','openid email adwords',$1, now() + interval '1 hour','active')", [enc('google-oauth-token')]));
+  await propose('propose_ad_campaign', { network: 'google', headline: 'Kyalami cottage', body: 'b', daily_budget_cents: 15000, currency: 'ZAR' });
+  const ap2 = await lastApproval();
+  const seen = [];
+  const fetchImpl = async (url, opts) => {
+    seen.push({ url: String(url), opts });
+    if (String(url).includes('campaignBudgets')) return { ok: true, status: 200, json: async () => ({ results: [{ resourceName: 'customers/1234567890/campaignBudgets/55' }] }) };
+    return { ok: true, status: 200, json: async () => ({ results: [{ resourceName: 'customers/1234567890/campaigns/77' }] }) };
+  };
+  const d2 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap2.id, decision: 'approve', fetchImpl });
+  assert.equal(d2.status, 'executed', JSON.stringify(d2));
+  assert.equal(seen.length, 2, 'budget then campaign');
+  assert.equal(seen[0].url, 'https://googleads.googleapis.com/v18/customers/1234567890/campaignBudgets:mutate');
+  assert.equal(JSON.parse(seen[0].opts.body).operations[0].create.amountMicros, 150000000, 'cents converted to micros');
+  assert.equal(seen[0].opts.headers['developer-token'], 'devtok');
+  assert.equal(seen[0].opts.headers.authorization, 'Bearer google-oauth-token');
+  assert.equal(seen[1].url, 'https://googleads.googleapis.com/v18/customers/1234567890/campaigns:mutate');
+  const camp = JSON.parse(seen[1].opts.body).operations[0].create;
+  assert.equal(camp.status, 'PAUSED', 'money never moves on approval alone');
+  assert.equal(camp.campaignBudget, 'customers/1234567890/campaignBudgets/55');
+  delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN; delete process.env.GOOGLE_ADS_CUSTOMER_ID;
 });
 
 test('meta ad campaign is created PAUSED once credentials exist (stub Graph API)', async () => {
@@ -116,5 +149,5 @@ test('approvals page shows the full immutable social/ad payload before the click
   assert.ok(page.body.includes('ZAR 150.00'), 'budget and currency');
   assert.ok(page.body.includes('Sandton, 25-45'), 'audience');
   assert.ok(page.body.includes('https://example.test/Listing'), 'ad link');
-  assert.ok(page.body.includes('created PAUSED'), 'PAUSED explicit before the click');
+  assert.ok(page.body.includes('campaign PAUSED'), 'PAUSED explicit before the click');
 });

@@ -3,6 +3,7 @@
 // account (credentials arrive as environment config once the owner's Meta/Google
 // apps exist - HI never invents connections, metrics or results).
 import { audit } from './db.js';
+import { dec } from './integrations.js';
 
 export async function executeSocialPost(c, { tenantId, approval, fetchImpl = fetch }) {
   const p = approval.payload || {};
@@ -49,7 +50,7 @@ export async function executeAdCampaign(c, { tenantId, approval, fetchImpl = fet
   const fail = async (error) => { await audit(c, tenantId, 'system', 'ads.campaign_blocked', { approval_id: approval.id, reason: error }); return { error }; };
   const budget = Number(p.daily_budget_cents);
   if (!Number.isFinite(budget) || budget <= 0) return fail('daily budget is missing');
-  if (String(p.network) === 'google') return fail('Google Ads creation is not wired yet - only the draft step exists');
+  if (String(p.network) === 'google') return executeGoogleAdCampaign(c, { tenantId, approval, payload: p, fetchImpl, fail });
   if (String(p.network) !== 'meta') return fail('unsupported ads network');
   const acct = process.env.META_AD_ACCOUNT_ID, token = process.env.META_ADS_TOKEN;
   if (!acct || !token) return fail('the Meta ads account is not connected yet - no campaign exists until it is');
@@ -67,5 +68,44 @@ export async function executeAdCampaign(c, { tenantId, approval, fetchImpl = fet
     if (!res.ok) return fail('meta ads http ' + res.status);
   } catch (e) { return fail(String(e?.message || e).slice(0, 120)); }
   await audit(c, tenantId, approval.proposed_by, 'ads.campaign_created', { approval_id: approval.id });
+  return { ok: true };
+}
+
+// Google Ads, per Google's own REST examples (developers.google.com/google-ads/api/rest/examples):
+// create the budget, then the campaign referencing it, always PAUSED. Needs a
+// developer token and customer ID in platform config plus the tenant's Google
+// account connected with the ads (adwords) scope; every missing piece fails
+// closed with the reason named. login-customer-id is sent only when a manager
+// account is configured.
+async function executeGoogleAdCampaign(c, { tenantId, approval, payload: p, fetchImpl, fail }) {
+  const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN, customerId = String(process.env.GOOGLE_ADS_CUSTOMER_ID || '').replace(/-/g, '');
+  const managerId = String(process.env.GOOGLE_ADS_MANAGER_CUSTOMER_ID || '').replace(/-/g, '');
+  if (!devToken || !customerId) return fail('the Google Ads account is not connected yet - developer token and customer ID are not configured');
+  const integ = (await c.query("SELECT id, access_token_enc, expires_at FROM integrations WHERE provider='google' AND status='active' AND scopes ILIKE '%adwords%' ORDER BY created_at LIMIT 1")).rows[0];
+  const token = integ ? dec(integ.access_token_enc) : null;
+  if (!token) return fail('no Google account is connected with the ads permission yet - connect one in Integrations first');
+  const version = process.env.GOOGLE_ADS_API_VERSION || '18';
+  const headers = { 'content-type': 'application/json', 'developer-token': devToken, authorization: 'Bearer ' + token, ...(managerId ? { 'login-customer-id': managerId } : {}) };
+  const micros = Math.round(Number(p.daily_budget_cents) * 10000);  // cents -> micros (1 currency unit = 1e6 micros)
+  const base = `https://googleads.googleapis.com/v${version}/customers/${customerId}`;
+  try {
+    const b = await fetchImpl(`${base}/campaignBudgets:mutate`, {
+      method: 'POST', headers, signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({ operations: [{ create: { name: ('HI: ' + String(p.headline || 'campaign')).slice(0, 100), amountMicros: micros, deliveryMethod: 'STANDARD', explicitlyShared: false } }] }),
+    });
+    if (!b.ok) return fail('google ads budget http ' + b.status);
+    const budgetName = (await b.json())?.results?.[0]?.resourceName;
+    if (!budgetName) return fail('google ads budget returned no resource name');
+    const camp = await fetchImpl(`${base}/campaigns:mutate`, {
+      method: 'POST', headers, signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({ operations: [{ create: {
+        name: ('HI: ' + String(p.headline || 'campaign')).slice(0, 100), status: 'PAUSED',
+        advertisingChannelType: 'SEARCH', campaignBudget: budgetName, targetSpend: {},
+        geoTargetTypeSetting: { positiveGeoTargetType: 'PRESENCE_OR_INTEREST', negativeGeoTargetType: 'PRESENCE_OR_INTEREST' },
+      } }] }),
+    });
+    if (!camp.ok) return fail('google ads campaign http ' + camp.status);
+  } catch (e) { return fail(String(e?.message || e).slice(0, 120)); }
+  await audit(c, tenantId, approval.proposed_by, 'ads.campaign_created', { approval_id: approval.id, network: 'google' });
   return { ok: true };
 }
