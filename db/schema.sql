@@ -823,6 +823,23 @@ $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 REVOKE ALL ON FUNCTION stripe_link_lookup(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION stripe_link_lookup(uuid) TO hi_app;
 
+-- Per-user read marker for the in-app notification feed. The feed itself is
+-- read straight from audit_log (real recorded events only, whitelist in
+-- server.js); this table only remembers how far each user has read.
+CREATE TABLE IF NOT EXISTS notification_reads (
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  last_read_id bigint NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, user_id)
+);
+ALTER TABLE notification_reads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notification_reads FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON notification_reads;
+CREATE POLICY tenant_isolation ON notification_reads USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON notification_reads TO hi_app;
+
 -- Owner WhatsApp line ("business partner in WhatsApp"). The owner links their own
 -- number from the authenticated Settings session with a short-lived one-time code,
 -- then messages HI from that number. Identity is the code claim from the

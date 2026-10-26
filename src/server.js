@@ -87,9 +87,27 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     const u = r.rows[0];
     return u ? { ...u, csrf: csrfFor(token) } : null;
   }
+  // Notification feed: user-meaningful events read straight from audit_log
+  // (real recorded events only - nothing is synthesized for the feed).
+  const NOTIF_ACTIONS = ['stripe.payment_received', 'wa.message_received', 'estate.viewing_requested', 'wa.reply_blocked', 'social.post_blocked', 'ads.campaign_blocked', 'ads.chain_failed', 'social.post_filed', 'ads.campaign_filed'];
+  const notifUnread = (tenantId, userId) => withTenant(tenantId, async (c) => {
+    const last = (await c.query('SELECT last_read_id FROM notification_reads WHERE user_id=$1', [userId])).rows[0]?.last_read_id || 0;
+    return (await c.query('SELECT count(*)::int n FROM audit_log WHERE id > $1 AND action = ANY($2)', [last, NOTIF_ACTIONS])).rows[0].n;
+  });
+  const notifText = (a) => {
+    const d = a.detail || {};
+    if (a.action === 'stripe.payment_received') return `Payment received${d.amount_cents != null ? `: ${esc(String(d.currency || ''))} ${(Number(d.amount_cents) / 100).toFixed(2)}` : ''}`;
+    if (a.action === 'wa.message_received') return `WhatsApp message from ${esc(String(d.phone || 'a contact'))}`;
+    if (a.action === 'estate.viewing_requested') return 'A viewing was requested';
+    if (a.action === 'ads.chain_failed') return `Ad creation failed${d.error ? `: ${esc(String(d.error))}` : ''}${d.created_ids?.length ? ` (created IDs recorded for cleanup: ${esc(d.created_ids.join(', '))})` : ''}`;
+    if (a.action === 'social.post_filed' || a.action === 'ads.campaign_filed') return 'A draft you approved was filed - nothing was sent (that platform is not switched on yet)';
+    if (a.action.endsWith('_blocked')) return `HI was blocked${d.reason ? `: ${esc(String(d.reason))}` : ''}`;
+    return esc(a.action);
+  };
   const guard = async (req, reply) => {
     const s = await sessionOf(req);
     if (!s) { reply.redirect('/login'); return reply; }
+    if (req.method === 'GET' && req.url.startsWith('/app')) { try { s.notif_unread = await notifUnread(s.tenant_id, s.user_id); } catch { s.notif_unread = 0; } }
     const isMultipart = String(req.headers['content-type'] || '').startsWith('multipart/');
     if (req.method === 'POST' && !isMultipart && !secretEq(req.body?.csrf, s.csrf)) { reply.code(403).send('Bad request token'); return reply; }
     req.user = s;
@@ -482,6 +500,21 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     });
     if (r.error) return reply.redirect('/app/inbox?m=' + encodeURIComponent(r.error));
     return reply.redirect('/app/approvals?m=' + encodeURIComponent('Reply drafted. Approve it below to send exactly those words.'));
+  });
+
+  app.get('/app/notifications', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const rows = await withTenant(u.tenant_id, (c) => c.query('SELECT id, at, action, detail FROM audit_log WHERE action = ANY($1) ORDER BY id DESC LIMIT 50', [NOTIF_ACTIONS])).then((r) => r.rows);
+    const last = await withTenant(u.tenant_id, (c) => c.query('SELECT last_read_id FROM notification_reads WHERE user_id=$1', [u.user_id])).then((r) => r.rows[0]?.last_read_id || 0);
+    const items = rows.map((a) => `<div style="border-top:1px solid var(--line);padding:8px 2px">${a.id > last ? '<b>NEW</b> &middot; ' : ''}<span class="mut">${fdate(a.at)}</span><br>${notifText(a)}</div>`).join('');
+    return render(reply, u, 'Notifications', `<h1>Notifications</h1><p class="mut">Things that happened in your business. Only real recorded events appear here - nothing is made up, and marking as read never deletes the record.</p>
+      <div class="card">${items || '<p class="mut">Nothing yet. When something happens - a payment, a customer message, a viewing request - it shows up here.</p>'}</div>
+      ${rows.length ? `<form method="post" action="/app/notifications/read" class="card">${csrf(u)}<button>Mark all as read</button></form>` : ''}`, flashOf(req));
+  });
+  app.post('/app/notifications/read', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    await withTenant(u.tenant_id, (c) => c.query("INSERT INTO notification_reads (tenant_id, user_id, last_read_id, updated_at) VALUES (current_setting('app.tenant_id')::uuid,$1,(SELECT COALESCE(max(id),0) FROM audit_log),now()) ON CONFLICT (tenant_id, user_id) DO UPDATE SET last_read_id=EXCLUDED.last_read_id, updated_at=now()", [u.user_id]));
+    return reply.redirect('/app/notifications?m=' + encodeURIComponent('All caught up.'));
   });
 
   app.get('/app/reports', { preHandler: guard }, async (req, reply) => {
@@ -893,7 +926,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const u = req.user;
     const grp = (g, items) => `<div class="card"><b>${g}</b><p style="margin:10px 0 2px">${items.map(([n, h]) => `<a class="chip" style="padding:8px 14px;margin:4px 6px 4px 0" href="${h}">${n}</a>`).join('')}</p></div>`;
     return render(reply, u, 'Menu', `<h1>All sections</h1>
-      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Inbox', '/app/inbox'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']])}
+      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Inbox', '/app/inbox'], ['Notifications', '/app/notifications'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']])}
       ${grp('Work', [['Browser', '/app/browser'], ['Drive', '/app/drive'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents']])}
       ${grp('Account', [['Memory', '/app/memory'], ['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']])}`, flashOf(req));
   });

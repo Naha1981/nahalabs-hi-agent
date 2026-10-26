@@ -49,6 +49,7 @@ export async function handleInbound({ to, from, text, externalId, llm, fetchImpl
     const daily = (await c.query("SELECT count(*)::int n FROM wa_messages WHERE direction='out' AND created_at > now() - interval '1 day'")).rows[0].n;
     if (recent >= 20 || daily >= Number(process.env.WA_MAX_REPLIES_PER_TENANT_DAY || 100)) return { ignored: 'rate limit' };
     await c.query("INSERT INTO wa_messages (tenant_id, phone, direction, body, status, external_id) VALUES (current_setting('app.tenant_id')::uuid,$1,'in',$2,'received',$3)", [fromN, body, externalId || null]);
+    await audit(c, tenantId, 'system', 'wa.message_received', { phone: fromN });
     const prev = (await c.query("SELECT conversation_id FROM wa_messages WHERE phone=$1 AND conversation_id IS NOT NULL AND created_at > now() - interval '12 hours' ORDER BY id DESC LIMIT 1", [fromN])).rows[0];
     const owner = (await c.query('SELECT email FROM users ORDER BY created_at LIMIT 1')).rows[0];
     return { contact, body, conversationId: prev?.conversation_id || null, email: owner?.email };
@@ -101,6 +102,7 @@ async function handleOwner({ ch, fromN, body, externalId, llm, fetchImpl, lookup
     const daily = (await c.query("SELECT count(*)::int n FROM wa_messages WHERE direction='out' AND created_at > now() - interval '1 day'")).rows[0].n;
     if (daily >= Number(process.env.WA_MAX_REPLIES_PER_TENANT_DAY || 100)) return { ignored: 'rate limit' };
     await c.query("INSERT INTO wa_messages (tenant_id, phone, direction, body, status, external_id) VALUES (current_setting('app.tenant_id')::uuid,$1,'in',$2,'received',$3)", [fromN, body, externalId || null]);
+    await audit(c, tenantId, 'system', 'wa.message_received', { phone: fromN });
     const prev = (await c.query('SELECT conversation_id FROM wa_messages WHERE phone=$1 AND conversation_id IS NOT NULL ORDER BY id DESC LIMIT 1', [fromN])).rows[0];
     const owner = (await c.query("SELECT email FROM users WHERE role='owner' ORDER BY created_at LIMIT 1")).rows[0];
     return { conversationId: prev?.conversation_id || null, email: owner?.email };

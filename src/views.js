@@ -78,11 +78,14 @@ a.nl:hover{background:var(--soft)}
 `;
 
 const GROUPS = [
-  ['', [['Agent', '/app/agent'], ['Estate', '/app/estate'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Inbox', '/app/inbox'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']]],
+  ['', [['Agent', '/app/agent'], ['Estate', '/app/estate'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Inbox', '/app/inbox'], ['Notifications', '/app/notifications'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']]],
   ['Work', [['Browser', '/app/browser'], ['Drive', '/app/drive'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents']]],
   ['Account', [['Memory', '/app/memory'], ['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']]],
 ];
-const sideNav = GROUPS.map(([g, links]) => `${g ? `<div class="grp">${g}</div>` : ''}${links.map(([n, h]) => `<a class="nl" href="${h}">${n}</a>`).join('')}`).join('');
+const sideNav = (user) => GROUPS.map(([g, links]) => `${g ? `<div class="grp">${g}</div>` : ''}${links.map(([n, h]) => {
+  const badge = (h === '/app/notifications' && user?.notif_unread > 0) ? ` <span style="background:var(--ink);color:#fff;border-radius:10px;padding:1px 7px;font-size:12px">${Number(user.notif_unread)}</span>` : '';
+  return `<a class="nl" href="${h}">${n}${badge}</a>`;
+}).join('')}`).join('');
 const TABS = [['Agent', '/app/agent'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Tasks', '/app/tasks'], ['More', '/app/menu']];
 const tabs = TABS.map(([n, h]) => `<a href="${h}">${n}</a>`).join('');
 
@@ -94,7 +97,7 @@ export function page({ title, user, body, flash }) {
 <footer class="pub-f"><p style="margin:0 0 8px"><a href="/developers">Developers</a> &middot; <a href="/developers">API</a></p>HI by NahaLabs (Pty) Ltd. Honest limits: HI researches, remembers, matches, drafts and schedules. It never sends, buys, books or submits anything without your approval, and it can be wrong - check the sources it cites.</footer>${sw}</body></html>`;
   }
   const out = `<form method="post" action="/logout" style="margin:0"><input type="hidden" name="csrf" value="${esc(user.csrf)}"><button class="sec" style="padding:7px 16px;font-size:14px">Sign out</button></form>`;
-  return `${head}<body><aside class="side"><a class="brand" href="/app/agent">HI<small>by NahaLabs</small></a><nav>${sideNav}</nav>${out}</aside><header class="topbar"><a class="brand" href="/app/agent">HI<small>by NahaLabs</small></a>${out}</header><main class="appmain">${flash ? `<div class="flash">${esc(flash)}</div>` : ''}${body}</main><nav class="tabs">${tabs}</nav>${sw}</body></html>`;
+  return `${head}<body><aside class="side"><a class="brand" href="/app/agent">HI<small>by NahaLabs</small></a><nav>${sideNav(user)}</nav>${out}</aside><header class="topbar"><a class="brand" href="/app/agent">HI<small>by NahaLabs</small></a>${out}</header><main class="appmain">${flash ? `<div class="flash">${esc(flash)}</div>` : ''}${body}</main><nav class="tabs">${tabs}</nav>${sw}</body></html>`;
 }
 
 // Drive Mode: minimal phone-first voice page. Script and styles are self-hosted (CSP 'self').
