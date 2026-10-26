@@ -29,7 +29,15 @@ export async function handleInbound({ to, from, text, externalId, llm, fetchImpl
     if (!contact) {
       const claim = /^\s*HI-?([A-Z0-9]{6})\s*$/i.exec(body.trim());
       if (claim) {
-        const claimed = (await withSystem((c2) => c2.query('SELECT wa_owner_claim($1, $2) AS tenant_id', [claim[1].toUpperCase(), fromN]))).rows[0]?.tenant_id;
+        let claimed = null;
+        try {
+          claimed = (await withSystem((c2) => c2.query('SELECT wa_owner_claim($1, $2) AS tenant_id', [claim[1].toUpperCase(), fromN]))).rows[0]?.tenant_id;
+        } catch (e) {
+          // One number can only be the active owner line of one tenant; a second
+          // claim from a number already linked elsewhere violates the partial
+          // unique index. Fail closed and quietly, like any wrong code.
+          if (String(e?.code) !== '23505') throw e;
+        }
         if (claimed && claimed === tenantId) return { ownerClaim: true };
         return { ignored: 'unknown sender' };
       }

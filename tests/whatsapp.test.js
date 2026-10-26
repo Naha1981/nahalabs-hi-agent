@@ -249,6 +249,22 @@ test('owner line: one-time code claim binds the number; wrong phone and expired 
   assert.equal(r2.ignored, 'unknown sender', 'consumed code does not re-claim');
 });
 
+test('owner line: a number already linked to one tenant cannot be claimed into another (collision fails closed)', async () => {
+  // 27820000009 is the active owner line of tenant A (bound in the earlier test).
+  const pre = (await withTenant(A.tenantId, (c) => c.query("SELECT phone, status FROM wa_owner_links"))).rows[0];
+  assert.equal(pre.phone, '27820000009'); assert.equal(pre.status, 'active');
+  // Tenant B issues a fresh code; the same number tries to claim it on B's line.
+  await mkOwnerLink(B.tenantId, 'B22222');
+  const r = await inbound({ to: '27821110002', from: '27820000009', text: 'HI-B22222', id: 'oc-collide' });
+  assert.equal(r.statusCode, 200, 'webhook stays clean, no 500: ' + r.body);
+  assert.equal(r.json().ignored, 'unknown sender', 'collision is refused like any wrong code');
+  const bLink = (await withTenant(B.tenantId, (c) => c.query("SELECT status, phone FROM wa_owner_links"))).rows[0];
+  assert.equal(bLink.status, 'pending', "B's link was not activated");
+  assert.equal(bLink.phone, null, "B's link did not take the number");
+  const aLink = (await withTenant(A.tenantId, (c) => c.query("SELECT phone, status FROM wa_owner_links"))).rows[0];
+  assert.equal(aLink.status, 'active', "A's binding is untouched");
+});
+
 test('owner line: owner principal replies draft approval-first; auto-reply opt-in sends directly; STOP HI revokes', async () => {
   // Bound from the previous test at 27820000009 on tenant A
   const r1 = (await inbound({ to: '27821110001', from: '27820000009', text: 'Any viewings today?', id: 'om1' })).json();
