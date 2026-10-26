@@ -817,3 +817,48 @@ CREATE OR REPLACE FUNCTION stripe_link_lookup(p_token uuid) RETURNS TABLE (id uu
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 REVOKE ALL ON FUNCTION stripe_link_lookup(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION stripe_link_lookup(uuid) TO hi_app;
+
+-- Owner WhatsApp line ("business partner in WhatsApp"). The owner links their own
+-- number from the authenticated Settings session with a short-lived one-time code,
+-- then messages HI from that number. Identity is the code claim from the
+-- authenticated session, never a bare phone-number claim. Revocable any time.
+CREATE TABLE IF NOT EXISTS wa_owner_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  phone text CHECK (phone ~ '^[0-9]{8,15}$'),
+  code_hash text,
+  code_expires_at timestamptz,
+  auto_reply boolean NOT NULL DEFAULT false,  -- owner opt-in: reply directly to the owner's own number; off = every reply drafts into Approvals first
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','revoked')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id)
+);
+ALTER TABLE wa_owner_links ENABLE ROW LEVEL SECURITY;
+ALTER TABLE wa_owner_links FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON wa_owner_links;
+CREATE POLICY tenant_isolation ON wa_owner_links USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON wa_owner_links TO hi_app;
+-- One active owner number globally (partial unique; revoked rows keep history).
+CREATE UNIQUE INDEX IF NOT EXISTS wa_owner_links_one_active_phone ON wa_owner_links (phone) WHERE status = 'active';
+
+-- System-side claim/lookup for the inbound path, which has no tenant context
+-- (same shape as stripe_link_lookup). Direct table reads stay blocked by FORCE RLS.
+DROP FUNCTION IF EXISTS wa_owner_claim(text, text);
+CREATE OR REPLACE FUNCTION wa_owner_claim(p_code text, p_phone text) RETURNS uuid AS $$
+  UPDATE wa_owner_links l SET phone = p_phone, status = 'active', code_hash = NULL, code_expires_at = NULL
+  FROM tenants t
+  WHERE l.code_hash = encode(digest(p_code, 'sha256'), 'hex') AND l.status = 'pending' AND l.code_expires_at > now()
+    AND t.id = l.tenant_id AND NOT t.paused
+  RETURNING l.tenant_id;
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
+REVOKE ALL ON FUNCTION wa_owner_claim(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION wa_owner_claim(text, text) TO hi_app;
+
+DROP FUNCTION IF EXISTS wa_owner_lookup(text);
+CREATE OR REPLACE FUNCTION wa_owner_lookup(p_phone text) RETURNS TABLE (tenant_id uuid, auto_reply boolean) AS $$
+  SELECT l.tenant_id, l.auto_reply FROM wa_owner_links l JOIN tenants t ON t.id = l.tenant_id
+  WHERE l.phone = p_phone AND l.status = 'active' AND NOT t.paused;
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
+REVOKE ALL ON FUNCTION wa_owner_lookup(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION wa_owner_lookup(text) TO hi_app;

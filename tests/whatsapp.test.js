@@ -228,3 +228,41 @@ test('approvals page shows the exact full words and number; approving sends exac
   const sent = (await withTenant(A.tenantId, (c) => c.query("SELECT body FROM wa_messages WHERE direction='out' AND status='sent' ORDER BY id DESC LIMIT 1"))).rows[0];
   assert.equal(sent.body, long, 'the sent body is byte-identical to what the page showed');
 });
+
+const mkOwnerLink = (tenantId, code, phone = null, expires = "+15 minutes") => withTenant(tenantId, (c) => c.query(
+  "INSERT INTO wa_owner_links (tenant_id, phone, code_hash, code_expires_at) VALUES (current_setting('app.tenant_id')::uuid, $1, encode(digest($2,'sha256'),'hex'), now() + interval '" + expires.replace('+','').replace('-','-') + "') ON CONFLICT (tenant_id) DO UPDATE SET phone=EXCLUDED.phone, code_hash=EXCLUDED.code_hash, code_expires_at=EXCLUDED.code_expires_at, status='pending'",
+  [phone, code.toUpperCase()]));
+
+test('owner line: one-time code claim binds the number; wrong phone and expired codes fail', async () => {
+  await mkOwnerLink(A.tenantId, 'ABC123');
+  // Expired code for tenant B never claims
+  await mkOwnerLink(B.tenantId, 'ZZZ999', null, '-1 minute');
+  const r0 = (await inbound({ to: '27821110002', from: '27820000001', text: 'HI-ZZZ999', id: 'oc0' })).json();
+  assert.equal(r0.ignored, 'unknown sender', 'expired code cannot claim');
+  // Claim from the owner's phone on tenant A's line
+  const r1 = (await inbound({ to: '27821110001', from: '27820000009', text: 'hi-abc123', id: 'oc1' })).json();
+  assert.equal(r1.proposed, true, 'link confirmation drafted approval-first: ' + JSON.stringify(r1));
+  const link = (await withTenant(A.tenantId, (c) => c.query('SELECT phone, status FROM wa_owner_links'))).rows[0];
+  assert.equal(link.phone, '27820000009'); assert.equal(link.status, 'active');
+  // A different phone cannot reuse anything; code is cleared after claim
+  const r2 = (await inbound({ to: '27821110001', from: '27820000008', text: 'HI-ABC123', id: 'oc2' })).json();
+  assert.equal(r2.ignored, 'unknown sender', 'consumed code does not re-claim');
+});
+
+test('owner line: owner principal replies draft approval-first; auto-reply opt-in sends directly; STOP HI revokes', async () => {
+  // Bound from the previous test at 27820000009 on tenant A
+  const r1 = (await inbound({ to: '27821110001', from: '27820000009', text: 'Any viewings today?', id: 'om1' })).json();
+  assert.equal(r1.owner, true); assert.equal(r1.proposed, true, 'default is approval-first even for the owner');
+  // Opt in to auto-reply on the owner line
+  await withTenant(A.tenantId, (c) => c.query('UPDATE wa_owner_links SET auto_reply=true'));
+  const r2 = (await inbound({ to: '27821110001', from: '27820000009', text: 'And tomorrow?', id: 'om2' })).json();
+  assert.equal(r2.owner, true); assert.equal(r2.sent, true, 'explicit opt-in replies directly: ' + JSON.stringify(r2));
+  // Revocation from the bound number
+  const r3 = (await inbound({ to: '27821110001', from: '27820000009', text: 'STOP HI', id: 'om3' })).json();
+  assert.equal(r3.revoked, true);
+  const link = (await withTenant(A.tenantId, (c) => c.query('SELECT status FROM wa_owner_links'))).rows[0];
+  assert.equal(link.status, 'revoked');
+  // After revocation the number is an ordinary unknown sender
+  const r4 = (await inbound({ to: '27821110001', from: '27820000009', text: 'hello?', id: 'om4' })).json();
+  assert.equal(r4.ignored, 'sender is not a saved contact');
+});
