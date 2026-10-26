@@ -38,6 +38,7 @@ test('propose_social_post drafts only; approve fails closed without a connected 
 
 test('social_post publishes exactly the approved text once credentials exist (stub Graph API)', async () => {
   process.env.META_PAGE_ID = 'page-1'; process.env.META_PAGE_TOKEN = 'tok';
+  // NOTE: credentials are set BEFORE drafting, so the draft binds to page:page-1.
   const r = await propose('propose_social_post', { network: 'facebook', text: 'Saturday show house, 10:30, Kyalami.' });
   assert.match(String(r), /approval queue/);
   const ap = await lastApproval();
@@ -52,6 +53,26 @@ test('social_post publishes exactly the approved text once credentials exist (st
   delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN;
 });
 
+test('drafts bind to the account connected at draft time; a changed or newly connected account fails closed', async () => {
+  // Drafted while unconfigured: account_ref page:unconfigured
+  await propose('propose_social_post', { network: 'facebook', text: 'bound draft' });
+  const ap0 = await lastApproval();
+  assert.equal(ap0.payload.account_ref, 'page:unconfigured');
+  process.env.META_PAGE_ID = 'page-1'; process.env.META_PAGE_TOKEN = 'tok';
+  const owner = await ownerOf(A);
+  const d0 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap0.id, decision: 'approve' });
+  assert.equal(d0.status, 'failed'); assert.match(d0.reason, /re-draft/, 'connecting an account after drafting cannot smuggle the old draft onto it');
+  // Drafted against page-1, then the connected page changes
+  await propose('propose_social_post', { network: 'facebook', text: 'second draft' });
+  const ap1 = await lastApproval();
+  assert.equal(ap1.payload.account_ref, 'page:page-1');
+  process.env.META_PAGE_ID = 'page-2';
+  const d1 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap1.id, decision: 'approve' });
+  assert.equal(d1.status, 'failed'); assert.match(d1.reason, /changed since this draft/);
+  process.env.META_PAGE_ID = 'page-1';
+  delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN;
+});
+
 test('instagram without a media link fails validation, never publishes', async () => {
   process.env.META_PAGE_ID = 'page-1'; process.env.META_PAGE_TOKEN = 'tok';
   const r = await propose('propose_social_post', { network: 'instagram', text: 'Pretty kitchen' });
@@ -62,66 +83,98 @@ test('instagram without a media link fails validation, never publishes', async (
   delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN;
 });
 
-test('propose_ad_campaign drafts; approve fails closed without an ads account; google is honest about not being wired', async () => {
+test('propose_ad_campaign drafts; approval fails closed when the account was connected after drafting', async () => {
   const r = await propose('propose_ad_campaign', { network: 'meta', headline: 'Kyalami cottage to let', body: 'Garden cottage, R12,500/m.', audience: 'Sandton, 25-45', daily_budget_cents: 15000, currency: 'zar' });
   assert.match(String(r), /approval queue/);
   const ap = await lastApproval();
   assert.equal(ap.kind, 'ad_campaign_draft');
   assert.equal(ap.payload.daily_budget_cents, 15000); assert.equal(ap.payload.currency, 'ZAR');
+  assert.equal(ap.payload.account_ref, 'meta:unconfigured', 'draft binds to the account state at draft time');
+  process.env.META_AD_ACCOUNT_ID = 'acct-1'; process.env.META_ADS_TOKEN = 'tok'; process.env.META_PAGE_ID = 'page-1';
   const owner = await ownerOf(A);
   const d = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve' });
-  assert.equal(d.status, 'failed'); assert.match(d.reason, /not connected yet/, 'no fake campaign');
-  const r2 = await propose('propose_ad_campaign', { network: 'google', headline: 'h', body: 'b', daily_budget_cents: 1000, currency: 'ZAR' });
-  const ap2 = await lastApproval();
-  const d2 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap2.id, decision: 'approve' });
-  assert.equal(d2.status, 'failed'); assert.match(d2.reason, /not connected yet/, 'fails closed without platform ads config');
+  assert.equal(d.status, 'failed'); assert.match(d.reason, /re-draft/, 'no fake campaign, no silent account switch');
+  delete process.env.META_AD_ACCOUNT_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID;
 });
 
-test('google executor: names the missing Google connection, then creates budget + PAUSED campaign once configured', async () => {
-  process.env.GOOGLE_ADS_DEVELOPER_TOKEN = 'devtok'; process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
-  const owner = await ownerOf(A);
-  await propose('propose_ad_campaign', { network: 'google', headline: 'Kyalami cottage', body: 'b', daily_budget_cents: 15000, currency: 'ZAR' });
+test('meta chain creates campaign, ad set, creative, ad - all PAUSED - exactly from the approved payload (stub Graph API)', async () => {
+  process.env.META_AD_ACCOUNT_ID = 'acct-1'; process.env.META_ADS_TOKEN = 'tok'; process.env.META_PAGE_ID = 'page-1';
+  await propose('propose_ad_campaign', { network: 'meta', headline: 'Kyalami cottage to let', body: 'Garden cottage, R12,500/m.', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/listing' });
   const ap = await lastApproval();
-  const d1 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve' });
-  assert.equal(d1.status, 'failed'); assert.match(d1.reason, /ads permission/, 'no Google account with ads scope connected');
-  // Connect a Google account carrying the adwords scope and re-draft
-  await withTenant(A, (c) => c.query("INSERT INTO integrations (tenant_id, provider, account_email, scopes, access_token_enc, expires_at, status) VALUES (current_setting('app.tenant_id')::uuid,'google','a@example.test','openid email adwords',$1, now() + interval '1 hour','active')", [enc('google-oauth-token')]));
-  await propose('propose_ad_campaign', { network: 'google', headline: 'Kyalami cottage', body: 'b', daily_budget_cents: 15000, currency: 'ZAR' });
-  const ap2 = await lastApproval();
+  assert.equal(ap.payload.account_ref, 'meta:acct-1');
   const seen = [];
-  const fetchImpl = async (url, opts) => {
-    seen.push({ url: String(url), opts });
-    if (String(url).includes('campaignBudgets')) return { ok: true, status: 200, json: async () => ({ results: [{ resourceName: 'customers/1234567890/campaignBudgets/55' }] }) };
-    return { ok: true, status: 200, json: async () => ({ results: [{ resourceName: 'customers/1234567890/campaigns/77' }] }) };
-  };
-  const d2 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap2.id, decision: 'approve', fetchImpl });
-  assert.equal(d2.status, 'executed', JSON.stringify(d2));
-  assert.equal(seen.length, 2, 'budget then campaign');
-  assert.equal(seen[0].url, 'https://googleads.googleapis.com/v18/customers/1234567890/campaignBudgets:mutate');
-  assert.equal(JSON.parse(seen[0].opts.body).operations[0].create.amountMicros, 150000000, 'cents converted to micros');
-  assert.equal(seen[0].opts.headers['developer-token'], 'devtok');
-  assert.equal(seen[0].opts.headers.authorization, 'Bearer google-oauth-token');
-  assert.equal(seen[1].url, 'https://googleads.googleapis.com/v18/customers/1234567890/campaigns:mutate');
-  const camp = JSON.parse(seen[1].opts.body).operations[0].create;
-  assert.equal(camp.status, 'PAUSED', 'money never moves on approval alone');
-  assert.equal(camp.campaignBudget, 'customers/1234567890/campaignBudgets/55');
-  delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN; delete process.env.GOOGLE_ADS_CUSTOMER_ID;
-});
-
-test('meta ad campaign is created PAUSED once credentials exist (stub Graph API)', async () => {
-  process.env.META_AD_ACCOUNT_ID = '123'; process.env.META_ADS_TOKEN = 'tok';
-  await propose('propose_ad_campaign', { network: 'meta', headline: 'Kyalami cottage to let', body: 'b', daily_budget_cents: 15000, currency: 'ZAR' });
-  const ap = await lastApproval();
-  const seen = [];
-  const fetchImpl = async (url, opts) => { seen.push({ url: String(url), opts }); return { ok: true, status: 200, json: async () => ({ id: 'camp1' }) }; };
+  let n = 0;
+  const fetchImpl = async (url, opts) => { seen.push({ url: String(url), body: JSON.parse(opts.body) }); return { ok: true, status: 200, json: async () => ({ id: 'id' + (++n) }) }; };
   const owner = await ownerOf(A);
   const d = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve', fetchImpl });
   assert.equal(d.status, 'executed', JSON.stringify(d));
-  assert.equal(seen.length, 1);
-  const body = JSON.parse(seen[0].opts.body);
-  assert.equal(body.status, 'PAUSED', 'money never moves on approval alone');
-  assert.equal(body.daily_budget, 15000);
-  delete process.env.META_AD_ACCOUNT_ID; delete process.env.META_ADS_TOKEN;
+  assert.deepEqual(seen.map((x) => x.url.split('/').pop()), ['campaigns', 'adsets', 'adcreatives', 'ads']);
+  assert.equal(seen[0].body.status, 'PAUSED');
+  assert.equal(seen[1].body.status, 'PAUSED'); assert.equal(seen[1].body.daily_budget, 15000); assert.equal(seen[1].body.campaign_id, 'id1');
+  assert.equal(seen[2].body.object_story_spec.link_data.message, 'Garden cottage, R12,500/m.', 'exact approved words');
+  assert.equal(seen[2].body.object_story_spec.link_data.link, 'https://example.test/listing');
+  assert.equal(seen[3].body.status, 'PAUSED'); assert.equal(seen[3].body.creative.creative_id, 'id3');
+  delete process.env.META_AD_ACCOUNT_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID;
+});
+
+test('meta chain failure cleans up created objects and names them (no silent orphans)', async () => {
+  process.env.META_AD_ACCOUNT_ID = 'acct-1'; process.env.META_ADS_TOKEN = 'tok'; process.env.META_PAGE_ID = 'page-1';
+  await propose('propose_ad_campaign', { network: 'meta', headline: 'h', body: 'b', daily_budget_cents: 5000, currency: 'ZAR', link: 'https://example.test/x' });
+  const ap = await lastApproval();
+  const calls = [];
+  const fetchImpl = async (url, opts) => {
+    calls.push({ method: opts.method, url: String(url) });
+    if (String(url).endsWith('/adsets')) return { ok: false, status: 400, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ id: 'cid1' }) };
+  };
+  const owner = await ownerOf(A);
+  const d = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve', fetchImpl });
+  assert.equal(d.status, 'failed');
+  assert.match(d.reason, /cleanup attempted for: cid1/, 'the orphaned campaign is named in the failure');
+  assert.ok(calls.some((x) => x.method === 'DELETE' && x.url.endsWith('/cid1')), 'cleanup delete issued for the created campaign');
+  const after = (await withTenant(A, (c) => c.query("SELECT payload->'created' AS created FROM approvals WHERE id=$1", [ap.id]))).rows[0];
+  assert.equal(after.created.meta_campaign, 'cid1', 'evidence recorded on the approval payload');
+  delete process.env.META_AD_ACCOUNT_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID;
+});
+
+test('google chain: needs 3 headlines + 2 descriptions, then budget -> campaign -> ad group -> RSA ad, all PAUSED (stub API)', async () => {
+  process.env.GOOGLE_ADS_DEVELOPER_TOKEN = 'devtok'; process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
+  const owner = await ownerOf(A);
+  // Thin draft fails closed instead of inventing words
+  await propose('propose_ad_campaign', { network: 'google', headline: 'Kyalami cottage', body: 'b', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/l' });
+  const thin = await lastApproval();
+  const d0 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: thin.id, decision: 'approve' });
+  assert.equal(d0.status, 'failed'); assert.match(d0.reason, /3 headlines and 2 descriptions/);
+  // Full draft, but no Google account with ads scope connected
+  await propose('propose_ad_campaign', { network: 'google', headline: 'Kyalami cottage to let', headline_2: 'Garden cottage, R12,500', headline_3: 'View this Saturday', body: 'Two-bedroom garden cottage in Kyalami, available 1 December.', description_2: 'Book your viewing today. Water included, prepaid electricity.', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/l' });
+  const ap = await lastApproval();
+  const d1 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve' });
+  assert.equal(d1.status, 'failed'); assert.match(d1.reason, /ads permission/);
+  // Connect the ads-scope account and re-draft (binding requires a fresh draft)
+  await withTenant(A, (c) => c.query("INSERT INTO integrations (tenant_id, provider, account_email, scopes, access_token_enc, expires_at, status) VALUES (current_setting('app.tenant_id')::uuid,'google','a@example.test','openid email adwords',$1, now() + interval '1 hour','active')", [enc('google-oauth-token')]));
+  await propose('propose_ad_campaign', { network: 'google', headline: 'Kyalami cottage to let', headline_2: 'Garden cottage, R12,500', headline_3: 'View this Saturday', body: 'Two-bedroom garden cottage in Kyalami, available 1 December.', description_2: 'Book your viewing today. Water included, prepaid electricity.', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/l' });
+  const ap2 = await lastApproval();
+  const seen = [];
+  const fetchImpl = async (url, opts) => {
+    seen.push({ url: String(url), body: JSON.parse(opts.body), headers: opts.headers });
+    const rn = 'customers/1234567890/' + String(url).split('/').pop().replace(':mutate', '') + '/9';
+    return { ok: true, status: 200, json: async () => ({ results: [{ resourceName: rn }] }) };
+  };
+  const d2 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap2.id, decision: 'approve', fetchImpl });
+  assert.equal(d2.status, 'executed', JSON.stringify(d2));
+  assert.deepEqual(seen.map((x) => x.url.split('/').pop()), ['campaignBudgets:mutate', 'campaigns:mutate', 'adGroups:mutate', 'adGroupAds:mutate']);
+  assert.ok(seen[0].url.startsWith('https://googleads.googleapis.com/v26/'), 'current API version');
+  assert.equal(seen[0].body.operations[0].create.amountMicros, 150000000, 'cents converted to micros exactly');
+  assert.equal(seen[0].headers['developer-token'], 'devtok');
+  assert.equal(seen[0].headers.authorization, 'Bearer google-oauth-token');
+  assert.equal(seen[1].body.operations[0].create.status, 'PAUSED');
+  assert.equal(seen[2].body.operations[0].create.status, 'PAUSED');
+  const rsa = seen[3].body.operations[0].create.ad.responsiveSearchAd;
+  assert.deepEqual(rsa.headlines.map((h) => h.text), ['Kyalami cottage to let', 'Garden cottage, R12,500', 'View this Saturday'], 'exact approved headlines, nothing invented');
+  assert.deepEqual(rsa.descriptions.map((d) => d.text), ['Two-bedroom garden cottage in Kyalami, available 1 December.', 'Book your viewing today. Water included, prepaid electricity.']);
+  assert.deepEqual(seen[3].body.operations[0].create.ad.finalUrls, ['https://example.test/l']);
+  assert.equal(seen[3].body.operations[0].create.status, 'PAUSED');
+  delete process.env.GOOGLE_ADS_DEVELOPER_TOKEN; delete process.env.GOOGLE_ADS_CUSTOMER_ID;
 });
 
 test('emergency stop cancels social and ad approvals at decision time', async () => {

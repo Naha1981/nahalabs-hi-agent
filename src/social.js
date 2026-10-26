@@ -14,6 +14,12 @@ export async function executeSocialPost(c, { tenantId, approval, fetchImpl = fet
   if (!text.trim()) return fail('post text is empty');
   const pageId = process.env.META_PAGE_ID, token = process.env.META_PAGE_TOKEN;
   if (!pageId || !token) return fail('the Facebook/Instagram account is not connected yet - connect it in Integrations first');
+  const currentRef = `page:${pageId}`;
+  if (p.account_ref !== currentRef) {
+    return fail(p.account_ref && !p.account_ref.endsWith('unconfigured')
+      ? 'the connected page changed since this draft was made - review and re-draft for the new page'
+      : 'no page was connected when this draft was made - connect it, then re-draft so you review against the real page');
+  }
   try {
     if (network === 'facebook') {
       const res = await fetchImpl(`https://graph.facebook.com/v21.0/${pageId}/feed`, {
@@ -49,63 +55,127 @@ export async function executeAdCampaign(c, { tenantId, approval, fetchImpl = fet
   const p = approval.payload || {};
   const fail = async (error) => { await audit(c, tenantId, 'system', 'ads.campaign_blocked', { approval_id: approval.id, reason: error }); return { error }; };
   const budget = Number(p.daily_budget_cents);
-  if (!Number.isFinite(budget) || budget <= 0) return fail('daily budget is missing');
-  if (String(p.network) === 'google') return executeGoogleAdCampaign(c, { tenantId, approval, payload: p, fetchImpl, fail });
-  if (String(p.network) !== 'meta') return fail('unsupported ads network');
-  const acct = process.env.META_AD_ACCOUNT_ID, token = process.env.META_ADS_TOKEN;
-  if (!acct || !token) return fail('the Meta ads account is not connected yet - no campaign exists until it is');
-  // Created PAUSED: money moves only when the owner activates it in their own Ads Manager.
+  if (!Number.isFinite(budget) || budget <= 0 || !Number.isInteger(budget)) return fail('daily budget must be a whole number of cents');
+  // The draft is bound to the ads account that was connected when it was made.
+  // If the connected account changed (or first appeared) after drafting, the
+  // owner must re-review against the new account - never silently switch.
+  const currentRef = String(p.network) === 'meta'
+    ? `meta:${process.env.META_AD_ACCOUNT_ID || 'unconfigured'}`
+    : `google:${String(process.env.GOOGLE_ADS_CUSTOMER_ID || 'unconfigured').replace(/-/g, '')}`;
+  if (p.account_ref !== currentRef) {
+    return fail(p.account_ref && !p.account_ref.endsWith('unconfigured')
+      ? 'the ads account changed since this draft was made - review and re-draft for the new account'
+      : 'the ads account was not connected when this draft was made - connect it, then re-draft so you review against the real account');
+  }
+  if (String(p.network) === 'meta') return executeMetaChain(c, { tenantId, approval, payload: p, fetchImpl, fail });
+  if (String(p.network) === 'google') return executeGoogleChain(c, { tenantId, approval, payload: p, fetchImpl, fail });
+  return fail('unsupported ads network');
+}
+
+// Records each created resource on the approval payload as it happens, so a
+// later failure leaves evidence of exactly what exists in the ads account.
+async function recordCreated(c, approvalId, key, value) {
+  await c.query("UPDATE approvals SET payload = jsonb_set(payload, '{created}', COALESCE(payload->'created','{}'::jsonb) || jsonb_build_object($2::text, to_jsonb($3::text))) WHERE id=$1", [approvalId, key, value]);
+}
+
+// Full Meta chain: campaign -> ad set (budget lives here) -> creative -> ad,
+// every object PAUSED. Unverified against current Meta docs from here (docs
+// fetch blocked); shapes reviewed when the real account is connected. On
+// failure everything already created is deleted best-effort; whatever cannot
+// be deleted is named in the failure reason and audit so it is never silent.
+async function executeMetaChain(c, { tenantId, approval, payload: p, fetchImpl, fail }) {
+  const acct = process.env.META_AD_ACCOUNT_ID, token = process.env.META_ADS_TOKEN, pageId = process.env.META_PAGE_ID;
+  if (!acct || !token || !pageId) return fail('the Meta ads account is not connected yet - no campaign exists until it is');
+  if (!p.link) return fail('ad drafts need a destination link before anything is created');
+  const base = `https://graph.facebook.com/v21.0/act_${acct}`;
+  const post = async (url, body) => {
+    const res = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, access_token: token }), signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error('meta http ' + res.status + ' on ' + url.split('/').pop());
+    return (await res.json())?.id;
+  };
+  const del = async (id) => { try { await fetchImpl(`https://graph.facebook.com/v21.0/${id}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ access_token: token }), signal: AbortSignal.timeout(15000) }); } catch { /* best effort */ } };
+  const created = [];
   try {
-    const res = await fetchImpl(`https://graph.facebook.com/v21.0/act_${acct}/campaigns`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        name: String(p.headline || 'HI campaign').slice(0, 100), objective: 'OUTCOME_TRAFFIC',
-        status: 'PAUSED', special_ad_categories: [], daily_budget: Math.round(budget),
-        access_token: token,
-      }),
-      signal: AbortSignal.timeout(15000),
+    const name = String(p.headline || 'HI campaign').slice(0, 100);
+    const campaign = await post(`${base}/campaigns`, { name, objective: 'OUTCOME_TRAFFIC', status: 'PAUSED', special_ad_categories: [] });
+    if (!campaign) throw new Error('campaign create returned no id');
+    created.push(campaign); await recordCreated(c, approval.id, 'meta_campaign', campaign);
+    const adset = await post(`${base}/adsets`, {
+      name: name + ' - ad set', campaign_id: campaign, daily_budget: Math.round(budgetOf(p)),
+      billing_event: 'IMPRESSIONS', optimization_goal: 'LINK_CLICKS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
+      targeting: { geo_locations: { countries: ['ZA'] } }, status: 'PAUSED',
     });
-    if (!res.ok) return fail('meta ads http ' + res.status);
-  } catch (e) { return fail(String(e?.message || e).slice(0, 120)); }
-  await audit(c, tenantId, approval.proposed_by, 'ads.campaign_created', { approval_id: approval.id });
+    if (!adset) throw new Error('ad set create returned no id');
+    created.push(adset); await recordCreated(c, approval.id, 'meta_adset', adset);
+    const creative = await post(`${base}/adcreatives`, {
+      name: name + ' - creative',
+      object_story_spec: { page_id: pageId, link_data: { message: String(p.body || ''), link: p.link, name: String(p.headline || ''), call_to_action: { type: 'LEARN_MORE', value: { link: p.link } } } },
+    });
+    if (!creative) throw new Error('creative create returned no id');
+    created.push(creative); await recordCreated(c, approval.id, 'meta_creative', creative);
+    const ad = await post(`https://graph.facebook.com/v21.0/act_${acct}/ads`, { name: name + ' - ad', adset_id: adset, creative: { creative_id: creative }, status: 'PAUSED' });
+    if (!ad) throw new Error('ad create returned no id');
+    created.push(ad); await recordCreated(c, approval.id, 'meta_ad', ad);
+  } catch (e) {
+    for (const id of [...created].reverse()) await del(id);
+    return fail(String(e?.message || e).slice(0, 120) + (created.length ? ` (cleanup attempted for: ${created.join(', ')})` : ''));
+  }
+  await audit(c, tenantId, approval.proposed_by, 'ads.campaign_created', { approval_id: approval.id, network: 'meta', ids: created });
   return { ok: true };
 }
 
-// Google Ads, per Google's own REST examples (developers.google.com/google-ads/api/rest/examples):
-// create the budget, then the campaign referencing it, always PAUSED. Needs a
-// developer token and customer ID in platform config plus the tenant's Google
-// account connected with the ads (adwords) scope; every missing piece fails
-// closed with the reason named. login-customer-id is sent only when a manager
-// account is configured.
-async function executeGoogleAdCampaign(c, { tenantId, approval, payload: p, fetchImpl, fail }) {
+const budgetOf = (p) => Number(p.daily_budget_cents);
+
+// Full Google chain per the verified REST examples (v26 is the current
+// version per developers.google.com/google-ads/api/docs/upgrade): budget ->
+// campaign -> ad group -> responsive search ad, all PAUSED. RSA requires 3
+// headlines and 2 descriptions, so the draft must carry them; anything less
+// fails closed instead of inventing words. On failure created resources are
+// removed best-effort and named otherwise.
+async function executeGoogleChain(c, { tenantId, approval, payload: p, fetchImpl, fail }) {
   const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN, customerId = String(process.env.GOOGLE_ADS_CUSTOMER_ID || '').replace(/-/g, '');
   const managerId = String(process.env.GOOGLE_ADS_MANAGER_CUSTOMER_ID || '').replace(/-/g, '');
   if (!devToken || !customerId) return fail('the Google Ads account is not connected yet - developer token and customer ID are not configured');
-  const integ = (await c.query("SELECT id, access_token_enc, expires_at FROM integrations WHERE provider='google' AND status='active' AND scopes ILIKE '%adwords%' ORDER BY created_at LIMIT 1")).rows[0];
+  const headlines = [p.headline, p.headline_2, p.headline_3].map((h) => String(h || '').trim()).filter(Boolean);
+  const descriptions = [p.body, p.description_2].map((d) => String(d || '').trim()).filter(Boolean);
+  if (headlines.length < 3 || descriptions.length < 2) return fail('Google search ads need exactly 3 headlines and 2 descriptions - re-draft with headline_2, headline_3 and description_2 so every word is approved');
+  if (!p.link) return fail('ad drafts need a destination link before anything is created');
+  const integ = (await c.query("SELECT id, access_token_enc FROM integrations WHERE provider='google' AND status='active' AND scopes ILIKE '%adwords%' ORDER BY created_at LIMIT 1")).rows[0];
   const token = integ ? dec(integ.access_token_enc) : null;
   if (!token) return fail('no Google account is connected with the ads permission yet - connect one in Integrations first');
-  const version = process.env.GOOGLE_ADS_API_VERSION || '18';
+  const version = process.env.GOOGLE_ADS_API_VERSION || '26';  // v26 = current per Google's upgrade docs, Oct 2026
   const headers = { 'content-type': 'application/json', 'developer-token': devToken, authorization: 'Bearer ' + token, ...(managerId ? { 'login-customer-id': managerId } : {}) };
-  const micros = Math.round(Number(p.daily_budget_cents) * 10000);  // cents -> micros (1 currency unit = 1e6 micros)
   const base = `https://googleads.googleapis.com/v${version}/customers/${customerId}`;
+  const micros = Math.round(Number(p.daily_budget_cents) * 10000);  // cents -> micros (1 currency unit = 1e6 micros)
+  const mutate = async (resource, create) => {
+    const res = await fetchImpl(`${base}/${resource}:mutate`, { method: 'POST', headers, signal: AbortSignal.timeout(15000), body: JSON.stringify({ operations: [{ create }] }) });
+    if (!res.ok) throw new Error(resource + ' http ' + res.status);
+    const rn = (await res.json())?.results?.[0]?.resourceName;
+    if (!rn) throw new Error(resource + ' returned no resource name');
+    return rn;
+  };
+  const remove = async (resource, rn) => { try { await fetchImpl(`${base}/${resource}:mutate`, { method: 'POST', headers, signal: AbortSignal.timeout(15000), body: JSON.stringify({ operations: [{ remove: rn }] }) }); } catch { /* best effort */ } };
+  const name = ('HI: ' + String(p.headline || 'campaign')).slice(0, 100);
+  const created = [];
   try {
-    const b = await fetchImpl(`${base}/campaignBudgets:mutate`, {
-      method: 'POST', headers, signal: AbortSignal.timeout(15000),
-      body: JSON.stringify({ operations: [{ create: { name: ('HI: ' + String(p.headline || 'campaign')).slice(0, 100), amountMicros: micros, deliveryMethod: 'STANDARD', explicitlyShared: false } }] }),
+    const budget = await mutate('campaignBudgets', { name, amountMicros: micros, deliveryMethod: 'STANDARD', explicitlyShared: false });
+    created.push(['campaignBudgets', budget]); await recordCreated(c, approval.id, 'google_budget', budget);
+    const campaign = await mutate('campaigns', {
+      name, status: 'PAUSED', advertisingChannelType: 'SEARCH', campaignBudget: budget, targetSpend: {},
+      geoTargetTypeSetting: { positiveGeoTargetType: 'PRESENCE_OR_INTEREST', negativeGeoTargetType: 'PRESENCE_OR_INTEREST' },
     });
-    if (!b.ok) return fail('google ads budget http ' + b.status);
-    const budgetName = (await b.json())?.results?.[0]?.resourceName;
-    if (!budgetName) return fail('google ads budget returned no resource name');
-    const camp = await fetchImpl(`${base}/campaigns:mutate`, {
-      method: 'POST', headers, signal: AbortSignal.timeout(15000),
-      body: JSON.stringify({ operations: [{ create: {
-        name: ('HI: ' + String(p.headline || 'campaign')).slice(0, 100), status: 'PAUSED',
-        advertisingChannelType: 'SEARCH', campaignBudget: budgetName, targetSpend: {},
-        geoTargetTypeSetting: { positiveGeoTargetType: 'PRESENCE_OR_INTEREST', negativeGeoTargetType: 'PRESENCE_OR_INTEREST' },
-      } }] }),
+    created.push(['campaigns', campaign]); await recordCreated(c, approval.id, 'google_campaign', campaign);
+    const adGroup = await mutate('adGroups', { name: name + ' - ad group', campaign, status: 'PAUSED', type: 'SEARCH_STANDARD' });
+    created.push(['adGroups', adGroup]); await recordCreated(c, approval.id, 'google_adgroup', adGroup);
+    const ad = await mutate('adGroupAds', {
+      adGroup, status: 'PAUSED',
+      ad: { responsiveSearchAd: { headlines: headlines.map((t) => ({ text: t.slice(0, 30) })), descriptions: descriptions.map((t) => ({ text: t.slice(0, 90) })) }, finalUrls: [p.link] },
     });
-    if (!camp.ok) return fail('google ads campaign http ' + camp.status);
-  } catch (e) { return fail(String(e?.message || e).slice(0, 120)); }
-  await audit(c, tenantId, approval.proposed_by, 'ads.campaign_created', { approval_id: approval.id, network: 'google' });
+    created.push(['adGroupAds', ad]); await recordCreated(c, approval.id, 'google_ad', ad);
+  } catch (e) {
+    for (const [resource, rn] of [...created].reverse()) await remove(resource, rn);
+    return fail(String(e?.message || e).slice(0, 120) + (created.length ? ` (cleanup attempted for: ${created.map(([, rn]) => rn).join(', ')})` : ''));
+  }
+  await audit(c, tenantId, approval.proposed_by, 'ads.campaign_created', { approval_id: approval.id, network: 'google', ids: created.map(([, rn]) => rn) });
   return { ok: true };
 }
