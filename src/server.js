@@ -426,19 +426,62 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const u = req.user;
     const d = await withTenant(u.tenant_id, async (c) => ({
       convos: (await c.query(`SELECT m.phone, COALESCE(NULLIF(ct.name,''), m.phone) AS label,
-          (SELECT body FROM wa_messages m2 WHERE m2.phone=m.phone ORDER BY id DESC LIMIT 1) AS last_body,
-          (SELECT direction FROM wa_messages m2 WHERE m2.phone=m.phone ORDER BY id DESC LIMIT 1) AS last_dir,
-          (SELECT created_at FROM wa_messages m2 WHERE m2.phone=m.phone ORDER BY id DESC LIMIT 1) AS last_at,
+          (SELECT body FROM wa_messages m2 WHERE m2.phone=m.phone AND m2.status <> 'ignored' ORDER BY id DESC LIMIT 1) AS last_body,
+          (SELECT direction FROM wa_messages m2 WHERE m2.phone=m.phone AND m2.status <> 'ignored' ORDER BY id DESC LIMIT 1) AS last_dir,
+          (SELECT created_at FROM wa_messages m2 WHERE m2.phone=m.phone AND m2.status <> 'ignored' ORDER BY id DESC LIMIT 1) AS last_at,
           count(*)::int AS n
         FROM wa_messages m LEFT JOIN wa_contacts ct ON ct.phone = m.phone
         WHERE m.status <> 'ignored'
         GROUP BY m.phone, ct.name ORDER BY last_at DESC NULLS LAST LIMIT 50`)).rows,
-      meta: (await c.query("SELECT count(*)::int n FROM integrations WHERE provider='meta' AND status='active'")).rows[0].n,
     }));
-    const rows = d.convos.map((x) => `<tr><td><b>${esc(x.label)}</b><br><span class="mut">${esc(x.phone)}</span></td><td>WhatsApp</td><td>${x.last_dir === 'in' ? 'them' : 'you'}: ${esc(String(x.last_body || '').slice(0, 120))}</td><td>${fdate(x.last_at)}</td><td>${x.n}</td></tr>`).join('');
-    return render(reply, u, 'Inbox', `<h1>Inbox</h1><p class="mut">Every conversation with your business, in one place. Only real messages appear here - nothing is made up.</p>
-      <div class="card"><b>Conversations</b><table><tr><th>Who</th><th>Channel</th><th>Latest</th><th>When</th><th>Messages</th></tr>${rows || '<tr><td colspan="5" class="mut">No conversations yet. When a customer messages your WhatsApp line, the conversation lands here.</td></tr>'}</table></div>
-      <div class="card"><b>Other channels</b><p class="mut">Instagram and Facebook messages are not connected yet. When you link those accounts in Integrations, their conversations appear in the list above with their own channel label. Nothing is shown until then.</p></div>`, flashOf(req));
+    const rows = d.convos.map((x) => `<a href="/app/inbox/${esc(x.phone)}" style="display:block;border-top:1px solid var(--line);padding:10px 2px;text-decoration:none;color:inherit">
+      <b>${esc(x.label)}</b> <span class="mut">${esc(x.phone)} &middot; WhatsApp</span><br>
+      <span>${x.last_dir === 'in' ? 'Them' : 'You'}: ${esc(String(x.last_body || '').slice(0, 160))}</span><br>
+      <span class="mut">${fdate(x.last_at)} &middot; ${x.n} message${x.n === 1 ? '' : 's'}</span></a>`).join('');
+    return render(reply, u, 'Inbox', `<h1>Inbox</h1><p class="mut">Your WhatsApp conversations, in one list. Only real messages appear here - nothing is made up.</p>
+      <div class="card"><b>WhatsApp conversations</b>${rows || '<p class="mut">No conversations yet. When a customer messages your WhatsApp line, the conversation lands here.</p>'}</div>
+      <div class="card"><b>Other channels</b><p class="mut">Instagram and Facebook messages cannot be received yet - that part is not built. Linking an account alone does not bring messages in.</p></div>`, flashOf(req));
+  });
+
+  app.get('/app/inbox/:phone', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const phone = String(req.params.phone || '');
+    if (!/^[0-9]{8,15}$/.test(phone)) return reply.code(400).send('bad number');
+    const d = await withTenant(u.tenant_id, async (c) => ({
+      contact: (await c.query('SELECT name FROM wa_contacts WHERE phone=$1', [phone])).rows[0],
+      msgs: (await c.query("SELECT direction, body, status, created_at FROM wa_messages WHERE phone=$1 AND status <> 'ignored' ORDER BY id ASC LIMIT 200", [phone])).rows,
+      ch: (await c.query('SELECT number FROM wa_channels ORDER BY created_at LIMIT 1')).rows[0],
+    }));
+    if (!d.contact && !d.msgs.length) return reply.redirect('/app/inbox?m=' + encodeURIComponent('No conversation with that number.'));
+    const label = d.contact?.name || phone;
+    const thread = d.msgs.map((m) => `<div style="border-top:1px solid var(--line);padding:8px 2px"><span class="mut">${m.direction === 'in' ? 'Them' : 'You'} &middot; ${fdate(m.created_at)}${m.direction === 'out' ? ' &middot; ' + esc(m.status) : ''}</span><br>${esc(m.body)}</div>`).join('');
+    return render(reply, u, `Chat with ${label}`, `<h1>${esc(label)}</h1><p class="mut">${esc(phone)} &middot; WhatsApp</p>
+      <div class="card">${thread || '<p class="mut">No messages yet.</p>'}</div>
+      <div class="card"><b>Reply</b>${d.ch
+        ? `<p class="mut">Your reply goes to the approval queue first. It is sent only when you approve it there - exactly the words you write, to ${esc(phone)}.</p>
+        <form method="post" action="/app/inbox/${esc(phone)}/reply">${csrf(u)}<textarea name="body" rows="3" maxlength="2000" required style="width:100%"></textarea><p><button>Draft reply for approval</button></p></form>`
+        : '<p class="mut">No WhatsApp number is linked yet, so replies cannot be drafted.</p>'}</div>`, flashOf(req));
+  });
+
+  app.post('/app/inbox/:phone/reply', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const phone = String(req.params.phone || '');
+    if (!/^[0-9]{8,15}$/.test(phone)) return reply.code(400).send('bad number');
+    const body = String(req.body?.body || '').trim().slice(0, 2000);
+    if (!body) return reply.redirect(`/app/inbox/${phone}?m=` + encodeURIComponent('Write the reply first.'));
+    const r = await withTenant(u.tenant_id, async (c) => {
+      const ch = (await c.query('SELECT id, engine, number FROM wa_channels ORDER BY created_at LIMIT 1')).rows[0];
+      if (!ch) return { error: 'No WhatsApp number is linked yet, so replies cannot be drafted.' };
+      const msg = (await c.query("INSERT INTO wa_messages (tenant_id, phone, direction, body, status) VALUES (current_setting('app.tenant_id')::uuid,$1,'out',$2,'proposed') RETURNING id", [phone, body])).rows[0];
+      const ap = (await c.query("INSERT INTO approvals (tenant_id, kind, summary, payload, proposed_by) VALUES (current_setting('app.tenant_id')::uuid,'whatsapp_reply',$1,$2,$3) RETURNING id",
+        [`WhatsApp reply to ${phone}: "${body.slice(0, 80)}"`,
+        JSON.stringify({ wa_message_id: msg.id, channel_id: ch.id, engine: ch.engine, from: ch.number, to: phone, body }),
+        `user:${u.user_id}`])).rows[0];
+      await audit(c, u.tenant_id, `user:${u.user_id}`, 'wa.owner_reply_drafted', { approval_id: ap.id, to: phone });
+      return { ok: true };
+    });
+    if (r.error) return reply.redirect('/app/inbox?m=' + encodeURIComponent(r.error));
+    return reply.redirect('/app/approvals?m=' + encodeURIComponent('Reply drafted. Approve it below to send exactly those words.'));
   });
 
   app.get('/app/reports', { preHandler: guard }, async (req, reply) => {
