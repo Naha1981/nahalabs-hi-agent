@@ -789,6 +789,7 @@ CREATE TABLE IF NOT EXISTS stripe_events (
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   link_id uuid NOT NULL REFERENCES stripe_links(id) ON DELETE CASCADE,
   event_id text NOT NULL,
+  payment_ref text,  -- the payment itself (pi_/ch_/cs_ id): one payment can fire several event types
   type text NOT NULL,
   amount_cents bigint,
   currency text NOT NULL DEFAULT '',
@@ -796,6 +797,8 @@ CREATE TABLE IF NOT EXISTS stripe_events (
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (link_id, event_id)  -- Stripe retries deliver the same event id; record once
 );
+ALTER TABLE stripe_events ADD COLUMN IF NOT EXISTS payment_ref text;
+CREATE UNIQUE INDEX IF NOT EXISTS stripe_events_payment_once ON stripe_events (link_id, payment_ref) WHERE payment_ref IS NOT NULL;
 ALTER TABLE stripe_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stripe_events FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON stripe_events;

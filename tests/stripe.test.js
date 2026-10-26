@@ -6,6 +6,7 @@ import { withTenant, withSystem } from '../src/db.js';
 import { buildApp } from '../src/server.js';
 import { verifyStripeSignature } from '../src/stripe.js';
 import { enc } from '../src/integrations.js';
+import { decideApproval } from '../src/core.js';
 
 process.env.HI_INVITE_CODES = 'invite-test-code'; process.env.SIGNUP_RATE_MAX = '100'; process.env.CRON_SECRET = 'cron-test-secret-value';
 process.env.SESSION_SECRET = 'session-secret-for-tests'; delete process.env.GROQ_API_KEY;
@@ -72,20 +73,51 @@ test('link without a signing secret refuses deliveries until it is set', async (
   assert.equal((await post(link.token, payload, sign(SECRET, payload))).statusCode, 503);
 });
 
-test('opt-in toggle emails only the owner address, through the approval machinery', async () => {
+test('opt-in toggle drafts the owner email but nothing sends without a click in Approvals', async () => {
   const link = await mkLink(A);
   await withSystem((c) => c.query('UPDATE tenants SET stripe_notifications_auto=true WHERE id=$1', [A]));
   await withTenant(A, (c) => c.query("INSERT INTO integrations (tenant_id, provider, account_email, scopes, access_token_enc, expires_at, status) VALUES (current_setting('app.tenant_id')::uuid,'google','a@example.test','',$1, now() + interval '1 hour','active')", [enc('fake-access-token')]));
   const payload = JSON.stringify({ id: 'evt_pay_2', type: 'charge.succeeded', data: { object: { amount: 42000, currency: 'zar', description: 'Retainer' } } });
   const r = await post(link.token, payload, sign(SECRET, payload));
-  assert.equal(r.statusCode, 200); assert.equal(r.json().emailed, true, JSON.stringify(r.json()));
-  const ap = (await withTenant(A, (c) => c.query("SELECT kind, status, proposed_by, payload FROM approvals WHERE proposed_by='system:stripe'"))).rows;
-  assert.equal(ap.length, 1); assert.equal(ap[0].kind, 'account_email'); assert.equal(ap[0].status, 'executed');
+  assert.equal(r.statusCode, 200);
+  assert.ok(r.json().approval_pending, JSON.stringify(r.json()));
+  const ap = (await withTenant(A, (c) => c.query("SELECT id, kind, status, proposed_by, payload FROM approvals WHERE proposed_by='system:stripe'"))).rows;
+  assert.equal(ap.length, 1); assert.equal(ap[0].kind, 'account_email'); assert.equal(ap[0].status, 'proposed', 'waits for the owner, never auto-sent');
   assert.equal(ap[0].payload.to, 'a@example.test', 'owner address only');
   assert.match(ap[0].payload.subject, /ZAR 420\.00/);
-  assert.equal(gmailCalls.length, 1);
+  assert.equal(gmailCalls.length, 0, 'no send before approval');
+  const owner = (await withTenant(A, (c) => c.query("SELECT id, email FROM users WHERE role='owner' ORDER BY created_at LIMIT 1"))).rows[0];
+  const d = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap[0].id, decision: 'approve', fetchImpl });
+  assert.equal(d.status, 'executed', JSON.stringify(d));
+  assert.equal(gmailCalls.length, 1, 'exactly one send, after the click');
   assert.equal(gmailCalls[0].url, 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send');
   await withSystem((c) => c.query('UPDATE tenants SET stripe_notifications_auto=false WHERE id=$1', [A]));
+});
+
+test('one payment across checkout/payment_intent/charge events is recorded once', async () => {
+  const link = await mkLink(A);
+  const pi = 'pi_shared_123';
+  const payloads = [
+    { id: 'evt_cs', type: 'checkout.session.completed', data: { object: { id: 'cs_1', payment_intent: pi, payment_status: 'paid', amount_total: 9900, currency: 'zar' } } },
+    { id: 'evt_pi', type: 'payment_intent.succeeded', data: { object: { id: pi, amount_received: 9900, currency: 'zar' } } },
+    { id: 'evt_ch', type: 'charge.succeeded', data: { object: { id: 'ch_1', payment_intent: pi, amount: 9900, currency: 'zar' } } },
+  ];
+  const results = [];
+  for (const p of payloads) { const j = JSON.stringify(p); results.push((await post(link.token, j, sign(SECRET, j))).json()); }
+  assert.equal(results.filter((x) => x.recorded).length, 1, JSON.stringify(results));
+  assert.equal(results.filter((x) => x.dup && x.same_payment).length, 2, 'the other two event types dedupe to the same payment');
+  const n = (await withTenant(A, (c) => c.query("SELECT count(*)::int n FROM stripe_events WHERE payment_ref=$1", [pi]))).rows[0].n;
+  assert.equal(n, 1);
+});
+
+test('refunded charges and unpaid checkout sessions are not recorded as receipts', async () => {
+  const link = await mkLink(A);
+  const refunded = JSON.stringify({ id: 'evt_ref', type: 'charge.succeeded', data: { object: { id: 'ch_r', amount: 500, currency: 'zar', refunded: true, amount_refunded: 500 } } });
+  assert.equal((await post(link.token, refunded, sign(SECRET, refunded))).json().ignored, 'not a completed payment');
+  const unpaid = JSON.stringify({ id: 'evt_unp', type: 'checkout.session.completed', data: { object: { id: 'cs_u', payment_status: 'unpaid', amount_total: 500, currency: 'zar' } } });
+  assert.equal((await post(link.token, unpaid, sign(SECRET, unpaid))).json().ignored, 'not a completed payment');
+  const n = (await withTenant(A, (c) => c.query("SELECT count(*)::int n FROM stripe_events WHERE event_id IN ('evt_ref','evt_unp')"))).rows[0].n;
+  assert.equal(n, 0, 'neither stored');
 });
 
 test('tenant isolation on stripe tables', async () => {

@@ -162,3 +162,47 @@ test('parseMetaWebhook ignores statuses and non-text', () => {
   assert.deepEqual(parseMetaWebhook({ entry: [{ changes: [{ value: { metadata: { display_phone_number: '2782' }, statuses: [{ id: 'x' }] } }] }] }), []);
   assert.deepEqual(parseMetaWebhook({}), []);
 });
+
+test('decision-time guards: paused channel, removed contact, daily cap, double approval', async () => {
+  const owner = await ownerOf(A);
+  // Paused channel: the proposal exists, but the send fails closed at decision time.
+  const apCh = await proposeOne(A, '27821110001', 'g1');
+  await withTenant(A.tenantId, (c) => c.query("UPDATE wa_channels SET status='paused'"));
+  const dCh = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: apCh, decision: 'approve' });
+  assert.equal(dCh.status, 'failed'); assert.match(dCh.reason, /no longer active/);
+  await withTenant(A.tenantId, (c) => c.query("UPDATE wa_channels SET status='active'"));
+  // Removed contact: same fail-closed shape.
+  const apCt = await proposeOne(A, '27821110001', 'g2');
+  await withTenant(A.tenantId, (c) => c.query("DELETE FROM wa_contacts WHERE phone='27829990001'"));
+  const dCt = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: apCt, decision: 'approve' });
+  assert.equal(dCt.status, 'failed'); assert.match(dCt.reason, /contact was removed/);
+  await withTenant(A.tenantId, (c) => c.query("INSERT INTO wa_contacts (tenant_id, phone, name) VALUES (current_setting('app.tenant_id')::uuid,'27829990001','Sam') ON CONFLICT DO NOTHING"));
+  // Daily cap reached: fail closed, message stays unsent.
+  const apCap = await proposeOne(A, '27821110001', 'g3');
+  // Cap check counts sent in last day; force it by stuffing sent rows up to the cap.
+  const cap = Number(process.env.WA_MAX_REPLIES_PER_TENANT_DAY || 100);
+  await withTenant(A.tenantId, async (c) => {
+    await c.query("INSERT INTO wa_messages (tenant_id, phone, direction, body, status) SELECT current_setting('app.tenant_id')::uuid, '27829990001', 'out', 'x', 'sent' FROM generate_series(1, $1)", [cap]);
+  });
+  const dCap = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: apCap, decision: 'approve' });
+  assert.equal(dCap.status, 'failed'); assert.match(dCap.reason, /limit reached/);
+  await withTenant(A.tenantId, (c) => c.query("DELETE FROM wa_messages WHERE direction='out' AND status='sent' AND body='x'"));
+  // Double approval: the second decision cannot re-send.
+  const apDbl = await proposeOne(A, '27821110001', 'g4');
+  const d1 = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: apDbl, decision: 'approve' });
+  assert.equal(d1.status, 'executed', JSON.stringify(d1));
+  const sentN = (await withTenant(A.tenantId, (c) => c.query("SELECT count(*)::int n FROM wa_messages WHERE direction='out' AND status='sent'"))).rows[0].n;
+  const d2 = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: apDbl, decision: 'approve' });
+  assert.notEqual(d2.status, 'executed', 'second approve is a no-op: ' + JSON.stringify(d2));
+  assert.equal((await withTenant(A.tenantId, (c) => c.query("SELECT count(*)::int n FROM wa_messages WHERE direction='out' AND status='sent'"))).rows[0].n, sentN, 'sent count unchanged');
+});
+
+test('paused tenant: proposals cancel at decision time and never send', async () => {
+  const owner = await ownerOf(A);
+  const ap = await proposeOne(A, '27821110001', 'pt1');
+  await withSystem((c) => c.query('UPDATE tenants SET paused=true WHERE id=$1', [A.tenantId]));
+  const d = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: ap, decision: 'approve' });
+  assert.equal(d.status, 'cancelled', JSON.stringify(d));
+  assert.equal((await withTenant(A.tenantId, (c) => c.query("SELECT status FROM wa_messages WHERE id=(SELECT (payload->>'wa_message_id')::bigint FROM approvals WHERE id=$1)", [ap]))).rows[0].status, 'failed');
+  await withSystem((c) => c.query('UPDATE tenants SET paused=false WHERE id=$1', [A.tenantId]));
+});
