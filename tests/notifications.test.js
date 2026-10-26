@@ -46,6 +46,13 @@ test('feed shows the real event, unread badge in the nav, and NEW marker', async
   assert.match(feed.body, /<b>NEW<\/b>/);
 });
 
+test('internal flags and provider IDs never render in the feed', async () => {
+  await withTenant(A.tenantId, (c) => audit(c, A.tenantId, 'system', 'ads.chain_failed', { network: 'meta', error: 'HI_META_ADS_API_VERIFIED is off: Meta Ads API not verified', created_ids: ['act_88421099:cmp_120221'] }));
+  const feed = await get(A, '/app/notifications');
+  assert.doesNotMatch(feed.body, /HI_META|act_88421099|cmp_120221|Meta Ads API/);
+  assert.match(feed.body, /Setting up an ad draft did not finish/);
+});
+
 test('mark all as read resets the badge; a new event brings it back', async () => {
   const home = await get(A, '/app/agent');
   const csrf = (home.body.match(/name="csrf" value="([^"]+)"/) || [])[1];

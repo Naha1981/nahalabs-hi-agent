@@ -99,9 +99,14 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     if (a.action === 'stripe.payment_received') return `Payment received${d.amount_cents != null ? `: ${esc(String(d.currency || ''))} ${(Number(d.amount_cents) / 100).toFixed(2)}` : ''}`;
     if (a.action === 'wa.message_received') return `WhatsApp message from ${esc(String(d.phone || 'a contact'))}`;
     if (a.action === 'estate.viewing_requested') return 'A viewing was requested';
-    if (a.action === 'ads.chain_failed') return `Ad creation failed${d.error ? `: ${esc(String(d.error))}` : ''}${d.created_ids?.length ? ` (created IDs recorded for cleanup: ${esc(d.created_ids.join(', '))})` : ''}`;
-    if (a.action === 'social.post_filed' || a.action === 'ads.campaign_filed') return 'A draft you approved was filed - nothing was sent (that platform is not switched on yet)';
-    if (a.action.endsWith('_blocked')) return `HI was blocked${d.reason ? `: ${esc(String(d.reason))}` : ''}`;
+    // User-facing text stays plain language: internal flags, provider IDs and raw
+    // diagnostics stay in the audit log, never in the UI.
+    if (a.action === 'ads.chain_failed') return 'Setting up an ad draft did not finish. The technical details are recorded in the audit log for review.';
+    if (a.action === 'social.post_filed' || a.action === 'ads.campaign_filed') return 'A draft you approved was filed - nothing was sent because that platform is not switched on yet.';
+    if (a.action === 'wa.reply_blocked') return 'A WhatsApp reply was not sent. The details are recorded in the audit log.';
+    if (a.action === 'social.post_blocked') return 'A social post was not published. The details are recorded in the audit log.';
+    if (a.action === 'ads.campaign_blocked') return 'An ad draft was not submitted. The details are recorded in the audit log.';
+    if (a.action.endsWith('_blocked')) return 'HI was blocked from acting. The details are recorded in the audit log.';
     return esc(a.action);
   };
   const guard = async (req, reply) => {
