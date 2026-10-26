@@ -111,6 +111,10 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
       const r = ap.kind === 'social_post'
         ? await executeSocialPost(c, { tenantId, approval: ap, fetchImpl })
         : await executeAdCampaign(c, { tenantId, approval: ap, fetchImpl });
+      // Filed is terminal (only 'proposed' can be decided): a filed approval
+      // can never execute later. A future send needs a fresh draft and a
+      // fresh explicit approval.
+      if (r.filed) { await c.query("UPDATE approvals SET status='filed' WHERE id=$1", [approvalId]); return { status: 'filed', reason: r.filed }; }
       if (r.error) { await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]); return { status: 'failed', reason: r.error }; }
       await c.query("UPDATE approvals SET status='executed' WHERE id=$1", [approvalId]);
       return { status: 'executed' };

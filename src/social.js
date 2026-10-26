@@ -12,6 +12,19 @@ export async function executeSocialPost(c, { tenantId, approval, fetchImpl = fet
   const fail = async (error) => { await audit(c, tenantId, 'system', 'social.post_blocked', { approval_id: approval.id, reason: error }); return { error }; };
   if (!['facebook', 'instagram'].includes(network)) return fail('unsupported network');
   if (!text.trim()) return fail('post text is empty');
+  // HARD CAPABILITY GATE: Facebook/Instagram publishing request shapes are not
+  // verified against official Meta documentation (developers.facebook.com
+  // unreachable from the build environment). Credentials alone must never
+  // enable unverified external calls, so publishing additionally requires the
+  // explicit ops switch HI_META_SOCIAL_API_VERIFIED=1, set only after the
+  // exact requests are checked against Meta's official Graph API docs.
+  // Approving while gated FILES the draft only - terminal, never queued for
+  // later automatic publication; a future send needs a fresh draft and a
+  // fresh approval.
+  if (process.env.HI_META_SOCIAL_API_VERIFIED !== '1') {
+    await audit(c, tenantId, 'system', 'social.post_filed', { approval_id: approval.id, reason: 'publishing not verified against official Meta documentation' });
+    return { filed: 'Publishing to Facebook/Instagram is not switched on: the exact request shapes are not verified against official Meta documentation yet. Nothing was sent - this draft is filed in your approvals, and publishing it later needs a fresh draft and a fresh approval once support is verified.' };
+  }
   const pageId = process.env.META_PAGE_ID, token = process.env.META_PAGE_TOKEN;
   if (!pageId || !token) return fail('the Facebook/Instagram account is not connected yet - connect it in Integrations first');
   const currentRef = `page:${pageId}`;
@@ -73,10 +86,12 @@ export async function executeAdCampaign(c, { tenantId, approval, fetchImpl = fet
     // the build environment). Credentials alone must never enable unverified
     // external calls, so execution additionally requires the explicit ops
     // switch HI_META_ADS_API_VERIFIED=1, set only after the exact requests are
-    // checked against Meta's official Marketing API docs. The approved draft
-    // is retained on the approval row; nothing is sent while gated.
+    // checked against Meta's official Marketing API docs. Approving while
+    // gated FILES the draft only - terminal, never queued for later automatic
+    // execution; a future creation needs a fresh draft and a fresh approval.
     if (process.env.HI_META_ADS_API_VERIFIED !== '1') {
-      return fail('Meta ad execution is not switched on: the exact request shapes are not verified against official Meta documentation yet. Nothing was sent and no campaign exists - this draft is kept in your approvals, and can be re-drafted once Meta support is verified.');
+      await audit(c, tenantId, 'system', 'ads.campaign_filed', { approval_id: approval.id, reason: 'ad execution not verified against official Meta documentation' });
+      return { filed: 'Meta ad execution is not switched on: the exact request shapes are not verified against official Meta documentation yet. Nothing was sent and no campaign exists - this draft is filed in your approvals, and creating it later needs a fresh draft and a fresh approval once Meta support is verified.' };
     }
     return executeMetaChain(c, { tenantId, approval, payload: p, fetchImpl, fail });
   }

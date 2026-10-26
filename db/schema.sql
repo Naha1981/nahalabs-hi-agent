@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   kind text NOT NULL,                  -- send_brief
   summary text NOT NULL,
   payload jsonb NOT NULL DEFAULT '{}',
-  status text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','approved','rejected','executed','failed','cancelled')),
+  status text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','approved','rejected','executed','failed','cancelled','filed')),
   proposed_by text NOT NULL,           -- 'agent:<name>' or 'user:<id>'
   decided_by uuid,
   decided_at timestamptz,
@@ -529,6 +529,11 @@ DROP POLICY IF EXISTS tenant_isolation ON integrations;
 CREATE POLICY tenant_isolation ON integrations USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON integrations TO hi_app;
+
+-- 'filed' approval status: approved while an executor's capability gate was off.
+-- Terminal (only 'proposed' is decidable); never executes later on its own.
+ALTER TABLE approvals DROP CONSTRAINT IF EXISTS approvals_status_check;
+ALTER TABLE approvals ADD CONSTRAINT approvals_status_check CHECK (status IN ('proposed','approved','rejected','executed','failed','cancelled','filed'));
 
 -- Column additions for existing databases (CREATE TABLE IF NOT EXISTS cannot add columns)
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS morning_brief_auto boolean NOT NULL DEFAULT false;

@@ -25,7 +25,8 @@ test.after(async () => { await app.close(); await db.stop(); });
 const propose = (name, args) => withTenant(A, (c) => runTool(name, args, { c, tenantId: A, userEmail: 'a@example.test', agentName: 'hi', principal: 'owner' }));
 const lastApproval = () => withTenant(A, (c) => c.query('SELECT * FROM approvals ORDER BY created_at DESC LIMIT 1')).then((r) => r.rows[0]);
 
-test('propose_social_post drafts only; approve fails closed without a connected account', async () => {
+test('propose_social_post drafts only; approve fails closed without a connected account (verified flag on, no credentials)', async () => {
+  process.env.HI_META_SOCIAL_API_VERIFIED = '1';
   const r = await propose('propose_social_post', { network: 'facebook', text: 'Just listed: 2-bed garden cottage in Kyalami, R12,500/m. Message to view.' });
   assert.match(String(r), /approval queue/);
   const ap = await lastApproval();
@@ -33,11 +34,38 @@ test('propose_social_post drafts only; approve fails closed without a connected 
   assert.equal(ap.payload.network, 'facebook');
   const owner = await ownerOf(A);
   const d = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve' });
-  assert.equal(d.status, 'failed'); assert.match(d.reason, /not connected yet/, 'no fake publish: fails closed');
+  assert.equal(d.status, 'failed'); assert.match(d.reason, /not connected yet/, 'no fake publish: fails closed');  delete process.env.HI_META_SOCIAL_API_VERIFIED;
+});
+
+test('social publishing is gated: credentials alone never publish; approving files only, and lifting the gate never auto-sends', async () => {
+  process.env.META_PAGE_ID = 'page-1'; process.env.META_PAGE_TOKEN = 'tok'; process.env.META_IG_USER_ID = 'ig-1';
+  await propose('propose_social_post', { network: 'instagram', text: 'Kyalami garden cottage, R12,500/m.', media_url: 'https://example.test/pic.jpg' });
+  const ap = await lastApproval();
+  let called = 0;
+  const fetchImpl = async () => { called++; return { ok: true, status: 200, json: async () => ({ id: 'x' }) }; };
+  const owner = await ownerOf(A);
+  const d = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve', fetchImpl });
+  assert.equal(d.status, 'filed', 'approval while disabled FILES only');
+  assert.match(d.reason, /not verified against official Meta documentation/);
+  assert.match(d.reason, /Nothing was sent/);
+  assert.equal(called, 0, 'zero outbound calls with full credentials present');
+  const kept = (await withTenant(A, (c) => c.query('SELECT status, payload FROM approvals WHERE id=$1', [ap.id]))).rows[0];
+  assert.equal(kept.status, 'filed'); assert.equal(kept.payload.text, 'Kyalami garden cottage, R12,500/m.');
+  process.env.HI_META_SOCIAL_API_VERIFIED = '1';
+  const d2 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve', fetchImpl });
+  assert.match(String(d2.error), /already filed/, 'filed is terminal');
+  assert.equal(called, 0, 'gate lift never triggers the filed draft');
+  await propose('propose_social_post', { network: 'instagram', text: 'Kyalami garden cottage, R12,500/m.', media_url: 'https://example.test/pic.jpg' });
+  const fresh = await lastApproval();
+  const d3 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: fresh.id, decision: 'approve', fetchImpl });
+  assert.equal(d3.status, 'executed', JSON.stringify(d3));
+  assert.ok(called > 0, 'fresh draft + fresh approval publishes once verified');
+  delete process.env.HI_META_SOCIAL_API_VERIFIED;
+  delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN; delete process.env.META_IG_USER_ID;
 });
 
 test('social_post publishes exactly the approved text once credentials exist (stub Graph API)', async () => {
-  process.env.META_PAGE_ID = 'page-1'; process.env.META_PAGE_TOKEN = 'tok';
+  process.env.META_PAGE_ID = 'page-1'; process.env.META_PAGE_TOKEN = 'tok'; process.env.HI_META_SOCIAL_API_VERIFIED = '1';
   // NOTE: credentials are set BEFORE drafting, so the draft binds to page:page-1.
   const r = await propose('propose_social_post', { network: 'facebook', text: 'Saturday show house, 10:30, Kyalami.' });
   assert.match(String(r), /approval queue/);
@@ -50,10 +78,11 @@ test('social_post publishes exactly the approved text once credentials exist (st
   assert.equal(seen.length, 1);
   assert.equal(seen[0].url, 'https://graph.facebook.com/v21.0/page-1/feed');
   assert.equal(JSON.parse(seen[0].opts.body).message, 'Saturday show house, 10:30, Kyalami.', 'exact approved words go out');
-  delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN;
+  delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN; delete process.env.HI_META_SOCIAL_API_VERIFIED;
 });
 
 test('drafts bind to the account connected at draft time; a changed or newly connected account fails closed', async () => {
+  process.env.HI_META_SOCIAL_API_VERIFIED = '1';
   // Drafted while unconfigured: account_ref page:unconfigured
   await propose('propose_social_post', { network: 'facebook', text: 'bound draft' });
   const ap0 = await lastApproval();
@@ -70,17 +99,17 @@ test('drafts bind to the account connected at draft time; a changed or newly con
   const d1 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap1.id, decision: 'approve' });
   assert.equal(d1.status, 'failed'); assert.match(d1.reason, /changed since this draft/);
   process.env.META_PAGE_ID = 'page-1';
-  delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN;
+  delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN; delete process.env.HI_META_SOCIAL_API_VERIFIED;
 });
 
 test('instagram without a media link fails validation, never publishes', async () => {
-  process.env.META_PAGE_ID = 'page-1'; process.env.META_PAGE_TOKEN = 'tok';
+  process.env.META_PAGE_ID = 'page-1'; process.env.META_PAGE_TOKEN = 'tok'; process.env.HI_META_SOCIAL_API_VERIFIED = '1';
   const r = await propose('propose_social_post', { network: 'instagram', text: 'Pretty kitchen' });
   const ap = await lastApproval();
   const owner = await ownerOf(A);
   const d = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve' });
   assert.equal(d.status, 'failed'); assert.match(d.reason, /image or video link/);
-  delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN;
+  delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN; delete process.env.HI_META_SOCIAL_API_VERIFIED;
 });
 
 test('propose_ad_campaign drafts; approval fails closed when the account was connected after drafting', async () => {
@@ -100,7 +129,7 @@ test('propose_ad_campaign drafts; approval fails closed when the account was con
   delete process.env.GOOGLE_ADS_CUSTOMER_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID; delete process.env.HI_META_ADS_API_VERIFIED;
 });
 
-test('meta execution is gated: credentials alone never enable unverified calls; the draft is retained', async () => {
+test('meta execution is gated: credentials alone never enable unverified calls; approving files only and the filed draft can never execute later', async () => {
   process.env.META_AD_ACCOUNT_ID = 'acct-1'; process.env.META_ADS_TOKEN = 'tok'; process.env.META_PAGE_ID = 'page-1';
   await propose('propose_ad_campaign', { network: 'meta', headline: 'Kyalami cottage to let', body: 'Garden cottage, R12,500/m.', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/listing' });
   const ap = await lastApproval();
@@ -108,17 +137,29 @@ test('meta execution is gated: credentials alone never enable unverified calls; 
   const fetchImpl = async () => { called++; return { ok: true, status: 200, json: async () => ({ id: 'x' }) }; };
   const owner = await ownerOf(A);
   const d = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve', fetchImpl });
-  assert.equal(d.status, 'failed');
+  assert.equal(d.status, 'filed', 'approval while disabled FILES only');
   assert.match(d.reason, /not verified against official Meta documentation/, 'gate names the real reason');
   assert.match(d.reason, /Nothing was sent/, 'honest that no campaign exists');
   assert.equal(called, 0, 'not a single outbound call while unverified, even with credentials present');
   const kept = (await withTenant(A, (c) => c.query('SELECT status, payload FROM approvals WHERE id=$1', [ap.id]))).rows[0];
-  assert.equal(kept.status, 'failed');
+  assert.equal(kept.status, 'filed');
   assert.equal(kept.payload.headline, 'Kyalami cottage to let', 'approved draft retained in full');
-  delete process.env.META_AD_ACCOUNT_ID;
-  process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
-  await propose('propose_ad_campaign', { network: 'google', headline: 'GOOGLE-HEADLINE one', headline_2: 'g h2', headline_3: 'g h3', body: 'Google body MARKER-GBODY', description_2: 'g d2', daily_budget_cents: 9000, currency: 'ZAR', link: 'https://example.test/g' });
-  delete process.env.GOOGLE_ADS_CUSTOMER_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID;
+  // The transition main requires: lifting the gate must NEVER execute the filed
+  // approval. A fresh draft with a fresh explicit approval is the only path.
+  process.env.HI_META_ADS_API_VERIFIED = '1';
+  const d2 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve', fetchImpl });
+  assert.match(String(d2.error), /already filed/, 'filed is terminal - no later automatic execution');
+  assert.equal(called, 0, 'still zero outbound calls after the gate lifts');
+  await propose('propose_ad_campaign', { network: 'meta', headline: 'Kyalami cottage to let', body: 'Garden cottage, R12,500/m.', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/listing' });
+  const fresh = await lastApproval();
+  assert.notEqual(fresh.id, ap.id);
+  let n = 0;
+  const fetch2 = async () => ({ ok: true, status: 200, json: async () => ({ id: 'id' + (++n) }) });
+  const d3 = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: fresh.id, decision: 'approve', fetchImpl: fetch2 });
+  assert.equal(d3.status, 'executed', 'a FRESH draft + FRESH approval executes once verified: ' + JSON.stringify(d3));
+  assert.equal(n, 4, 'full chain ran for the fresh approval only');
+  delete process.env.HI_META_ADS_API_VERIFIED;
+  delete process.env.META_AD_ACCOUNT_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID;
 });
 
 test('meta chain creates campaign, ad set, creative, ad - all PAUSED - exactly from the approved payload (stub Graph API)', async () => {
@@ -237,7 +278,9 @@ test('approvals page shows the full immutable social/ad payload before the click
   const login = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'a@example.test', password: 'a-long-test-password-1' }) });
   const cookie = (login.headers['set-cookie'] || '').toString().split(';')[0];
   await propose('propose_social_post', { network: 'instagram', text: 'Full caption with every word visible MARKER-CAPTION-9', media_url: 'https://example.test/pic.jpg' });
-  process.env.META_AD_ACCOUNT_ID = 'act_998877';
+  process.env.META_AD_ACCOUNT_ID = 'act_998877'; process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
+  await propose('propose_ad_campaign', { network: 'google', headline: 'GOOGLE-HEADLINE one', headline_2: 'g h2', headline_3: 'g h3', body: 'Google body MARKER-GBODY', description_2: 'g d2', daily_budget_cents: 9000, currency: 'ZAR', link: 'https://example.test/g' });
+  delete process.env.GOOGLE_ADS_CUSTOMER_ID;
   await propose('propose_ad_campaign', { network: 'meta', headline: 'HEADLINE-MARKER full', headline_2: 'MARKER-H2 second', headline_3: 'MARKER-H3 third', body: 'Body copy every word MARKER-BODY-9', description_2: 'MARKER-DESC2 second description', audience: 'Sandton, 25-45', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/Listing' });
   delete process.env.META_AD_ACCOUNT_ID;
   process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
@@ -259,6 +302,10 @@ test('approvals page shows the full immutable social/ad payload before the click
   assert.ok(page.body.includes('Audience note'), 'audience labelled as a note, not live targeting');
   assert.ok(page.body.includes('Targeting and keywords are finished in your own ads account'), 'no live-targeting implication');
   assert.ok(page.body.includes('Meta ad creation is not switched on yet'), 'gated Meta execution is honest on the card');
+  assert.ok(page.body.includes('Publishing is not switched on yet: approving files this draft and sends nothing'), 'gated social card is honest');
+  assert.ok(page.body.includes('Approving files this draft while publishing is not switched on'), 'gated social approve copy');
+  assert.ok(page.body.includes('GOOGLE-HEADLINE one') && page.body.includes('MARKER-GBODY'), 'google draft renders in full');
+  assert.ok(page.body.includes('campaign PAUSED'), 'PAUSED explicit on the executable (google) draft');
   assert.ok(page.body.includes('Approving files this draft while Meta ad creation is not switched on'), 'gated approve copy is honest');
   assert.ok(page.body.includes('Approve and file draft'), 'gated button never promises creation');
 });
