@@ -53,6 +53,8 @@ test('reports page shows only real recorded numbers', async () => {
   assert.ok(page.body.includes('Waiting for you now</td><td>1'), 'pending approvals');
   assert.ok(page.body.includes('Clients</td><td>1'), 'estate clients');
   assert.ok(page.body.includes('Every number here comes from your own records'), 'honesty line');
+  assert.ok(page.body.includes('gross receipts'), 'gross, not net - refunds not subtracted yet');
+  assert.ok(page.body.includes('when the payment notice reached HI'), 'recorded-time semantics named');
   assert.ok(page.body.includes('Reports'), 'page title');
 });
 

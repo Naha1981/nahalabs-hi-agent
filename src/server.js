@@ -422,6 +422,25 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     return reply.redirect(r.approval_id ? '/app/approvals?m=' + encodeURIComponent('Brief drafted. Review it below.') : '/app/briefs?m=' + encodeURIComponent(`No brief: ${r.skipped}`));
   });
 
+  app.get('/app/inbox', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const d = await withTenant(u.tenant_id, async (c) => ({
+      convos: (await c.query(`SELECT m.phone, COALESCE(NULLIF(ct.name,''), m.phone) AS label,
+          (SELECT body FROM wa_messages m2 WHERE m2.phone=m.phone ORDER BY id DESC LIMIT 1) AS last_body,
+          (SELECT direction FROM wa_messages m2 WHERE m2.phone=m.phone ORDER BY id DESC LIMIT 1) AS last_dir,
+          (SELECT created_at FROM wa_messages m2 WHERE m2.phone=m.phone ORDER BY id DESC LIMIT 1) AS last_at,
+          count(*)::int AS n
+        FROM wa_messages m LEFT JOIN wa_contacts ct ON ct.phone = m.phone
+        WHERE m.status <> 'ignored'
+        GROUP BY m.phone, ct.name ORDER BY last_at DESC NULLS LAST LIMIT 50`)).rows,
+      meta: (await c.query("SELECT count(*)::int n FROM integrations WHERE provider='meta' AND status='active'")).rows[0].n,
+    }));
+    const rows = d.convos.map((x) => `<tr><td><b>${esc(x.label)}</b><br><span class="mut">${esc(x.phone)}</span></td><td>WhatsApp</td><td>${x.last_dir === 'in' ? 'them' : 'you'}: ${esc(String(x.last_body || '').slice(0, 120))}</td><td>${fdate(x.last_at)}</td><td>${x.n}</td></tr>`).join('');
+    return render(reply, u, 'Inbox', `<h1>Inbox</h1><p class="mut">Every conversation with your business, in one place. Only real messages appear here - nothing is made up.</p>
+      <div class="card"><b>Conversations</b><table><tr><th>Who</th><th>Channel</th><th>Latest</th><th>When</th><th>Messages</th></tr>${rows || '<tr><td colspan="5" class="mut">No conversations yet. When a customer messages your WhatsApp line, the conversation lands here.</td></tr>'}</table></div>
+      <div class="card"><b>Other channels</b><p class="mut">Instagram and Facebook messages are not connected yet. When you link those accounts in Integrations, their conversations appear in the list above with their own channel label. Nothing is shown until then.</p></div>`, flashOf(req));
+  });
+
   app.get('/app/reports', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
     const r = await withTenant(u.tenant_id, async (c) => {
@@ -441,10 +460,10 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const waIn = r.waWeek.find((x) => x.direction === 'in')?.n || 0;
     const waOut = r.waWeek.find((x) => x.direction === 'out')?.n || 0;
     return render(reply, u, 'Reports', `<h1>Reports</h1><p class="mut">Every number here comes from your own records - nothing is estimated. Empty means nothing recorded yet.</p>
-      <div class="card"><b>Payments</b>
+      <div class="card"><b>Payments - gross receipts</b><p class="mut">Money recorded as received, before any refunds. If a payment is refunded later, these totals do not change yet - refund tracking is not built. Amounts are never mixed across currencies. Times are when the payment notice reached HI, which can differ slightly from the moment of payment.</p>
         <p class="mut">This month</p>${payLines(r.payMonth) ? `<table>${payLines(r.payMonth)}</table>` : '<p class="mut">No payments recorded this month.</p>'}
         <p class="mut">All time</p>${payLines(r.payAll) ? `<table>${payLines(r.payAll)}</table>` : '<p class="mut">No payments recorded yet. When a customer pays you through your payment page, it shows up here.</p>'}
-        ${r.payRecent.length ? `<p class="mut">Latest</p><table><tr><th>When</th><th>What</th><th>Amount</th></tr>${r.payRecent.map((x) => `<tr><td>${fdate(x.created_at)}</td><td>${esc(x.description || 'Payment')}</td><td>${money(x.amount_cents, x.currency)}</td></tr>`).join('')}</table>` : ''}
+        ${r.payRecent.length ? `<p class="mut">Latest receipts (when the notice reached HI)</p><table><tr><th>When</th><th>What</th><th>Amount</th></tr>${r.payRecent.map((x) => `<tr><td>${fdate(x.created_at)}</td><td>${esc(x.description || 'Payment')}</td><td>${money(x.amount_cents, x.currency)}</td></tr>`).join('')}</table>` : ''}
       </div>
       <div class="card"><b>WhatsApp</b><table>
         <tr><td>Saved contacts</td><td>${r.waContacts}</td></tr>
@@ -831,7 +850,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const u = req.user;
     const grp = (g, items) => `<div class="card"><b>${g}</b><p style="margin:10px 0 2px">${items.map(([n, h]) => `<a class="chip" style="padding:8px 14px;margin:4px 6px 4px 0" href="${h}">${n}</a>`).join('')}</p></div>`;
     return render(reply, u, 'Menu', `<h1>All sections</h1>
-      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']])}
+      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Inbox', '/app/inbox'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']])}
       ${grp('Work', [['Browser', '/app/browser'], ['Drive', '/app/drive'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents']])}
       ${grp('Account', [['Memory', '/app/memory'], ['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']])}`, flashOf(req));
   });
