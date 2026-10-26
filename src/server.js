@@ -422,6 +422,47 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     return reply.redirect(r.approval_id ? '/app/approvals?m=' + encodeURIComponent('Brief drafted. Review it below.') : '/app/briefs?m=' + encodeURIComponent(`No brief: ${r.skipped}`));
   });
 
+  app.get('/app/reports', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const r = await withTenant(u.tenant_id, async (c) => {
+      const payAll = (await c.query("SELECT currency, count(*)::int n, COALESCE(sum(amount_cents),0)::bigint total FROM stripe_events WHERE payment_ref IS NOT NULL GROUP BY currency ORDER BY currency")).rows;
+      const payMonth = (await c.query("SELECT currency, count(*)::int n, COALESCE(sum(amount_cents),0)::bigint total FROM stripe_events WHERE payment_ref IS NOT NULL AND created_at >= date_trunc('month', now()) GROUP BY currency ORDER BY currency")).rows;
+      const payRecent = (await c.query("SELECT created_at, amount_cents, currency, description FROM stripe_events WHERE payment_ref IS NOT NULL ORDER BY created_at DESC LIMIT 10")).rows;
+      const waContacts = (await c.query('SELECT count(*)::int n FROM wa_contacts')).rows[0].n;
+      const waWeek = (await c.query("SELECT direction, count(*)::int n FROM wa_messages WHERE created_at > now() - interval '7 days' GROUP BY direction")).rows;
+      const ap = (await c.query("SELECT (count(*) FILTER (WHERE status='proposed'))::int waiting, (count(*) FILTER (WHERE decided_at > now() - interval '7 days'))::int decided7 FROM approvals")).rows[0];
+      const estate = (await c.query("SELECT (SELECT count(*)::int FROM re_contacts) contacts, (SELECT count(*)::int FROM re_properties) properties, (SELECT count(*)::int FROM re_deals) deals, (SELECT count(*)::int FROM re_viewings WHERE starts_at > now() AND status='scheduled') viewings")).rows[0];
+      return { payAll, payMonth, payRecent, waContacts, waWeek, ap, estate };
+    });
+    const money = (cents, cur) => `${esc(cur)} ${(Number(cents) / 100).toFixed(2)}`;
+    const payLines = (rows) => rows.length
+      ? rows.map((x) => `<tr><td>${money(x.total, x.currency)}</td><td>${x.n} payment${x.n === 1 ? '' : 's'}</td></tr>`).join('')
+      : null;
+    const waIn = r.waWeek.find((x) => x.direction === 'in')?.n || 0;
+    const waOut = r.waWeek.find((x) => x.direction === 'out')?.n || 0;
+    return render(reply, u, 'Reports', `<h1>Reports</h1><p class="mut">Every number here comes from your own records - nothing is estimated. Empty means nothing recorded yet.</p>
+      <div class="card"><b>Payments</b>
+        <p class="mut">This month</p>${payLines(r.payMonth) ? `<table>${payLines(r.payMonth)}</table>` : '<p class="mut">No payments recorded this month.</p>'}
+        <p class="mut">All time</p>${payLines(r.payAll) ? `<table>${payLines(r.payAll)}</table>` : '<p class="mut">No payments recorded yet. When a customer pays you through your payment page, it shows up here.</p>'}
+        ${r.payRecent.length ? `<p class="mut">Latest</p><table><tr><th>When</th><th>What</th><th>Amount</th></tr>${r.payRecent.map((x) => `<tr><td>${fdate(x.created_at)}</td><td>${esc(x.description || 'Payment')}</td><td>${money(x.amount_cents, x.currency)}</td></tr>`).join('')}</table>` : ''}
+      </div>
+      <div class="card"><b>WhatsApp</b><table>
+        <tr><td>Saved contacts</td><td>${r.waContacts}</td></tr>
+        <tr><td>Messages in, last 7 days</td><td>${waIn}</td></tr>
+        <tr><td>Messages out, last 7 days</td><td>${waOut}</td></tr>
+      </table></div>
+      <div class="card"><b>Approvals</b><table>
+        <tr><td>Waiting for you now</td><td>${r.ap.waiting}</td></tr>
+        <tr><td>Decided in the last 7 days</td><td>${r.ap.decided7}</td></tr>
+      </table></div>
+      <div class="card"><b>Estate</b><table>
+        <tr><td>Clients</td><td>${r.estate.contacts}</td></tr>
+        <tr><td>Properties</td><td>${r.estate.properties}</td></tr>
+        <tr><td>Deals</td><td>${r.estate.deals}</td></tr>
+        <tr><td>Viewings scheduled</td><td>${r.estate.viewings}</td></tr>
+      </table></div>`, flashOf(req));
+  });
+
   app.get('/app/audit', { preHandler: guard }, async (req, reply) => {
     const rows = (await withTenant(req.user.tenant_id, (c) => c.query('SELECT at, actor, action, detail FROM audit_log ORDER BY id DESC LIMIT 100'))).rows;
     return render(reply, req.user, 'Audit log', `<h1>Audit log</h1><div class="card"><table><tr><th>When</th><th>Who</th><th>What</th><th>Detail</th></tr>${rows.map((r) => `<tr><td>${fdate(r.at)}</td><td>${esc(r.actor)}</td><td>${esc(r.action)}</td><td class="mut">${esc(JSON.stringify(r.detail))}</td></tr>`).join('')}</table></div>`);
@@ -790,7 +831,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const u = req.user;
     const grp = (g, items) => `<div class="card"><b>${g}</b><p style="margin:10px 0 2px">${items.map(([n, h]) => `<a class="chip" style="padding:8px 14px;margin:4px 6px 4px 0" href="${h}">${n}</a>`).join('')}</p></div>`;
     return render(reply, u, 'Menu', `<h1>All sections</h1>
-      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Tasks', '/app/tasks']])}
+      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']])}
       ${grp('Work', [['Browser', '/app/browser'], ['Drive', '/app/drive'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents']])}
       ${grp('Account', [['Memory', '/app/memory'], ['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']])}`, flashOf(req));
   });
