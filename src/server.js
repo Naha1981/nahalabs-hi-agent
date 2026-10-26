@@ -435,7 +435,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
         GROUP BY m.phone, ct.name ORDER BY last_at DESC NULLS LAST LIMIT 50`)).rows,
     }));
     const rows = d.convos.map((x) => `<a href="/app/inbox/${esc(x.phone)}" style="display:block;border-top:1px solid var(--line);padding:10px 2px;text-decoration:none;color:inherit">
-      <b>${esc(x.label)}</b> <span class="mut">${esc(x.phone)} &middot; WhatsApp</span><br>
+      <b>${esc(x.label)}</b> <span class="mut">${x.label === x.phone ? 'WhatsApp' : esc(x.phone) + ' &middot; WhatsApp'}</span><br>
       <span>${x.last_dir === 'in' ? 'Them' : 'You'}: ${esc(String(x.last_body || '').slice(0, 160))}</span><br>
       <span class="mut">${fdate(x.last_at)} &middot; ${x.n} message${x.n === 1 ? '' : 's'}</span></a>`).join('');
     return render(reply, u, 'Inbox', `<h1>Inbox</h1><p class="mut">Your WhatsApp conversations, in one list. Only real messages appear here - nothing is made up.</p>
