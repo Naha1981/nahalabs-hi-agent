@@ -4,6 +4,7 @@ import { sendMail } from './mail.js';
 import { applyBrowserDecision } from './browser.js';
 import { executeConnectedApproval } from './integrations.js';
 import { executeWhatsAppReply } from './wa-send.js';
+import { executeSocialPost, executeAdCampaign } from './social.js';
 
 const fmtDate = (d) => d ? new Date(d).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', dateStyle: 'medium', timeStyle: 'short' }) : 'not stated';
 
@@ -99,6 +100,17 @@ export async function decideApproval({ tenantId, userId, userEmail, approvalId, 
         return { status: 'cancelled', reason: stoppedW ? 'emergency stop is on' : 'tenant is paused' };
       }
       const r = await executeWhatsAppReply(c, { tenantId, approval: ap, fetchImpl });
+      if (r.error) { await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]); return { status: 'failed', reason: r.error }; }
+      await c.query("UPDATE approvals SET status='executed' WHERE id=$1", [approvalId]);
+      return { status: 'executed' };
+    }
+    if (['social_post', 'ad_campaign_draft'].includes(ap.kind)) {
+      const stoppedS = (await c.query("SELECT value FROM system_flags WHERE key='emergency_stop'")).rows[0]?.value === 'on';
+      const pausedS = (await c.query('SELECT paused FROM tenants WHERE id = current_setting(\'app.tenant_id\')::uuid')).rows[0].paused;
+      if (stoppedS || pausedS) { await c.query("UPDATE approvals SET status='cancelled' WHERE id=$1", [approvalId]); return { status: 'cancelled', reason: stoppedS ? 'emergency stop is on' : 'tenant is paused' }; }
+      const r = ap.kind === 'social_post'
+        ? await executeSocialPost(c, { tenantId, approval: ap, fetchImpl })
+        : await executeAdCampaign(c, { tenantId, approval: ap, fetchImpl });
       if (r.error) { await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approvalId]); return { status: 'failed', reason: r.error }; }
       await c.query("UPDATE approvals SET status='executed' WHERE id=$1", [approvalId]);
       return { status: 'executed' };

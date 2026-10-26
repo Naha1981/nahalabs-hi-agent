@@ -47,6 +47,8 @@ const TOOL_LABELS = {
   calendar_upcoming: 'Checked your calendar',
   propose_account_email: 'Drafted an email',
   propose_calendar_event: 'Proposed a calendar event',
+  propose_social_post: 'Drafted a social post',
+  propose_ad_campaign: 'Drafted an ad campaign',
   propose_email: 'Drafted an email',
   list_uploads: 'Checked your documents',
   read_upload: 'Read your document',

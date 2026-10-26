@@ -99,6 +99,8 @@ export const TOOL_SCHEMAS = [
   { name: 'estate_mark_message_processed', description: 'During the scheduled estate enquiry watch, mark one current mail_search result reviewed. Call only after applicable contact, deal and reply-draft work is complete; also mark reviewed non-enquiries. Use the provider, account email and message ID exactly as returned by mail_search.', parameters: { type: 'object', properties: { provider: { type: 'string', enum: ['gmail', 'outlook'] }, account_email: { type: 'string' }, message_id: { type: 'string' } }, required: ['provider', 'account_email', 'message_id'] } },
   { name: 'calendar_upcoming', description: 'List upcoming events from the customer\'s connected Google and Outlook calendars (read only).', parameters: { type: 'object', properties: { days: { type: 'integer' } } } },
   { name: 'propose_account_email', description: 'Draft an email to send from one of the customer\'s connected Gmail/Outlook accounts. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' } }, required: ['to', 'subject', 'body'] } },
+  { name: 'propose_social_post', description: 'Draft a post for the customer\'s Facebook or Instagram business account. It is NOT published until the customer approves it in the approval queue, and publishing fails closed until the account is connected.', parameters: { type: 'object', properties: { network: { type: 'string', enum: ['facebook', 'instagram'] }, text: { type: 'string' }, link: { type: 'string', description: 'Optional web link for a Facebook post.' }, media_url: { type: 'string', description: 'Required for Instagram: a public image or video URL.' } }, required: ['network', 'text'] } },
+  { name: 'propose_ad_campaign', description: 'Draft a paid ad campaign (Meta or Google). It is NOT created until the customer approves it in the approval queue; even then it is created PAUSED and money only moves when the customer activates it in their own ads account. Creation fails closed until the ads account is connected.', parameters: { type: 'object', properties: { network: { type: 'string', enum: ['meta', 'google'] }, headline: { type: 'string' }, body: { type: 'string' }, audience: { type: 'string' }, daily_budget_cents: { type: 'number' }, currency: { type: 'string' }, link: { type: 'string' } }, required: ['network', 'headline', 'body', 'daily_budget_cents', 'currency'] } },
   { name: 'propose_calendar_event', description: 'Propose creating an event on one of the customer\'s connected calendars. It is created only after the customer approves.', parameters: { type: 'object', properties: { integration_id: { type: 'string', description: 'Optional. Omit when the customer has one connected account.' }, title: { type: 'string' }, starts_at: { type: 'string' }, ends_at: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'starts_at', 'ends_at'] } },
   { name: 'propose_email', description: 'Draft an email to the customer\'s own account address. It is NOT sent until the customer approves it in the approval queue.', parameters: { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] } },
   { name: 'estate_add_contact', description: 'Real estate: save a contact such as a buyer, seller, landlord or tenant. Existing contacts with the same email are merged rather than duplicated. source: how the enquiry arrived - portal, website, referral, signboard, walk_in or other - when known.', parameters: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['buyer', 'seller', 'landlord', 'tenant', 'other'] }, phone: { type: 'string' }, email: { type: 'string' }, source: { type: 'string', enum: ['portal', 'website', 'referral', 'signboard', 'walk_in', 'other'] }, fica_status: { type: 'string', enum: ['requested', 'received', 'verified'] }, notes: { type: 'string' } }, required: ['name'] } },
@@ -322,6 +324,30 @@ export async function runTool(name, args, ctx) {
       const r = await proposeAccountEmail(c, { tenantId, integrationId: ri.id, to: String(a.to || ''), subject: String(a.subject || ''), body: String(a.body || ''), actor: `agent:${ctx.agentName || 'hi'}` });
       if (r.error) return r.error;
       return 'Drafted and placed in the approval queue. It will be sent from the connected account only if the customer approves.';
+    }
+    case 'propose_social_post': {
+      const network = String(a.network || '');
+      if (!['facebook', 'instagram'].includes(network)) return 'Network must be facebook or instagram.';
+      const text = clip(a.text, 3000).trim();
+      if (!text) return 'Post text is required.';
+      const r = await c.query(
+        "INSERT INTO approvals (tenant_id, kind, summary, payload, proposed_by) VALUES (current_setting('app.tenant_id')::uuid,'social_post',$1,$2,$3) RETURNING id",
+        [`${network === 'instagram' ? 'Instagram' : 'Facebook'} post: "${clip(text, 80)}"`, JSON.stringify({ network, text, link: clip(a.link, 500) || undefined, media_url: clip(a.media_url, 500) || undefined }), `agent:${ctx.agentName || 'hi'}`]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'social.post_proposed', { approval_id: r.rows[0].id, network });
+      return 'Drafted and placed in the approval queue. It will be published only if the customer approves, and only once the account is connected.';
+    }
+    case 'propose_ad_campaign': {
+      const network = String(a.network || '');
+      if (!['meta', 'google'].includes(network)) return 'Network must be meta or google.';
+      const headline = clip(a.headline, 100).trim(), body = clip(a.body, 1000).trim();
+      const budget = Number(a.daily_budget_cents);
+      if (!headline || !body) return 'Headline and body are required.';
+      if (!Number.isFinite(budget) || budget <= 0) return 'A daily budget in cents is required.';
+      const r = await c.query(
+        "INSERT INTO approvals (tenant_id, kind, summary, payload, proposed_by) VALUES (current_setting('app.tenant_id')::uuid,'ad_campaign_draft',$1,$2,$3) RETURNING id",
+        [`${network === 'meta' ? 'Meta' : 'Google'} ad draft: "${headline}" (${String(a.currency || '').toUpperCase()} ${(budget / 100).toFixed(2)}/day)`, JSON.stringify({ network, headline, body, audience: clip(a.audience, 300) || '', daily_budget_cents: Math.round(budget), currency: String(a.currency || '').toUpperCase(), link: clip(a.link, 500) || undefined }), `agent:${ctx.agentName || 'hi'}`]);
+      await audit(c, tenantId, `agent:${ctx.agentName || 'hi'}`, 'ads.campaign_proposed', { approval_id: r.rows[0].id, network });
+      return 'Drafted and placed in the approval queue. It is created only if the customer approves, is created PAUSED, and fails closed until the ads account is connected.';
     }
     case 'propose_calendar_event': {
       const ri = await resolveIntegration(c, String(a.integration_id || ''));
