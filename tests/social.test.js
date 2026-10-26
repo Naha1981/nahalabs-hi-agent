@@ -193,7 +193,9 @@ test('approvals page shows the full immutable social/ad payload before the click
   const login = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'a@example.test', password: 'a-long-test-password-1' }) });
   const cookie = (login.headers['set-cookie'] || '').toString().split(';')[0];
   await propose('propose_social_post', { network: 'instagram', text: 'Full caption with every word visible MARKER-CAPTION-9', media_url: 'https://example.test/pic.jpg' });
-  await propose('propose_ad_campaign', { network: 'meta', headline: 'HEADLINE-MARKER full', body: 'Body copy every word MARKER-BODY-9', audience: 'Sandton, 25-45', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/Listing' });
+  process.env.META_AD_ACCOUNT_ID = 'act_998877';
+  await propose('propose_ad_campaign', { network: 'meta', headline: 'HEADLINE-MARKER full', headline_2: 'MARKER-H2 second', headline_3: 'MARKER-H3 third', body: 'Body copy every word MARKER-BODY-9', description_2: 'MARKER-DESC2 second description', audience: 'Sandton, 25-45', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/Listing' });
+  delete process.env.META_AD_ACCOUNT_ID;
   const page = await app.inject({ url: '/app/approvals', headers: { cookie } });
   assert.ok(page.body.includes('Full caption with every word visible MARKER-CAPTION-9'), 'full caption');
   assert.ok(page.body.includes('https://example.test/pic.jpg'), 'media URL shown');
@@ -203,4 +205,9 @@ test('approvals page shows the full immutable social/ad payload before the click
   assert.ok(page.body.includes('Sandton, 25-45'), 'audience');
   assert.ok(page.body.includes('https://example.test/Listing'), 'ad link');
   assert.ok(page.body.includes('campaign PAUSED'), 'PAUSED explicit before the click');
+  assert.ok(page.body.includes('meta:act_998877'), 'bound ads account shown before the click');
+  assert.ok(page.body.includes('MARKER-H2 second') && page.body.includes('MARKER-H3 third'), 'all headlines shown');
+  assert.ok(page.body.includes('MARKER-DESC2 second description'), 'second description shown');
+  assert.ok(page.body.includes('Audience note'), 'audience labelled as a note, not live targeting');
+  assert.ok(page.body.includes('Targeting and keywords are finished in your own ads account'), 'no live-targeting implication');
 });
