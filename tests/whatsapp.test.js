@@ -206,3 +206,25 @@ test('paused tenant: proposals cancel at decision time and never send', async ()
   assert.equal((await withTenant(A.tenantId, (c) => c.query("SELECT status FROM wa_messages WHERE id=(SELECT (payload->>'wa_message_id')::bigint FROM approvals WHERE id=$1)", [ap]))).rows[0].status, 'failed');
   await withSystem((c) => c.query('UPDATE tenants SET paused=false WHERE id=$1', [A.tenantId]));
 });
+
+test('approvals page shows the exact full words and number; approving sends exactly that text', async () => {
+  const long = 'Good afternoon Sam. Thank you for asking about the Kyalami garden cottage. It is still available at R12,500 per month, water included, electricity prepaid, available from 1 December. I can offer Thursday 14:00 or Saturday 10:30 for a viewing. Please tell me which suits you. ENDMARKER-ZEBRA-7721';
+  const login = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'a@example.test', password: 'a-long-test-password-1' }) });
+  const cookie = (login.headers['set-cookie'] || '').toString().split(';')[0];
+  const apId = await withTenant(A.tenantId, async (c) => {
+    const msg = (await c.query("INSERT INTO wa_messages (tenant_id, phone, direction, body, status) VALUES (current_setting('app.tenant_id')::uuid,'27829990001','out',$1,'proposed') RETURNING id", [long])).rows[0];
+    const ch = (await c.query('SELECT id, engine FROM wa_channels LIMIT 1')).rows[0];
+    return (await c.query("INSERT INTO approvals (tenant_id, kind, summary, payload, proposed_by) VALUES (current_setting('app.tenant_id')::uuid,'whatsapp_reply',$1,$2,'agent:whatsapp') RETURNING id",
+      [`WhatsApp reply to Sipho (27829990001): "${long.slice(0, 80)}..."`, JSON.stringify({ wa_message_id: msg.id, channel_id: ch.id, engine: ch.engine, from: '27821110001', to: '27829990001', body: long })])).rows[0].id;
+  });
+  const page = await app.inject({ url: '/app/approvals', headers: { cookie } });
+  assert.equal(page.statusCode, 200);
+  assert.ok(page.body.includes('ENDMARKER-ZEBRA-7721'), 'the full untruncated message is on the page, not the 80-char summary');
+  assert.ok(page.body.includes(long), 'every word shown exactly as it will be sent');
+  assert.ok(page.body.includes('To: 27829990001'), 'the resolved recipient number is shown');
+  const owner = await ownerOf(A);
+  const d = await decideApproval({ tenantId: A.tenantId, userId: owner.id, userEmail: owner.email, approvalId: apId, decision: 'approve' });
+  assert.equal(d.status, 'executed', JSON.stringify(d));
+  const sent = (await withTenant(A.tenantId, (c) => c.query("SELECT body FROM wa_messages WHERE direction='out' AND status='sent' ORDER BY id DESC LIMIT 1"))).rows[0];
+  assert.equal(sent.body, long, 'the sent body is byte-identical to what the page showed');
+});

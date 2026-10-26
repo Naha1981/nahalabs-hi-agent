@@ -21,10 +21,10 @@ label{display:block;margin:14px 0 4px;color:var(--mut);font-size:14px;font-weigh
 button,.btn{background:var(--ink);color:#fff;border:1px solid var(--ink);border-radius:8px;padding:10px 20px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block;font:inherit;font-size:15px;line-height:1.3;min-height:44px}
 button:hover,.btn:hover{background:#000}button.sec,.btn.sec{background:#fff;color:var(--text);border:1px solid var(--line)}button.sec:hover,.btn.sec:hover{background:var(--soft)}
 button.danger,button.sec.danger{background:#fff;color:var(--bad);border:1px solid var(--bad)}button.danger:hover{background:var(--bad);color:#fff}
-pre{white-space:pre-wrap;background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:14px;font-size:14px;overflow:auto}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:14px;font-size:14px}
 table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid var(--line);padding:10px 9px;text-align:left;font-size:15px;vertical-align:top;overflow-wrap:break-word}
 .flash{background:#fffbeb;border:1px solid #fcd34d;color:#78350f;padding:12px 16px;border-radius:10px;margin:12px 0;font-size:15px}
-code{background:var(--chip);border-radius:6px;padding:1px 6px;font-size:14px}
+code{background:var(--chip);border-radius:6px;padding:1px 6px;font-size:14px;overflow-wrap:anywhere;word-break:break-all}
 /* public pages */
 .pub-h{display:flex;gap:18px;align-items:center;justify-content:space-between;padding:14px 26px;border-bottom:1px solid var(--line);background:#fff}
 .brand{font-weight:800;letter-spacing:-.02em;color:var(--ink);text-decoration:none;font-size:21px}.brand small{color:var(--mut);font-weight:500;letter-spacing:0;margin-left:8px;font-size:13px}
