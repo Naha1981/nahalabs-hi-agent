@@ -94,7 +94,10 @@ test('propose_ad_campaign drafts; approval fails closed when the account was con
   const owner = await ownerOf(A);
   const d = await decideApproval({ tenantId: A, userId: owner.id, userEmail: owner.email, approvalId: ap.id, decision: 'approve' });
   assert.equal(d.status, 'failed'); assert.match(d.reason, /re-draft/, 'no fake campaign, no silent account switch');
-  delete process.env.META_AD_ACCOUNT_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID; delete process.env.HI_META_ADS_API_VERIFIED;
+  delete process.env.META_AD_ACCOUNT_ID;
+  process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
+  await propose('propose_ad_campaign', { network: 'google', headline: 'GOOGLE-HEADLINE one', headline_2: 'g h2', headline_3: 'g h3', body: 'Google body MARKER-GBODY', description_2: 'g d2', daily_budget_cents: 9000, currency: 'ZAR', link: 'https://example.test/g' });
+  delete process.env.GOOGLE_ADS_CUSTOMER_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID; delete process.env.HI_META_ADS_API_VERIFIED;
 });
 
 test('meta execution is gated: credentials alone never enable unverified calls; the draft is retained', async () => {
@@ -112,7 +115,10 @@ test('meta execution is gated: credentials alone never enable unverified calls; 
   const kept = (await withTenant(A, (c) => c.query('SELECT status, payload FROM approvals WHERE id=$1', [ap.id]))).rows[0];
   assert.equal(kept.status, 'failed');
   assert.equal(kept.payload.headline, 'Kyalami cottage to let', 'approved draft retained in full');
-  delete process.env.META_AD_ACCOUNT_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID;
+  delete process.env.META_AD_ACCOUNT_ID;
+  process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
+  await propose('propose_ad_campaign', { network: 'google', headline: 'GOOGLE-HEADLINE one', headline_2: 'g h2', headline_3: 'g h3', body: 'Google body MARKER-GBODY', description_2: 'g d2', daily_budget_cents: 9000, currency: 'ZAR', link: 'https://example.test/g' });
+  delete process.env.GOOGLE_ADS_CUSTOMER_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID;
 });
 
 test('meta chain creates campaign, ad set, creative, ad - all PAUSED - exactly from the approved payload (stub Graph API)', async () => {
@@ -132,7 +138,10 @@ test('meta chain creates campaign, ad set, creative, ad - all PAUSED - exactly f
   assert.equal(seen[2].body.object_story_spec.link_data.message, 'Garden cottage, R12,500/m.', 'exact approved words');
   assert.equal(seen[2].body.object_story_spec.link_data.link, 'https://example.test/listing');
   assert.equal(seen[3].body.status, 'PAUSED'); assert.equal(seen[3].body.creative.creative_id, 'id3');
-  delete process.env.META_AD_ACCOUNT_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID; delete process.env.HI_META_ADS_API_VERIFIED;
+  delete process.env.META_AD_ACCOUNT_ID;
+  process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
+  await propose('propose_ad_campaign', { network: 'google', headline: 'GOOGLE-HEADLINE one', headline_2: 'g h2', headline_3: 'g h3', body: 'Google body MARKER-GBODY', description_2: 'g d2', daily_budget_cents: 9000, currency: 'ZAR', link: 'https://example.test/g' });
+  delete process.env.GOOGLE_ADS_CUSTOMER_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID; delete process.env.HI_META_ADS_API_VERIFIED;
 });
 
 test('meta chain failure cleans up created objects and names them (no silent orphans)', async () => {
@@ -152,7 +161,10 @@ test('meta chain failure cleans up created objects and names them (no silent orp
   assert.ok(calls.some((x) => x.method === 'DELETE' && x.url.endsWith('/cid1')), 'cleanup delete issued for the created campaign');
   const after = (await withTenant(A, (c) => c.query("SELECT payload->'created' AS created FROM approvals WHERE id=$1", [ap.id]))).rows[0];
   assert.equal(after.created.meta_campaign, 'cid1', 'evidence recorded on the approval payload');
-  delete process.env.META_AD_ACCOUNT_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID; delete process.env.HI_META_ADS_API_VERIFIED;
+  delete process.env.META_AD_ACCOUNT_ID;
+  process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
+  await propose('propose_ad_campaign', { network: 'google', headline: 'GOOGLE-HEADLINE one', headline_2: 'g h2', headline_3: 'g h3', body: 'Google body MARKER-GBODY', description_2: 'g d2', daily_budget_cents: 9000, currency: 'ZAR', link: 'https://example.test/g' });
+  delete process.env.GOOGLE_ADS_CUSTOMER_ID; delete process.env.META_ADS_TOKEN; delete process.env.META_PAGE_ID; delete process.env.HI_META_ADS_API_VERIFIED;
 });
 
 test('google chain never trims approved words: over-limit headlines or descriptions fail closed', async () => {
@@ -228,6 +240,9 @@ test('approvals page shows the full immutable social/ad payload before the click
   process.env.META_AD_ACCOUNT_ID = 'act_998877';
   await propose('propose_ad_campaign', { network: 'meta', headline: 'HEADLINE-MARKER full', headline_2: 'MARKER-H2 second', headline_3: 'MARKER-H3 third', body: 'Body copy every word MARKER-BODY-9', description_2: 'MARKER-DESC2 second description', audience: 'Sandton, 25-45', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/Listing' });
   delete process.env.META_AD_ACCOUNT_ID;
+  process.env.GOOGLE_ADS_CUSTOMER_ID = '123-456-7890';
+  await propose('propose_ad_campaign', { network: 'google', headline: 'GOOGLE-HEADLINE one', headline_2: 'g h2', headline_3: 'g h3', body: 'Google body MARKER-GBODY', description_2: 'g d2', daily_budget_cents: 9000, currency: 'ZAR', link: 'https://example.test/g' });
+  delete process.env.GOOGLE_ADS_CUSTOMER_ID;
   const page = await app.inject({ url: '/app/approvals', headers: { cookie } });
   assert.ok(page.body.includes('Full caption with every word visible MARKER-CAPTION-9'), 'full caption');
   assert.ok(page.body.includes('https://example.test/pic.jpg'), 'media URL shown');
@@ -236,11 +251,14 @@ test('approvals page shows the full immutable social/ad payload before the click
   assert.ok(page.body.includes('ZAR 150.00'), 'budget and currency');
   assert.ok(page.body.includes('Sandton, 25-45'), 'audience');
   assert.ok(page.body.includes('https://example.test/Listing'), 'ad link');
-  assert.ok(page.body.includes('campaign PAUSED'), 'PAUSED explicit before the click');
+  assert.ok(page.body.includes('campaign PAUSED'), 'PAUSED explicit before the click on the executable (google) draft');
+  assert.ok(page.body.includes('GOOGLE-HEADLINE one') && page.body.includes('MARKER-GBODY'), 'google draft renders in full');
   assert.ok(page.body.includes('meta:act_998877'), 'bound ads account shown before the click');
   assert.ok(page.body.includes('MARKER-H2 second') && page.body.includes('MARKER-H3 third'), 'all headlines shown');
   assert.ok(page.body.includes('MARKER-DESC2 second description'), 'second description shown');
   assert.ok(page.body.includes('Audience note'), 'audience labelled as a note, not live targeting');
   assert.ok(page.body.includes('Targeting and keywords are finished in your own ads account'), 'no live-targeting implication');
   assert.ok(page.body.includes('Meta ad creation is not switched on yet'), 'gated Meta execution is honest on the card');
+  assert.ok(page.body.includes('Approving files this draft while Meta ad creation is not switched on'), 'gated approve copy is honest');
+  assert.ok(page.body.includes('Approve and file draft'), 'gated button never promises creation');
 });
