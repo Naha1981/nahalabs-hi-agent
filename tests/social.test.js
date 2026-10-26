@@ -102,3 +102,19 @@ test('emergency stop cancels social and ad approvals at decision time', async ()
   await withSystem((c) => c.query("UPDATE system_flags SET value='off' WHERE key='emergency_stop'"));
   delete process.env.META_PAGE_ID; delete process.env.META_PAGE_TOKEN;
 });
+
+test('approvals page shows the full immutable social/ad payload before the click', async () => {
+  const login = await app.inject({ method: 'POST', url: '/login', headers: H, payload: form({ email: 'a@example.test', password: 'a-long-test-password-1' }) });
+  const cookie = (login.headers['set-cookie'] || '').toString().split(';')[0];
+  await propose('propose_social_post', { network: 'instagram', text: 'Full caption with every word visible MARKER-CAPTION-9', media_url: 'https://example.test/pic.jpg' });
+  await propose('propose_ad_campaign', { network: 'meta', headline: 'HEADLINE-MARKER full', body: 'Body copy every word MARKER-BODY-9', audience: 'Sandton, 25-45', daily_budget_cents: 15000, currency: 'ZAR', link: 'https://example.test/Listing' });
+  const page = await app.inject({ url: '/app/approvals', headers: { cookie } });
+  assert.ok(page.body.includes('Full caption with every word visible MARKER-CAPTION-9'), 'full caption');
+  assert.ok(page.body.includes('https://example.test/pic.jpg'), 'media URL shown');
+  assert.ok(page.body.includes('Instagram business account'), 'platform named');
+  assert.ok(page.body.includes('HEADLINE-MARKER full') && page.body.includes('MARKER-BODY-9'), 'full headline + body');
+  assert.ok(page.body.includes('ZAR 150.00'), 'budget and currency');
+  assert.ok(page.body.includes('Sandton, 25-45'), 'audience');
+  assert.ok(page.body.includes('https://example.test/Listing'), 'ad link');
+  assert.ok(page.body.includes('created PAUSED'), 'PAUSED explicit before the click');
+});
