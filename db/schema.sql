@@ -556,6 +556,9 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS doc_reminders_auto boolean NOT NULL
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS surfaced_at timestamptz;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS dump_id uuid REFERENCES dumps(id) ON DELETE SET NULL;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS window_start smallint CHECK (window_start BETWEEN 0 AND 23);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS window_end smallint CHECK (window_end BETWEEN 0 AND 23);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS post_to_chat boolean NOT NULL DEFAULT false;
 -- Approval-first WhatsApp replies added 'proposed' and 'rejected' to the status set.
 ALTER TABLE wa_messages DROP CONSTRAINT IF EXISTS wa_messages_status_check;
 ALTER TABLE wa_messages ADD CONSTRAINT wa_messages_status_check CHECK (status IN ('received','ignored','queued','proposed','sent','failed','rejected'));

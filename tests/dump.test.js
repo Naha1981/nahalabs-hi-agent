@@ -113,7 +113,7 @@ test('journey: dump -> preview -> start -> agent works -> review -> reviewed', a
   assert.equal(r.statusCode, 302);
   assert.match(r.headers.location, /Started%202%20tasks/);
 
-  const tasks = await withTenant(A.tenantId, (c) => c.query('SELECT title, interval_minutes, status, dump_id FROM tasks ORDER BY created_at'));
+  const tasks = await withTenant(A.tenantId, (c) => c.query('SELECT title, interval_minutes, status, dump_id FROM tasks WHERE dump_id IS NOT NULL ORDER BY created_at'));
   assert.equal(tasks.rows.length, 2);
   assert.equal(tasks.rows[0].interval_minutes, null);
   assert.ok(tasks.rows[0].dump_id);

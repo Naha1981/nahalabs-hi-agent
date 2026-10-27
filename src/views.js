@@ -46,6 +46,7 @@ td,th{padding:7px 5px;font-size:14px}
 table.mem thead{display:none}
 table.mem tr{display:block;border-bottom:1px solid var(--line);padding:8px 0}
 table.mem td{display:block;border:0;padding:2px 0;overflow-wrap:break-word}
+@media (max-width:720px){table.tasklist td .mut{display:none}table.tasklist td,table.tasklist th{padding:8px 6px;font-size:14px}table.tasklist td:nth-child(2),table.tasklist th:nth-child(2){display:none}table.tasklist .sec{padding:4px 7px;font-size:12px}}
 table.mem td.mmeta{display:inline;color:var(--mut);font-size:13px;padding-right:0}
 table.mem td.mmeta+td.mmeta::before{content:" · "}
 }

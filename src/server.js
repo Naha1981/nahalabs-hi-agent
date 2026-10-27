@@ -1065,8 +1065,8 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
       runs: (await c.query("SELECT r.id, r.status, r.result, r.sources, r.created_at, t.title FROM runs r LEFT JOIN tasks t ON t.id=r.task_id WHERE r.task_id IS NOT NULL ORDER BY r.created_at DESC LIMIT 10")).rows,
       agents: (await c.query('SELECT id, name FROM agents ORDER BY created_at')).rows }));
     return render(reply, u, 'Tasks', `<h1>Scheduled tasks</h1>
-      <div class="card"><table><tr><th>Task</th><th>Agent</th><th>Runs</th><th>Next</th><th>Status</th><th></th></tr>${d.tasks.map((t) => `<tr><td>${esc(t.title)}<div class="mut">${esc(t.instruction.slice(0, 120))}</div></td><td>${esc(t.agent_name)}</td><td>${t.interval_minutes ? `every ${t.interval_minutes} min` : 'once'}</td><td>${fdate(t.next_run_at)}</td><td>${esc(t.status)}</td>
-        <td>${t.status !== 'done' ? `<form method="post" action="/app/tasks/${t.id}/toggle">${csrf(u)}<button class="sec">${t.status === 'active' ? 'Pause' : 'Resume'}</button></form>` : ''}<form method="post" action="/app/tasks/${t.id}/delete">${csrf(u)}<button class="sec">Delete</button></form></td></tr>`).join('') || '<tr><td colspan="6" class="mut">No tasks yet. Ask your agent to schedule one, or add one below.</td></tr>'}</table></div>
+      <div class="card"><table class="tasklist"><tr><th>Task</th><th>Agent</th><th>Runs</th><th>Next</th><th>Status</th><th></th></tr>${d.tasks.map((t) => `<tr><td>${esc(t.title)}<div class="mut">${esc(t.instruction.slice(0, 120))}</div></td><td>${esc(t.agent_name)}</td><td>${t.interval_minutes ? `every ${t.interval_minutes % 60 === 0 ? `${t.interval_minutes / 60} h` : `${t.interval_minutes} min`}${t.window_start != null ? `, ${String(t.window_start).padStart(2, '0')}:00-${String(t.window_end).padStart(2, '0')}:00` : ''}` : 'once'}</td><td>${fdate(t.next_run_at)}</td><td>${esc(t.status)}</td>
+        <td><a class="sec" style="padding:7px 12px;text-decoration:none;display:inline-block" href="/app/tasks/${t.id}">History</a> ${t.status !== 'done' ? `<form method="post" action="/app/tasks/${t.id}/toggle" style="display:inline">${csrf(u)}<button class="sec">${t.status === 'active' ? 'Pause' : 'Resume'}</button></form>` : ''}<form method="post" action="/app/tasks/${t.id}/delete" style="display:inline">${csrf(u)}<button class="sec">Delete</button></form></td></tr>`).join('') || '<tr><td colspan="6" class="mut">No tasks yet. Ask your agent to schedule one, or add one below.</td></tr>'}</table></div>
       <form method="post" action="/app/tasks" class="card">${csrf(u)}<b>New task</b><label>Title</label><input name="title" required maxlength="120"><label>What should the agent do each time?</label><textarea name="instruction" rows="3" maxlength="2000" required></textarea>
         <label>Agent</label><select name="agent">${d.agents.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select><label>Repeat every (minutes, 60 or more, blank for once)</label><input name="every" type="number" min="60"><label>First run in (minutes)</label><input name="first" type="number" min="1" value="60"><p><button>Schedule</button></p></form>
       <h2>Recent runs</h2>${d.runs.map((r) => `<div class="card"><div class="row"><b>${esc(r.title || 'Task')}</b><span class="tag">${esc(r.status)}</span></div><div class="mut">${fdate(r.created_at)}</div><div>${mdLite((r.result || '').slice(0, 1500))}</div>${srcList(r.sources)}</div>`).join('') || '<div class="card mut">No runs yet.</div>'}`, flashOf(req));
@@ -1088,6 +1088,22 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     await withTenant(req.user.tenant_id, (c) => c.query("UPDATE tasks SET status = CASE status WHEN 'active' THEN 'paused' ELSE 'active' END, next_run_at = CASE WHEN status='paused' THEN now() + interval '5 minutes' ELSE next_run_at END WHERE id=$1 AND status<>'done'", [req.params.id]));
     return reply.redirect('/app/tasks');
   });
+  app.get('/app/tasks/:id', { preHandler: guard }, async (req, reply) => {
+    if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
+    const u = req.user;
+    const d = await withTenant(u.tenant_id, async (c) => ({
+      task: (await c.query('SELECT t.*, a.name agent_name FROM tasks t JOIN agents a ON a.id=t.agent_id WHERE t.id=$1', [req.params.id])).rows[0],
+      runs: (await c.query('SELECT id, status, result, sources, created_at FROM runs WHERE task_id=$1 ORDER BY created_at DESC LIMIT 50', [req.params.id])).rows,
+    }));
+    if (!d.task) return reply.redirect('/app/tasks?m=' + encodeURIComponent('That task is not available.'));
+    const t = d.task;
+    const every = t.interval_minutes ? `every ${t.interval_minutes % 60 === 0 ? `${t.interval_minutes / 60} h` : `${t.interval_minutes} min`}` : 'once';
+    const window = t.window_start != null ? `, ${String(t.window_start).padStart(2, '0')}:00-${String(t.window_end).padStart(2, '0')}:00 SAST` : '';
+    return render(reply, u, t.title, `<h1><b>${esc(t.title)}</b></h1>
+      <p class="mut">Runs ${every}${window} &middot; ${esc(t.status)}${t.last_run_at ? ` &middot; last run ${fdate(t.last_run_at)}` : ''} &middot; next run ${fdate(t.next_run_at)}. <a href="/app/tasks">All tasks</a></p>
+      <h2>Run history</h2>${d.runs.map((r) => `<div class="card"><div class="row"><span class="tag">${esc(r.status)}</span><span class="mut">${fdate(r.created_at)}</span></div><div>${mdLite((r.result || '').slice(0, 1500))}</div>${srcList(r.sources)}</div>`).join('') || '<div class="card mut">No runs yet.</div>'}`, flashOf(req));
+  });
+
   app.post('/app/tasks/:id/delete', { preHandler: guard }, async (req, reply) => {
     if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
     await withTenant(req.user.tenant_id, async (c) => { await c.query('DELETE FROM tasks WHERE id=$1', [req.params.id]); await audit(c, req.user.tenant_id, `user:${req.user.user_id}`, 'task.deleted', { task_id: req.params.id }); });

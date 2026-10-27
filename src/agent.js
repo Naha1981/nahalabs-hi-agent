@@ -109,10 +109,36 @@ export function isDupeFact(item, existingTexts) {
   return false;
 }
 
+// Recurring-task run window (SAST hours). candidate = now + interval, then clamped
+// forward into [startH, endH): always at least intervalMin away, never outside the window.
+export function nextInWindow(now, intervalMin, startH, endH) {
+  const SAST_MS = 2 * 3600000; // Africa/Johannesburg is UTC+2 all year
+  let next = new Date(now.getTime() + intervalMin * 60000);
+  if (startH == null || endH == null) return next;
+  for (let i = 0; i < 40; i++) {
+    const wall = new Date(next.getTime() + SAST_MS); // SAST wall clock read as UTC fields
+    const h = wall.getUTCHours();
+    if (h >= startH && h < endH) return next;
+    const dayStart = Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate());
+    const target = h < startH ? dayStart + startH * 3600000 : dayStart + 86400000 + startH * 3600000;
+    next = new Date(target - SAST_MS);
+  }
+  return next;
+}
+
+export const PROACTIVE_TASK_TITLE = 'Proactive check';
+const PROACTIVE_INSTRUCTION = 'Check in for the owner and find work HI can do. Look at what HI can actually see right now: search unread and recent email with mail_search, list the next 3 days of calendar with calendar_upcoming, review estate follow-ups and deals due, opportunities, and anything waiting in approvals. Pick the one to three most concrete, useful things - for example a deal that needs a follow-up, a meeting worth preparing for, an enquiry waiting for a reply. Write the owner a short note in plain words: what you found and what you can do next. Only mention things you actually found in these checks, and name the source of each. If nothing needs the owner\'s attention, reply with exactly: NOTHING_NEEDED';
+
 export async function ensureDefaultAgent(tenantId) {
   return withTenant(tenantId, async (c) => {
     let a = (await c.query('SELECT * FROM agents ORDER BY created_at LIMIT 1')).rows[0];
     if (!a) a = (await c.query("INSERT INTO agents (tenant_id, name, persona) VALUES (current_setting('app.tenant_id')::uuid,'HI','A calm, practical AI employee for a small business.') RETURNING *")).rows[0];
+    // Every tenant gets one default proactive check: every 3 hours, 09:00-22:00 SAST.
+    // The owner can pause or delete it on the Tasks page like any other task.
+    await c.query(`INSERT INTO tasks (tenant_id, agent_id, title, instruction, interval_minutes, next_run_at, created_by, window_start, window_end, post_to_chat)
+      SELECT current_setting('app.tenant_id')::uuid, $1, $2, $3, 180, $4, 'system', 9, 22, true
+      WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE created_by='system' AND title=$2)`,
+      [a.id, PROACTIVE_TASK_TITLE, PROACTIVE_INSTRUCTION, nextInWindow(new Date(), 180, 9, 22)]);
     return a;
   });
 }
@@ -309,6 +335,26 @@ export async function runDueTasks({ llm = chat, fetchImpl = fetch, lookup, now =
       [now, limitPerTick])).then((r) => r.rows);
     for (const t of tasks) {
       const r = await runAgent({ tenantId, userEmail: t.email, agentId: t.agent_id, conversationId: null, userText: `Scheduled task "${t.title}": ${t.instruction}`, mode: 'task', taskId: t.id, llm, fetchImpl, lookup, now });
+      // Windowed tasks: the claim already bumped next_run_at by the interval; clamp it into the window.
+      if (t.interval_minutes && t.window_start != null && t.window_end != null) {
+        const clamped = nextInWindow(now, t.interval_minutes, t.window_start, t.window_end);
+        await withTenant(tenantId, (c) => c.query('UPDATE tasks SET next_run_at=$2 WHERE id=$1', [t.id, clamped]));
+      }
+      // Proactive-style tasks: post the note to the owner's "Proactive notes" chat when there is
+      // something worth saying; a NOTHING_NEEDED run stays in the history only.
+      if (t.post_to_chat && r.status === 'done') {
+        const answer = String(r.answer || '').trim();
+        if (/^NOTHING_NEEDED/i.test(answer)) {
+          await withTenant(tenantId, (c) => c.query("UPDATE runs SET result='Checked in - nothing needed your attention.' WHERE id=$1", [r.runId]));
+        } else {
+          await withTenant(tenantId, async (c) => {
+            let conv = (await c.query("SELECT id FROM conversations WHERE agent_id=$1 AND title='Proactive notes' ORDER BY created_at LIMIT 1", [t.agent_id])).rows[0];
+            if (!conv) conv = (await c.query("INSERT INTO conversations (tenant_id, agent_id, title) VALUES (current_setting('app.tenant_id')::uuid,$1,'Proactive notes') RETURNING id", [t.agent_id])).rows[0];
+            await c.query("INSERT INTO messages (tenant_id, conversation_id, role, content, sources) VALUES (current_setting('app.tenant_id')::uuid,$1,'assistant',$2,$3)", [conv.id, answer.slice(0, 4000), JSON.stringify(r.sources || [])]);
+            await c.query('UPDATE runs SET conversation_id=$2 WHERE id=$1', [r.runId, conv.id]);
+          });
+        }
+      }
       out.push({ tenant: tenantId, task: t.id, status: r.status || r.error });
     }
   }

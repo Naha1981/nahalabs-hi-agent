@@ -193,7 +193,7 @@ test('approval gate: agent drafts an email, nothing is sent until the user appro
 test('scheduled tasks run only when due, repeat, and respect pause', async () => {
   script = [call('schedule_task', { title: 'Daily tenders', instruction: 'Find tenders about cleaning', every_minutes: 120, run_in_minutes: 5 }), say('Scheduled.')];
   await run(A, 'Every 2 hours look for cleaning tenders');
-  const t0 = (await withTenant(A.tenantId, (c) => c.query('SELECT * FROM tasks'))).rows[0];
+  const t0 = (await withTenant(A.tenantId, (c) => c.query("SELECT * FROM tasks WHERE created_by <> 'system'"))).rows[0];
   assert.equal(t0.interval_minutes, 120);
   script = [];
   assert.equal((await runDueTasks({ llm, fetchImpl: fakeFetch, lookup, now: new Date() })).length, 0);
@@ -206,7 +206,7 @@ test('scheduled tasks run only when due, repeat, and respect pause', async () =>
   await withTenant(A.tenantId, (c) => c.query("UPDATE tasks SET next_run_at=now() - interval '1 minute' WHERE id=$1", [t0.id]));
   script = [call('schedule_task', { title: 'x', instruction: 'y', every_minutes: 60 }), say('ok')];
   await runDueTasks({ llm, fetchImpl: fakeFetch, lookup });
-  assert.equal((await withTenant(A.tenantId, (c) => c.query('SELECT count(*)::int n FROM tasks'))).rows[0].n, 1);
+  assert.equal((await withTenant(A.tenantId, (c) => c.query("SELECT count(*)::int n FROM tasks WHERE created_by <> 'system'"))).rows[0].n, 1);
   // pause stops runs
   await withTenant(A.tenantId, (c) => c.query("UPDATE tasks SET next_run_at=now() - interval '1 minute' WHERE id=$1", [t0.id]));
   await withSystem((c) => c.query('UPDATE tenants SET paused=true WHERE id=$1', [A.tenantId]));
