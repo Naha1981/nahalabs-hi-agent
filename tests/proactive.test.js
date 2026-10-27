@@ -98,18 +98,46 @@ test('a quiet check posts nothing and the history says so plainly', async () => 
   assert.equal(run.result, 'Checked in - nothing needed your attention.');
 });
 
-test('tasks page shows the schedule in plain words and the history page lists runs', async () => {
+test('tasks page shows buckets in plain words and the task thread lists runs', async () => {
   let r = await app.inject({ url: '/app/tasks', headers: { cookie: A.cookie } });
+  assert.match(r.body, /<b>Active<\/b>/);
+  assert.match(r.body, /<b>Scheduled<\/b>/);
   assert.match(r.body, /Proactive check/);
   assert.match(r.body, /every 3 h, 09:00-22:00/);
   const id = (await withTenant(A.tenantId, (c) => c.query("SELECT id FROM tasks WHERE created_by='system'"))).rows[0].id;
-  assert.match(r.body, new RegExp(`href="/app/tasks/${id}">History`));
+  assert.match(r.body, new RegExp(`href="/app/tasks/${id}"`));
   r = await app.inject({ url: `/app/tasks/${id}`, headers: { cookie: A.cookie } });
   assert.equal(r.statusCode, 200);
-  assert.match(r.body, /Run history/);
+  assert.match(r.body, /<h2>Thread<\/h2>/);
   assert.match(r.body, /Oak Street/);
   assert.match(r.body, /Checked in - nothing needed your attention/);
   assert.match(r.body, /every 3 h, 09:00-22:00 SAST/);
+  // thread reads top-down: the finding (earlier) comes before the quiet check (later)
+  assert.ok(r.body.indexOf('Oak Street') < r.body.indexOf('Checked in - nothing needed'));
+});
+
+test('tasks page buckets: up next, scheduled and resolved land in their own folders', async () => {
+  const agent = (await withTenant(A.tenantId, (c) => c.query('SELECT id FROM agents LIMIT 1'))).rows[0].id;
+  await withTenant(A.tenantId, async (c) => {
+    await c.query("INSERT INTO tasks (tenant_id, agent_id, title, instruction, next_run_at) VALUES (current_setting('app.tenant_id')::uuid,$1,'Phone the school','Call about the concert', now() + interval '1 day')", [agent]);
+    await c.query("INSERT INTO tasks (tenant_id, agent_id, title, instruction, next_run_at, status) VALUES (current_setting('app.tenant_id')::uuid,$1,'Old one-off','Did a thing', NULL, 'done')", [agent]);
+  });
+  const r = await app.inject({ url: '/app/tasks', headers: { cookie: A.cookie } });
+  const names = ['Active', 'Up next', 'Scheduled', 'Resolved', 'New task'];
+  const sec = (name) => { const i = r.body.indexOf(`<b>${name}</b>`); if (i < 0) return ''; const rest = r.body.slice(i + name.length + 7); const next = names.map((n) => rest.indexOf(`<b>${n}</b>`)).filter((x) => x >= 0); return next.length ? rest.slice(0, Math.min(...next)) : rest; };
+  assert.match(sec('Up next'), /Phone the school/);
+  assert.doesNotMatch(sec('Up next'), /Proactive check/);
+  assert.match(sec('Scheduled'), /Proactive check/);
+  assert.match(sec('Resolved'), /Old one-off/);
+  assert.doesNotMatch(sec('Active'), /Phone the school/);
+});
+
+test('scheduled-task run conversations stay out of Recent conversations', async () => {
+  const agent = (await withTenant(A.tenantId, (c) => c.query('SELECT id FROM agents LIMIT 1'))).rows[0].id;
+  await withTenant(A.tenantId, (c) => c.query(`INSERT INTO conversations (tenant_id, agent_id, title) VALUES (current_setting('app.tenant_id')::uuid,$1,'Scheduled task "Proactive check": Check in for the owner')`, [agent]));
+  const r = await app.inject({ url: '/app/agent', headers: { cookie: A.cookie } });
+  assert.doesNotMatch(r.body, /Scheduled task \"Proactive check\": Check in for the owner<\/a>/);
+  assert.match(r.body, /Proactive notes/); // the real notes conversation still shows
 });
 
 test('history page is tenant-scoped and sign-in gated', async () => {

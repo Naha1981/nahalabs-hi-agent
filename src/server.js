@@ -950,9 +950,8 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const u = req.user;
     const grp = (g, items) => `<div class="card"><b>${g}</b><p style="margin:10px 0 2px">${items.map(([n, h]) => `<a class="chip" style="padding:8px 14px;margin:4px 6px 4px 0" href="${h}">${n}</a>`).join('')}</p></div>`;
     return render(reply, u, 'Menu', `<h1>All sections</h1>
-      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Templates', '/app/templates'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Inbox', '/app/inbox'], ['Notifications', '/app/notifications'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']])}
-      ${grp('Work', [['Browser', '/app/browser'], ['Drive', '/app/drive'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents']])}
-      ${grp('Account', [['Memory', '/app/memory'], ['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']])}`, flashOf(req));
+      ${grp('Every day', [['Agent', '/app/agent'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Inbox', '/app/inbox'], ['Tasks', '/app/tasks'], ['Notifications', '/app/notifications'], ['Drive', '/app/drive']])}
+      ${grp('Settings', [['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents'], ['Briefs', '/app/briefs'], ['Reports', '/app/reports'], ['Memory', '/app/memory'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']])}`, flashOf(req));
   });
 
   app.get('/app/agent', { preHandler: guard }, async (req, reply) => {
@@ -961,7 +960,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const d = await withTenant(u.tenant_id, async (c) => {
       const agents = (await c.query('SELECT id, name, persona FROM agents ORDER BY created_at')).rows;
       const agent = agents.find((a) => a.id === req.query.agent) || agents[0];
-      const convs = (await c.query('SELECT id, title, created_at FROM conversations WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 15', [agent.id])).rows;
+      const convs = (await c.query(`SELECT id, title, created_at FROM conversations WHERE agent_id=$1 AND title NOT LIKE 'Scheduled task "%' ORDER BY created_at DESC LIMIT 15`, [agent.id])).rows;
       const conv = uuidOk(req.query.c) ? convs.find((x) => x.id === req.query.c) : null;
       const msgs = conv ? (await c.query('SELECT role, content, sources, steps, created_at FROM messages WHERE conversation_id=$1 ORDER BY id', [conv.id])).rows : [];
       return { agents, agent, convs, conv, msgs };
@@ -1061,15 +1060,27 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
   app.get('/app/tasks', { preHandler: guard }, async (req, reply) => {
     const u = req.user; await ensureDefaultAgent(u.tenant_id);
     const d = await withTenant(u.tenant_id, async (c) => ({
-      tasks: (await c.query('SELECT t.*, a.name agent_name FROM tasks t JOIN agents a ON a.id=t.agent_id ORDER BY t.created_at DESC LIMIT 50')).rows,
-      runs: (await c.query("SELECT r.id, r.status, r.result, r.sources, r.created_at, t.title FROM runs r LEFT JOIN tasks t ON t.id=r.task_id WHERE r.task_id IS NOT NULL ORDER BY r.created_at DESC LIMIT 10")).rows,
+      tasks: (await c.query('SELECT t.*, a.name agent_name FROM tasks t JOIN agents a ON a.id=t.agent_id ORDER BY t.created_at DESC LIMIT 100')).rows,
+      running: (await c.query("SELECT DISTINCT task_id FROM runs WHERE status='running' AND task_id IS NOT NULL")).rows.map((x) => x.task_id),
       agents: (await c.query('SELECT id, name FROM agents ORDER BY created_at')).rows }));
-    return render(reply, u, 'Tasks', `<h1>Scheduled tasks</h1>
-      <div class="card"><table class="tasklist"><tr><th>Task</th><th>Agent</th><th>Runs</th><th>Next</th><th>Status</th><th></th></tr>${d.tasks.map((t) => `<tr><td>${esc(t.title)}<div class="mut">${esc(t.instruction.slice(0, 120))}</div></td><td>${esc(t.agent_name)}</td><td>${t.interval_minutes ? `every ${t.interval_minutes % 60 === 0 ? `${t.interval_minutes / 60} h` : `${t.interval_minutes} min`}${t.window_start != null ? `, ${String(t.window_start).padStart(2, '0')}:00-${String(t.window_end).padStart(2, '0')}:00` : ''}` : 'once'}</td><td>${fdate(t.next_run_at)}</td><td>${esc(t.status)}</td>
-        <td><a class="sec" style="padding:7px 12px;text-decoration:none;display:inline-block" href="/app/tasks/${t.id}">History</a> ${t.status !== 'done' ? `<form method="post" action="/app/tasks/${t.id}/toggle" style="display:inline">${csrf(u)}<button class="sec">${t.status === 'active' ? 'Pause' : 'Resume'}</button></form>` : ''}<form method="post" action="/app/tasks/${t.id}/delete" style="display:inline">${csrf(u)}<button class="sec">Delete</button></form></td></tr>`).join('') || '<tr><td colspan="6" class="mut">No tasks yet. Ask your agent to schedule one, or add one below.</td></tr>'}</table></div>
+    const every = (t) => t.interval_minutes ? `every ${t.interval_minutes % 60 === 0 ? `${t.interval_minutes / 60} h` : `${t.interval_minutes} min`}${t.window_start != null ? `, ${String(t.window_start).padStart(2, '0')}:00-${String(t.window_end).padStart(2, '0')}:00` : ''}` : 'once';
+    const now = Date.now();
+    const active = d.tasks.filter((t) => t.status !== 'done' && (d.running.includes(t.id) || (!t.interval_minutes && t.next_run_at && new Date(t.next_run_at).getTime() <= now)));
+    const upNext = d.tasks.filter((t) => t.status !== 'done' && !active.includes(t) && !t.interval_minutes);
+    const scheduled = d.tasks.filter((t) => t.status !== 'done' && !active.includes(t) && t.interval_minutes);
+    const resolved = d.tasks.filter((t) => t.status === 'done');
+    const row = (t) => `<tr><td><a href="/app/tasks/${t.id}"><b>${esc(t.title)}</b></a><div class="mut">${esc(t.instruction.slice(0, 120))}</div></td>
+      <td>${every(t)}${t.status === 'paused' ? ' <span class="tag">paused</span>' : ''}${d.running.includes(t.id) ? ' <span class="tag">running now</span>' : ''}</td>
+      <td>${t.status === 'done' ? fdate(t.last_run_at) : fdate(t.next_run_at)}</td>
+      <td>${t.status !== 'done' ? `<form method="post" action="/app/tasks/${t.id}/toggle" style="display:inline">${csrf(u)}<button class="sec">${t.status === 'active' ? 'Pause' : 'Resume'}</button></form>` : ''}<form method="post" action="/app/tasks/${t.id}/delete" style="display:inline">${csrf(u)}<button class="sec">Delete</button></form></td></tr>`;
+    const bucket = (name, hint, rows) => `<div class="card"><b>${name}</b>${rows.length ? `<span class="chip">${rows.length}</span><table class="tasklist" style="margin-top:8px"><tr><th>Task</th><th>Runs</th><th>${name === 'Resolved' ? 'Last run' : 'Next'}</th><th></th></tr>${rows.map(row).join('')}</table>` : `<p class="mut" style="margin:6px 0 0">${hint}</p>`}</div>`;
+    return render(reply, u, 'Tasks', `<h1>Tasks</h1>
+      ${bucket('Active', 'Nothing running right now.', active)}
+      ${upNext.length ? bucket('Up next', '', upNext) : ''}
+      ${bucket('Scheduled', 'No routines yet. Ask HI to check or do something on a schedule.', scheduled)}
+      ${resolved.length ? bucket('Resolved', '', resolved) : ''}
       <form method="post" action="/app/tasks" class="card">${csrf(u)}<b>New task</b><label>Title</label><input name="title" required maxlength="120"><label>What should the agent do each time?</label><textarea name="instruction" rows="3" maxlength="2000" required></textarea>
-        <label>Agent</label><select name="agent">${d.agents.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select><label>Repeat every (minutes, 60 or more, blank for once)</label><input name="every" type="number" min="60"><label>First run in (minutes)</label><input name="first" type="number" min="1" value="60"><p><button>Schedule</button></p></form>
-      <h2>Recent runs</h2>${d.runs.map((r) => `<div class="card"><div class="row"><b>${esc(r.title || 'Task')}</b><span class="tag">${esc(r.status)}</span></div><div class="mut">${fdate(r.created_at)}</div><div>${mdLite((r.result || '').slice(0, 1500))}</div>${srcList(r.sources)}</div>`).join('') || '<div class="card mut">No runs yet.</div>'}`, flashOf(req));
+        <label>Agent</label><select name="agent">${d.agents.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select><label>Repeat every (minutes, 60 or more, blank for once)</label><input name="every" type="number" min="60"><label>First run in (minutes)</label><input name="first" type="number" min="1" value="60"><p><button>Schedule</button></p></form>`, flashOf(req));
   });
   app.post('/app/tasks', { preHandler: guard }, async (req, reply) => {
     const u = req.user, b = req.body || {};
@@ -1093,7 +1104,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const u = req.user;
     const d = await withTenant(u.tenant_id, async (c) => ({
       task: (await c.query('SELECT t.*, a.name agent_name FROM tasks t JOIN agents a ON a.id=t.agent_id WHERE t.id=$1', [req.params.id])).rows[0],
-      runs: (await c.query('SELECT id, status, result, sources, created_at FROM runs WHERE task_id=$1 ORDER BY created_at DESC LIMIT 50', [req.params.id])).rows,
+      runs: (await c.query('SELECT id, status, result, sources, created_at FROM runs WHERE task_id=$1 ORDER BY created_at ASC LIMIT 50', [req.params.id])).rows,
     }));
     if (!d.task) return reply.redirect('/app/tasks?m=' + encodeURIComponent('That task is not available.'));
     const t = d.task;
@@ -1101,7 +1112,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const window = t.window_start != null ? `, ${String(t.window_start).padStart(2, '0')}:00-${String(t.window_end).padStart(2, '0')}:00 SAST` : '';
     return render(reply, u, t.title, `<h1><b>${esc(t.title)}</b></h1>
       <p class="mut">Runs ${every}${window} &middot; ${esc(t.status)}${t.last_run_at ? ` &middot; last run ${fdate(t.last_run_at)}` : ''} &middot; next run ${fdate(t.next_run_at)}. <a href="/app/tasks">All tasks</a></p>
-      <h2>Run history</h2>${d.runs.map((r) => `<div class="card"><div class="row"><span class="tag">${esc(r.status)}</span><span class="mut">${fdate(r.created_at)}</span></div><div>${mdLite((r.result || '').slice(0, 1500))}</div>${srcList(r.sources)}</div>`).join('') || '<div class="card mut">No runs yet.</div>'}`, flashOf(req));
+      <h2>Thread</h2>${d.runs.map((r) => `<div class="card"><div class="row"><span class="tag">${esc(r.status)}</span><span class="mut">${fdate(r.created_at)}</span></div><div>${mdLite((r.result || '').slice(0, 1500))}</div>${srcList(r.sources)}</div>`).join('') || '<div class="card mut">No runs yet.</div>'}`, flashOf(req));
   });
 
   app.post('/app/tasks/:id/delete', { preHandler: guard }, async (req, reply) => {

@@ -79,9 +79,8 @@ a.nl:hover{background:var(--soft)}
 `;
 
 const GROUPS = [
-  ['', [['Agent', '/app/agent'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Inbox', '/app/inbox'], ['Notifications', '/app/notifications'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']]],
-  ['Work', [['Browser', '/app/browser'], ['Drive', '/app/drive'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents']]],
-  ['Account', [['Memory', '/app/memory'], ['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']]],
+  ['', [['Agent', '/app/agent'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Inbox', '/app/inbox'], ['Tasks', '/app/tasks'], ['Notifications', '/app/notifications'], ['Drive', '/app/drive']]],
+  ['Settings', [['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents'], ['Briefs', '/app/briefs'], ['Reports', '/app/reports'], ['Memory', '/app/memory'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']]],
 ];
 const sideNav = (user) => GROUPS.map(([g, links]) => `${g ? `<div class="grp">${g}</div>` : ''}${links.map(([n, h]) => {
   const badge = (h === '/app/notifications' && user?.notif_unread > 0) ? ` <span style="background:var(--ink);color:#fff;border-radius:10px;padding:1px 7px;font-size:12px">${Number(user.notif_unread)}</span>` : '';
