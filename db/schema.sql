@@ -322,6 +322,8 @@ CREATE TABLE IF NOT EXISTS browser_jobs (
   log jsonb NOT NULL DEFAULT '[]',
   screenshots jsonb NOT NULL DEFAULT '[]',
   approval_id uuid,
+  conversation_id uuid,
+  chat_notified boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz
 );

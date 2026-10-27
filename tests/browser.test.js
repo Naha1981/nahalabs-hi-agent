@@ -111,3 +111,57 @@ test('a repeating action loop is stopped', async () => {
   const r = await step(j, { type: 'type', index: 1, text: 'x' }); assert.equal(r.body.action.type, 'done');
   assert.match((await state(A, j.job_id)).result, /repeated the same action/);
 });
+
+test('a finished browser task posts its result into the originating conversation, once', async () => {
+  const convId = await withTenant(A.tenantId, async (c) => (await c.query("INSERT INTO conversations (tenant_id, agent_id, title) VALUES (current_setting('app.tenant_id')::uuid,$1,'Chat about example.com') RETURNING id", [A.agentId])).rows[0].id);
+  const p = await withTenant(A.tenantId, (c) => proposeBrowserJob(c, { tenantId: A.tenantId, agentId: A.agentId, agentName: 'HI', startUrl: 'https://forms.example.test/', goal: 'Read the page title', mode: 'read', lookup, conversationId: convId }));
+  assert.ok(p.job_id);
+  assert.equal((await state(A, p.job_id)).conversation_id, convId);
+  const r = await approve(A, p.approval_id); assert.equal(r.status, 'executed');
+  const j = { ...p, token: dispatched.at(-1).body.inputs.token };
+  await step(j, { type: 'done', summary: 'The title is Example Domain.' });
+  const msgs = (await withTenant(A.tenantId, (c) => c.query("SELECT role, content FROM messages WHERE conversation_id=$1", [convId]))).rows;
+  assert.equal(msgs.length, 1); assert.equal(msgs[0].role, 'assistant');
+  assert.match(msgs[0].content, /^Browser task done on forms\.example\.test: The title is Example Domain\.$/);
+  assert.equal((await state(A, p.job_id)).chat_notified, true);
+  // a duplicate terminal signal must not double-post
+  await step(j, { type: 'done', summary: 'duplicate' }).catch(() => {});
+  const again = (await withTenant(A.tenantId, (c) => c.query('SELECT count(*)::int n FROM messages WHERE conversation_id=$1', [convId]))).rows[0].n;
+  assert.equal(again, 1);
+});
+
+test('a failed browser task posts the failure into the originating conversation', async () => {
+  const convId = await withTenant(B.tenantId, async (c) => (await c.query("INSERT INTO conversations (tenant_id, agent_id, title) VALUES (current_setting('app.tenant_id')::uuid,$1,'Chat about failure') RETURNING id", [B.agentId])).rows[0].id);
+  const p = await withTenant(B.tenantId, (c) => proposeBrowserJob(c, { tenantId: B.tenantId, agentId: B.agentId, agentName: 'HI', startUrl: 'https://forms.example.test/', goal: 'Click around', mode: 'read', lookup, conversationId: convId }));
+  const r = await approve(B, p.approval_id); assert.equal(r.status, 'executed');
+  const j = { ...p, token: dispatched.at(-1).body.inputs.token };
+  await step(j, null); // model gives no usable action -> failed
+  const msgs = (await withTenant(B.tenantId, (c) => c.query("SELECT role, content FROM messages WHERE conversation_id=$1", [convId]))).rows;
+  assert.equal(msgs.length, 1);
+  assert.match(msgs[0].content, /^Browser task failed on forms\.example\.test: The model gave no usable action\.$/);
+});
+
+test('a job without a conversation still finishes cleanly and posts nothing', async () => {
+  const j = await launch(A, 'read');
+  await step(j, { type: 'done', summary: 'Fine.' });
+  const row = await state(A, j.job_id);
+  assert.equal(row.status, 'done'); assert.equal(row.conversation_id, null); assert.equal(row.chat_notified, false);
+});
+
+test('approval-time start failures are also posted to the conversation', async () => {
+  const convId = await withTenant(A.tenantId, async (c) => (await c.query("INSERT INTO conversations (tenant_id, agent_id, title) VALUES (current_setting('app.tenant_id')::uuid,$1,'Chat about config') RETURNING id", [A.agentId])).rows[0].id);
+  const p = await withTenant(A.tenantId, (c) => proposeBrowserJob(c, { tenantId: A.tenantId, agentId: A.agentId, agentName: 'HI', startUrl: 'https://forms.example.test/', goal: 'Read the page', mode: 'read', lookup, conversationId: convId }));
+  const saved = process.env.GITHUB_DISPATCH_TOKEN; delete process.env.GITHUB_DISPATCH_TOKEN;
+  try { const r = await approve(A, p.approval_id); assert.equal(r.status, 'failed'); } finally { process.env.GITHUB_DISPATCH_TOKEN = saved; }
+  const msgs = (await withTenant(A.tenantId, (c) => c.query("SELECT content FROM messages WHERE conversation_id=$1", [convId]))).rows;
+  assert.equal(msgs.length, 1);
+  assert.match(msgs[0].content, /^Browser task failed on forms\.example\.test: Browser runner is not configured\.$/);
+});
+
+test('task-level rejection posts nothing to the conversation', async () => {
+  const convId = await withTenant(A.tenantId, async (c) => (await c.query("INSERT INTO conversations (tenant_id, agent_id, title) VALUES (current_setting('app.tenant_id')::uuid,$1,'Chat about rejecting') RETURNING id", [A.agentId])).rows[0].id);
+  const p = await withTenant(A.tenantId, (c) => proposeBrowserJob(c, { tenantId: A.tenantId, agentId: A.agentId, agentName: 'HI', startUrl: 'https://forms.example.test/', goal: 'Read the page', mode: 'read', lookup, conversationId: convId }));
+  const r = await approve(A, p.approval_id, 'reject'); assert.equal(r.status, 'rejected');
+  const n = (await withTenant(A.tenantId, (c) => c.query('SELECT count(*)::int n FROM messages WHERE conversation_id=$1', [convId]))).rows[0].n;
+  assert.equal(n, 0);
+});

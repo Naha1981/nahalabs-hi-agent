@@ -13,13 +13,13 @@ export const IRREVERSIBLE = /\b(submit|send|pay|buy|purchase|order|checkout|conf
 const SENSITIVE_FIELD = /(password|passcode|pin\b|cvv|cvc|card.?number|cc-|security.?code|otp|one.?time|id.?number|iban|account.?number)/i;
 const sameSite = (a, b) => { try { const x = new URL(a).hostname, y = new URL(b).hostname; return x === y || x.endsWith('.' + y) || y.endsWith('.' + x); } catch { return false; } };
 
-export async function proposeBrowserJob(c, { tenantId, agentId, agentName, startUrl, goal, mode, lookup }) {
+export async function proposeBrowserJob(c, { tenantId, agentId, agentName, startUrl, goal, mode, lookup, conversationId = null }) {
   await assertPublicUrl(startUrl, lookup);
   if (/password|passcode|\bpin\b|cvv|card number|one.?time code/i.test(goal)) return { error: 'Browser tasks cannot use passwords, card numbers or codes in this version.' };
   const m = mode === 'act' ? 'act' : 'read';
   const open = (await c.query("SELECT count(*)::int n FROM browser_jobs WHERE created_at > now() - interval '1 day'")).rows[0].n;
   if (open >= Number(process.env.BROWSER_MAX_JOBS_PER_TENANT_DAY || 5)) return { error: 'Daily browser task limit reached for your account.' };
-  const job = (await c.query("INSERT INTO browser_jobs (tenant_id, agent_id, start_url, goal, mode) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4) RETURNING id", [agentId, startUrl, goal.slice(0, 1500), m])).rows[0];
+  const job = (await c.query("INSERT INTO browser_jobs (tenant_id, agent_id, start_url, goal, mode, conversation_id) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5) RETURNING id", [agentId, startUrl, goal.slice(0, 1500), m, conversationId])).rows[0];
   const ap = (await c.query("INSERT INTO approvals (tenant_id, kind, summary, payload, proposed_by) VALUES (current_setting('app.tenant_id')::uuid,'browser_task',$1,$2,$3) RETURNING id",
     [`Open ${new URL(startUrl).hostname} in an isolated browser (${m === 'act' ? 'can type and click, you approve before any final submit' : 'read only'}): ${goal.slice(0, 120)}`, JSON.stringify({ job_id: job.id }), `agent:${agentName}`])).rows[0];
   await c.query('UPDATE browser_jobs SET approval_id=$2 WHERE id=$1', [job.id, ap.id]);
@@ -27,20 +27,31 @@ export async function proposeBrowserJob(c, { tenantId, agentId, agentName, start
   return { job_id: job.id, approval_id: ap.id };
 }
 
+// Posts the finished outcome into the originating agent conversation, exactly once.
+// chat_notified flips atomically with the read, so retries and duplicate finishes never double-post.
+async function notifyBrowserFinished(c, jobId, status, result) {
+  if (status !== 'done' && status !== 'failed') return;
+  const j = (await c.query("UPDATE browser_jobs SET chat_notified=true WHERE id=$1 AND conversation_id IS NOT NULL AND chat_notified=false RETURNING conversation_id, start_url", [jobId])).rows[0];
+  if (!j) return;
+  const host = new URL(j.start_url).hostname;
+  const text = status === 'done' ? `Browser task done on ${host}: ${result}` : `Browser task failed on ${host}: ${result}`;
+  await c.query("INSERT INTO messages (tenant_id, conversation_id, role, content) VALUES (current_setting('app.tenant_id')::uuid,$1,'assistant',$2)", [j.conversation_id, String(text).slice(0, 4000)]);
+}
+
 // Called after the customer approves the browser_task approval. Mints a one-job token and dispatches the runner.
 export async function startBrowserJob(c, { tenantId, jobId, fetchImpl = fetch }) {
   const j = (await c.query('SELECT * FROM browser_jobs WHERE id=$1 FOR UPDATE', [jobId])).rows[0];
   if (!j || j.status !== 'proposed') return { error: 'job not startable' };
   const monthly = await withSystem((s) => s.query("SELECT count(*)::int n FROM audit_log WHERE action='browser.started' AND at > now() - interval '30 days'")).then((r) => r.rows[0].n);
-  if (monthly >= Number(process.env.BROWSER_MAX_JOBS_PER_MONTH || 300)) { await c.query("UPDATE browser_jobs SET status='failed', result='Platform browser allowance for this month is used up.' WHERE id=$1", [jobId]); return { error: 'monthly allowance used up' }; }
+  if (monthly >= Number(process.env.BROWSER_MAX_JOBS_PER_MONTH || 300)) { await c.query("UPDATE browser_jobs SET status='failed', result='Platform browser allowance for this month is used up.' WHERE id=$1", [jobId]); await notifyBrowserFinished(c, jobId, 'failed', 'Platform browser allowance for this month is used up.'); return { error: 'monthly allowance used up' }; }
   const token = randomBytes(24).toString('hex');
   await c.query("UPDATE browser_jobs SET status='queued', token_hash=$2, token_expires_at=now() + interval '15 minutes' WHERE id=$1", [jobId, hash(token)]);
   const gh = process.env.GITHUB_DISPATCH_TOKEN, repo = process.env.GITHUB_REPO || 'Naha1981/nahalabs-hi-agent', base = process.env.PUBLIC_BASE_URL;
-  if (!gh || !base) { await c.query("UPDATE browser_jobs SET status='failed', result='Browser runner is not configured.' WHERE id=$1", [jobId]); return { error: 'runner not configured' }; }
+  if (!gh || !base) { await c.query("UPDATE browser_jobs SET status='failed', result='Browser runner is not configured.' WHERE id=$1", [jobId]); await notifyBrowserFinished(c, jobId, 'failed', 'Browser runner is not configured.'); return { error: 'runner not configured' }; }
   const res = await fetchImpl(`https://api.github.com/repos/${repo}/actions/workflows/browser.yml/dispatches`, {
     method: 'POST', headers: { authorization: `Bearer ${gh}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'user-agent': 'hi-by-nahalabs' },
     body: JSON.stringify({ ref: 'main', inputs: { job_id: jobId, token, base_url: base } }), signal: AbortSignal.timeout(15000) });
-  if (res.status !== 204) { await c.query("UPDATE browser_jobs SET status='failed', result=$2 WHERE id=$1", [jobId, `Runner dispatch failed (${res.status}).`]); return { error: 'dispatch failed' }; }
+  if (res.status !== 204) { await c.query("UPDATE browser_jobs SET status='failed', result=$2 WHERE id=$1", [jobId, `Runner dispatch failed (${res.status}).`]); await notifyBrowserFinished(c, jobId, 'failed', `Runner dispatch failed (${res.status}).`); return { error: 'dispatch failed' }; }
   await audit(c, tenantId, 'system', 'browser.started', { job_id: jobId });
   return { status: 'queued' };
 }
@@ -61,18 +72,18 @@ export async function browserStep({ jobId, token, observation, screenshot, llm =
   return withTenant(tenantId, async (c) => {
     const j = (await c.query('SELECT j.*, t.paused FROM browser_jobs j JOIN tenants t ON t.id=j.tenant_id WHERE j.id=$1 FOR UPDATE OF j', [jobId])).rows[0];
     if (!j || ['done', 'failed', 'rejected', 'expired'].includes(j.status)) return { status: 200, body: { action: { type: 'done' } } };
-    if (j.paused) { await c.query("UPDATE browser_jobs SET status='failed', result='Stopped: account paused.', finished_at=now() WHERE id=$1", [jobId]); return { status: 200, body: { action: { type: 'done' } } }; }
+    if (j.paused) { await c.query("UPDATE browser_jobs SET status='failed', result='Stopped: account paused.', finished_at=now() WHERE id=$1", [jobId]); await notifyBrowserFinished(c, jobId, 'failed', 'Stopped: account paused.'); return { status: 200, body: { action: { type: 'done' } } }; }
     if (j.status === 'awaiting_approval') return { status: 200, body: { action: { type: 'wait' } } };
-    if (j.step_count >= MAX_STEPS) { await c.query("UPDATE browser_jobs SET status='done', result=coalesce(result,'Step limit reached before finishing.'), finished_at=now() WHERE id=$1", [jobId]); return { status: 200, body: { action: { type: 'done' } } }; }
-    if (!agentModelEnabled() && llm === chat) { await c.query("UPDATE browser_jobs SET status='failed', result='Model not configured.', finished_at=now() WHERE id=$1", [jobId]); return { status: 200, body: { action: { type: 'done' } } }; }
+    if (j.step_count >= MAX_STEPS) { await c.query("UPDATE browser_jobs SET status='done', result=coalesce(result,'Step limit reached before finishing.'), finished_at=now() WHERE id=$1", [jobId]); await notifyBrowserFinished(c, jobId, 'done', j.result || 'Step limit reached before finishing.'); return { status: 200, body: { action: { type: 'done' } } }; }
+    if (!agentModelEnabled() && llm === chat) { await c.query("UPDATE browser_jobs SET status='failed', result='Model not configured.', finished_at=now() WHERE id=$1", [jobId]); await notifyBrowserFinished(c, jobId, 'failed', 'Model not configured.'); return { status: 200, body: { action: { type: 'done' } } }; }
     const shots = j.screenshots;
     if (screenshot && typeof screenshot === 'string' && screenshot.length < 400000 && shots.length < 6) shots.push({ step: j.step_count, url: String(observation?.url || '').slice(0, 300), img: screenshot });
     const els = (observation?.elements || []).slice(0, 60).map((e) => ({ i: e.i, tag: String(e.tag).slice(0, 12), type: String(e.type || '').slice(0, 20), label: String(e.label || '').slice(0, 80), name: String(e.name || '').slice(0, 40), value: String(e.value || '').slice(0, 60) }));
     const user = `GOAL (from the customer): ${j.goal}\nMODE: ${j.mode} (${j.mode === 'read' ? 'you may only read, scroll and follow links; no typing' : 'you may type into non-sensitive fields and click; final submits need approval'})\nSTART SITE: ${new URL(j.start_url).hostname}\nSTEP ${j.step_count + 1} of ${MAX_STEPS}\nPAGE URL: ${String(observation?.url || '').slice(0, 300)}\nPAGE TITLE: ${String(observation?.title || '').slice(0, 150)}\nUNTRUSTED PAGE TEXT:\n${String(observation?.text || '').slice(0, 2500)}\nUNTRUSTED ELEMENTS: ${JSON.stringify(els)}\nRecent actions: ${JSON.stringify(j.log.slice(-4))}`;
     let action;
     try { action = parseAction((await llm({ messages: [{ role: 'system', content: SYS }, { role: 'user', content: user }], tools: [] })).content); }
-    catch (e) { await c.query("UPDATE browser_jobs SET status='failed', result=$2, finished_at=now(), screenshots=$3 WHERE id=$1", [jobId, 'Model error: ' + String(e.message).slice(0, 80), JSON.stringify(shots)]); return { status: 200, body: { action: { type: 'done' } } }; }
-    const stop = async (status, result) => { await c.query('UPDATE browser_jobs SET status=$2, result=$3, finished_at=now(), screenshots=$4, step_count=step_count+1 WHERE id=$1', [jobId, status, String(result).slice(0, 4000), JSON.stringify(shots)]); await audit(c, tenantId, 'agent:browser', `browser.${status}`, { job_id: jobId }); return { status: 200, body: { action: { type: 'done' } } }; };
+    catch (e) { await c.query("UPDATE browser_jobs SET status='failed', result=$2, finished_at=now(), screenshots=$3 WHERE id=$1", [jobId, 'Model error: ' + String(e.message).slice(0, 80), JSON.stringify(shots)]); await notifyBrowserFinished(c, jobId, 'failed', 'Model error: ' + String(e.message).slice(0, 80)); return { status: 200, body: { action: { type: 'done' } } }; }
+    const stop = async (status, result) => { await c.query('UPDATE browser_jobs SET status=$2, result=$3, finished_at=now(), screenshots=$4, step_count=step_count+1 WHERE id=$1', [jobId, status, String(result).slice(0, 4000), JSON.stringify(shots)]); await audit(c, tenantId, 'agent:browser', `browser.${status}`, { job_id: jobId }); await notifyBrowserFinished(c, jobId, status, String(result).slice(0, 4000)); return { status: 200, body: { action: { type: 'done' } } }; };
     if (!action) return stop('failed', 'The model gave no usable action.');
     if (action.type === 'done') return stop('done', action.summary || 'Finished.');
     const log = [...j.log, { n: j.step_count + 1, type: action.type, index: action.index, text: action.type === 'type' ? String(action.text || '').slice(0, 40) : undefined, url: String(observation?.url || '').slice(0, 200) }].slice(-40);
@@ -121,7 +132,10 @@ export async function browserPoll({ jobId, token }) {
 }
 
 async function finish(tenantId, jobId, status, result) {
-  await withTenant(tenantId, (c) => c.query('UPDATE browser_jobs SET status=$2, result=$3, finished_at=now() WHERE id=$1', [jobId, status, result]));
+  await withTenant(tenantId, async (c) => {
+    await c.query('UPDATE browser_jobs SET status=$2, result=$3, finished_at=now() WHERE id=$1', [jobId, status, result]);
+    await notifyBrowserFinished(c, jobId, status, result);
+  });
 }
 
 // Customer decision on a gated step (approval kind browser_step) or the task itself (browser_task).
@@ -137,7 +151,7 @@ export async function applyBrowserDecision(c, { tenantId, approval, decision, fe
   // browser_step
   const j = (await c.query('SELECT status, pending FROM browser_jobs WHERE id=$1 FOR UPDATE', [jobId])).rows[0];
   if (!j || j.status !== 'awaiting_approval' || j.pending?.approval_id !== approval.id) { await c.query("UPDATE approvals SET status='failed' WHERE id=$1", [approval.id]); return { status: 'failed', reason: 'the browser session has already ended' }; }
-  if (decision === 'reject') { await c.query("UPDATE browser_jobs SET status='done', pending=NULL, result='You declined the final step. Nothing was submitted.', finished_at=now() WHERE id=$1", [jobId]); return { status: 'rejected' }; }
+  if (decision === 'reject') { await c.query("UPDATE browser_jobs SET status='done', pending=NULL, result='You declined the final step. Nothing was submitted.', finished_at=now() WHERE id=$1", [jobId]); await notifyBrowserFinished(c, jobId, 'done', 'You declined the final step. Nothing was submitted.'); return { status: 'rejected' }; }
   await c.query("UPDATE browser_jobs SET status='running' WHERE id=$1", [jobId]);
   await c.query("UPDATE approvals SET status='executed' WHERE id=$1", [approval.id]);
   return { status: 'executed' };

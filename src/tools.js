@@ -254,7 +254,7 @@ export async function runTool(name, args, ctx) {
     case 'browser_task': {
       if (ctx.mode === 'task') return 'Unattended runs cannot start browser tasks.';
       try {
-        const r = await proposeBrowserJob(c, { tenantId, agentId: ctx.agentId, agentName: ctx.agentName || 'hi', startUrl: String(a.start_url || ''), goal: clip(a.goal, 1500), mode: a.mode, lookup: ctx.lookup });
+        const r = await proposeBrowserJob(c, { tenantId, agentId: ctx.agentId, agentName: ctx.agentName || 'hi', startUrl: String(a.start_url || ''), goal: clip(a.goal, 1500), mode: a.mode, lookup: ctx.lookup, conversationId: ctx.conversationId || null });
         if (r.error) return r.error;
         return 'Browser task proposed and waiting in the approval queue. It will not start until the customer approves it. Check back with browser_results.';
       } catch (e) { return 'Cannot open that address: ' + clip(e.message, 80); }
