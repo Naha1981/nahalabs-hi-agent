@@ -18,6 +18,7 @@ import { handleInbound, makeAdapter, normalisePhone, parseMetaWebhook } from './
 import { handleStripeWebhook, fmtMoney } from './stripe.js';
 import { browserStep, browserPoll } from './browser.js';
 import { runAgent, runDueTasks, ensureDefaultAgent, toolLabel } from './agent.js';
+import { splitDump, activeList, startDump, MAX_DUMP_CHARS } from './dump.js';
 import { buildMorningBriefs } from './brief.js';
 import { chat as defaultChat, agentModelEnabled } from './gateway.js';
 import { registerApi, newApiKey } from './api.js';
@@ -1073,6 +1074,98 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
     await withTenant(req.user.tenant_id, async (c) => { await c.query('DELETE FROM tasks WHERE id=$1', [req.params.id]); await audit(c, req.user.tenant_id, `user:${req.user.user_id}`, 'task.deleted', { task_id: req.params.id }); });
     return reply.redirect('/app/tasks?m=' + encodeURIComponent('Deleted.'));
+  });
+
+  // ---- Brain dump: one box -> the agent splits it into tasks -> start now or save for later ----
+  app.get('/app/dump', { preHandler: guard }, async (req, reply) => {
+    const u = req.user; await ensureDefaultAgent(u.tenant_id);
+    const list = await activeList(u.tenant_id);
+    const drafts = await withTenant(u.tenant_id, (c) => c.query("SELECT id, raw, created_at FROM dumps WHERE status='draft' ORDER BY created_at DESC LIMIT 10").then((r) => r.rows));
+    const reviewCards = list.review.map((r) => `<div style="border-top:1px solid var(--line);padding:10px 0"><div class="row"><b>${esc(r.title || 'Task')}</b><form method="post" action="/app/runs/${r.id}/review" class="ask">${csrf(u)}<button class="sec">Mark reviewed</button></form></div><div class="mut small">${fdate(r.created_at)}</div><div>${mdLite((r.result || '').slice(0, 600))}</div></div>`).join('');
+    const inputRows = list.needsInput.map((a) => `<li><a href="/app/approvals">${esc(a.summary)}</a> <span class="mut small">${fdate(a.created_at)}</span></li>`).join('');
+    const workingRows = list.working.map((r) => `<li>${esc(r.title || 'Task')} <span class="tag">working now</span></li>`).join('')
+      + list.queued.map((t) => `<li>${esc(t.title)} <span class="tag">queued ${fdate(t.next_run_at)}</span></li>`).join('');
+    return render(reply, u, 'Brain dump', `<h1>Brain dump</h1>
+      <form method="post" action="/app/dump" class="card">${csrf(u)}
+        <b>Everything on your mind, in one go</b>
+        <p class="mut">Type it all - every task, reminder and idea. HI splits it into separate tasks. You check the split, then start the work now or save it for later.</p>
+        <textarea name="raw" rows="6" maxlength="${MAX_DUMP_CHARS}" required placeholder="e.g. Follow up the Sandton quote&#10;Ask Sipho about the viewing Saturday&#10;Find three electricians for the Midrand job&#10;Remind me to renew the CIPC registration"></textarea>
+        <p><button>Split into tasks</button></p></form>
+      <div class="card"><b>Active</b>
+        <h2 style="margin-top:10px">Needs your input</h2>
+        ${inputRows ? `<ul>${inputRows}</ul>` : '<p class="mut">Nothing waiting on you.</p>'}
+        <h2>Waiting for your review</h2>
+        ${reviewCards || '<p class="mut">No finished work to review.</p>'}
+        <h2>Agent is working on</h2>
+        ${workingRows ? `<ul>${workingRows}</ul>` : '<p class="mut">Nothing in flight.</p>'}</div>
+      ${drafts.length ? `<div class="card"><b>Saved for later</b><ul>${drafts.map((d) => `<li><a href="/app/dump/${d.id}">${esc(d.raw.slice(0, 80))}${d.raw.length > 80 ? '...' : ''}</a> <span class="mut small">${fdate(d.created_at)}</span></li>`).join('')}</ul></div>` : ''}`, flashOf(req));
+  });
+  const dumpLimit = makeLimiter(20, 60 * 60 * 1000);
+  app.post('/app/dump', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const raw = String(req.body?.raw || '').trim().slice(0, MAX_DUMP_CHARS);
+    if (!raw) return reply.redirect('/app/dump?m=' + encodeURIComponent('Write what is on your mind first.'));
+    if (!dumpLimit(u.tenant_id)) return reply.redirect('/app/dump?m=' + encodeURIComponent('Too many dumps this hour.'));
+    const agent = await ensureDefaultAgent(u.tenant_id);
+    const { items, via } = await splitDump({ raw, tenantId: u.tenant_id, llm, fetchImpl });
+    if (!items.length) return reply.redirect('/app/dump?m=' + encodeURIComponent('Could not split that into tasks - try one line per task.'));
+    const id = await withTenant(u.tenant_id, async (c) => {
+      const r = (await c.query("INSERT INTO dumps (tenant_id, agent_id, raw, items) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3) RETURNING id", [agent.id, raw, JSON.stringify(items)])).rows[0];
+      await audit(c, u.tenant_id, `user:${u.user_id}`, 'dump.split', { dump_id: r.id, items: items.length, via });
+      return r.id;
+    });
+    return reply.redirect(`/app/dump/${id}`);
+  });
+  app.get('/app/dump/:id', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    if (!uuidOk(req.params.id)) return reply.redirect('/app/dump');
+    const d = await withTenant(u.tenant_id, (c) => c.query('SELECT id, raw, items, status FROM dumps WHERE id=$1', [req.params.id]).then((r) => r.rows[0]));
+    if (!d) return reply.redirect('/app/dump?m=' + encodeURIComponent('That dump is not available.'));
+    const items = Array.isArray(d.items) ? d.items : [];
+    const rows = items.map((it, i) => `<div style="border-top:1px solid var(--line);padding:10px 0"><label style="display:flex;gap:10px;align-items:flex-start;color:var(--text)"><input type="checkbox" name="include" value="${i}" checked style="width:auto;margin-top:5px"><span style="flex:1"><input name="title" value="${esc(it.title)}" maxlength="80" aria-label="Task title"><textarea name="instruction" rows="2" maxlength="500" aria-label="What the agent should do">${esc(it.instruction)}</textarea></span></label></div>`).join('');
+    const startable = d.status === 'draft';
+    return render(reply, u, 'Review your split', `<h1>Review your split</h1>
+      <div class="card"><b>Your dump</b><p class="mut">${esc(d.raw.slice(0, 400))}${d.raw.length > 400 ? '...' : ''}</p></div>
+      <form method="post" action="/app/dump/${d.id}" class="card">${csrf(u)}
+        <b>${items.length} task${items.length === 1 ? '' : 's'}</b> <span class="mut">- untick any you do not want, edit the words freely.</span>
+        ${rows}
+        ${startable ? `<p><button name="action" value="start">Start now</button> <button class="sec" name="action" value="save">Save for later</button></p>` : '<p class="mut">Already started.</p>'}</form>
+      ${startable ? `<form method="post" action="/app/dump/${d.id}/delete" class="card">${csrf(u)}<button class="sec danger">Delete this dump</button></form>` : ''}`, flashOf(req));
+  });
+  app.post('/app/dump/:id', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    if (!uuidOk(req.params.id)) return reply.redirect('/app/dump');
+    const b = req.body || {};
+    const arr = (x) => (Array.isArray(x) ? x : x == null ? [] : [x]);
+    const titles = arr(b.title), instructions = arr(b.instruction);
+    const include = new Set(arr(b.include).map((x) => Number(x)));
+    const items = titles.map((t, i) => ({ title: t, instruction: instructions[i] })).filter((_, i) => include.size ? include.has(i) : true);
+    if (b.action === 'save') {
+      await withTenant(u.tenant_id, async (c) => {
+        await c.query("UPDATE dumps SET items=$2 WHERE id=$1 AND status='draft'", [req.params.id, JSON.stringify(items)]);
+        await audit(c, u.tenant_id, `user:${u.user_id}`, 'dump.saved', { dump_id: req.params.id, items: items.length });
+      });
+      return reply.redirect('/app/dump?m=' + encodeURIComponent('Saved for later.'));
+    }
+    const r = await startDump({ tenantId: u.tenant_id, userId: u.user_id, dumpId: req.params.id, items });
+    if (r.error) return reply.redirect(`/app/dump/${req.params.id}?m=` + encodeURIComponent(r.error));
+    return reply.redirect('/app/dump?m=' + encodeURIComponent(`Started ${r.started} task${r.started === 1 ? '' : 's'} - the agent picks them up on the next run.`));
+  });
+  app.post('/app/dump/:id/delete', { preHandler: guard }, async (req, reply) => {
+    if (!uuidOk(req.params.id)) return reply.redirect('/app/dump');
+    await withTenant(req.user.tenant_id, async (c) => {
+      await c.query("UPDATE dumps SET status='archived' WHERE id=$1 AND status='draft'", [req.params.id]);
+      await audit(c, req.user.tenant_id, `user:${req.user.user_id}`, 'dump.archived', { dump_id: req.params.id });
+    });
+    return reply.redirect('/app/dump?m=' + encodeURIComponent('Deleted.'));
+  });
+  app.post('/app/runs/:id/review', { preHandler: guard }, async (req, reply) => {
+    if (!uuidOk(req.params.id)) return reply.code(400).send('bad id');
+    await withTenant(req.user.tenant_id, async (c) => {
+      await c.query('UPDATE runs SET reviewed_at=now() WHERE id=$1 AND reviewed_at IS NULL', [req.params.id]);
+      await audit(c, req.user.tenant_id, `user:${req.user.user_id}`, 'run.reviewed', { run_id: req.params.id });
+    });
+    return reply.redirect('/app/dump?m=' + encodeURIComponent('Marked reviewed.'));
   });
 
   app.get('/app/memory', { preHandler: guard }, async (req, reply) => {

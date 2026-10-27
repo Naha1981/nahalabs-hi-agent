@@ -276,10 +276,23 @@ CREATE TABLE IF NOT EXISTS runs (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Brain dumps: one box of everything on the owner's mind, split by the agent into
+-- separate tasks. The owner reviews the split, starts it or saves it for later.
+CREATE TABLE IF NOT EXISTS dumps (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  raw text NOT NULL CHECK (char_length(raw) <= 8000),
+  items jsonb NOT NULL DEFAULT '[]',
+  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','started','archived')),
+  started_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 DO $$
 DECLARE t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['agents','conversations','messages','memories','tasks','runs']
+  FOREACH t IN ARRAY ARRAY['agents','conversations','messages','memories','tasks','runs','dumps']
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
@@ -289,7 +302,7 @@ BEGIN
       WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)$f$, t);
   END LOOP;
 END $$;
-GRANT SELECT, INSERT, UPDATE, DELETE ON agents, conversations, messages, memories, tasks, runs TO hi_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON agents, conversations, messages, memories, tasks, runs, dumps TO hi_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO hi_app;
 
 -- ===== Browser jobs (phase 2) =====
@@ -541,6 +554,8 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS viewing_reminders_auto boolean NOT 
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS document_reminders_auto boolean NOT NULL DEFAULT false;  -- Settings opt-in: email own address on document expiry
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS doc_reminders_auto boolean NOT NULL DEFAULT false;  -- Settings opt-in: email own address on document expiry
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS surfaced_at timestamptz;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS dump_id uuid REFERENCES dumps(id) ON DELETE SET NULL;
 -- Approval-first WhatsApp replies added 'proposed' and 'rejected' to the status set.
 ALTER TABLE wa_messages DROP CONSTRAINT IF EXISTS wa_messages_status_check;
 ALTER TABLE wa_messages ADD CONSTRAINT wa_messages_status_check CHECK (status IN ('received','ignored','queued','proposed','sent','failed','rejected'));
