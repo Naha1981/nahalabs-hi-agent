@@ -94,7 +94,7 @@ test('estate page: lease, maintenance and money cards render own data only', asy
   assert.match(await call(A, 'estate_add_invoice', { invoice_no: 'INV-101', amount: 'R8,550', contact: 'Lindi M', due_on: '2026-11-01' }), /Invoice recorded: INV-101 R8 550/);
   assert.match(await call(A, 'estate_add_expense', { amount: 'R850', category: 'office', vendor: 'Stationers' }), /Expense recorded: office R850/);
 
-  const r = await app.inject({ url: '/app/estate', headers: { cookie: A.cookie } });
+  const r = await app.inject({ url: '/app/templates/real-estate', headers: { cookie: A.cookie } });
   assert.equal(r.statusCode, 200);
   assert.match(r.body, /Active leases/);
   assert.match(r.body, /5 River View, Midrand/);
@@ -114,7 +114,7 @@ test('estate page: lease, maintenance and money cards render own data only', asy
   assert.ok(!/Nothing tracked yet/.test(r.body));
 
   // tenant B's page shows none of A's records
-  const rb = await app.inject({ url: '/app/estate', headers: { cookie: B.cookie } });
+  const rb = await app.inject({ url: '/app/templates/real-estate', headers: { cookie: B.cookie } });
   assert.equal(rb.statusCode, 200);
   assert.ok(!/River View/.test(rb.body));
   assert.ok(!/Geyser/.test(rb.body));

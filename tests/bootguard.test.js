@@ -66,7 +66,7 @@ test('signup auto-login, tenant isolation, existing-email safety', async () => {
     assert.match(cookie, /^hi_session=/);
     assert.equal((await app.inject({ url: '/app/agent', headers: { cookie } })).statusCode, 200);
     // the estate page (the table set missing in the incident) renders for a brand-new tenant
-    assert.equal((await app.inject({ url: '/app/estate', headers: { cookie } })).statusCode, 200);
+    assert.equal((await app.inject({ url: '/app/templates/real-estate', headers: { cookie } })).statusCode, 200);
 
     // 2. second signup is a separate tenant; sessions see only their own data
     const s2 = await app.inject({ method: 'POST', url: '/signup', headers: H, payload: form({ company: 'Beta Homes', email: 'beta@example.test', password: 'a-long-test-password-2' }) });

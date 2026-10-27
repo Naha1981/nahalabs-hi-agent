@@ -556,7 +556,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
         <tr><td>Waiting for you now</td><td>${r.ap.waiting}</td></tr>
         <tr><td>Decided in the last 7 days</td><td>${r.ap.decided7}</td></tr>
       </table></div>
-      <div class="card"><b>Estate</b><table>
+      <div class="card"><b>Real estate</b><table>
         <tr><td>Clients</td><td>${r.estate.contacts}</td></tr>
         <tr><td>Properties</td><td>${r.estate.properties}</td></tr>
         <tr><td>Deals</td><td>${r.estate.deals}</td></tr>
@@ -864,7 +864,25 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     return reply.type(f.mime).send(f.mime === XLSX_MIME ? Buffer.from(f.content, 'base64') : f.content);
   });
 
-  app.get('/app/estate', { preHandler: guard }, async (req, reply) => {
+  // Templates: prebuilt desks HI can run for a business. One entry per template;
+  // adding a template later is one array item plus its dashboard route.
+  const TEMPLATES = [
+    { id: 'real-estate', name: 'Real estate', href: '/app/templates/real-estate',
+      blurb: 'Deals, viewings, follow-ups, leases, maintenance and money records for an estate agency.' },
+  ];
+  app.get('/app/templates', { preHandler: guard }, async (req, reply) => {
+    const u = req.user;
+    const cards = TEMPLATES.map((t) => `<div class="card"><a href="${t.href}"><b>${esc(t.name)}</b></a><p class="mut" style="margin:6px 0 0">${esc(t.blurb)}</p></div>`).join('');
+    return render(reply, u, 'Templates', `
+      <h1><b>Templates</b> for your business.</h1>
+      <p class="mut">Each template is a desk HI runs for you. Open one and manage it by talking to HI.</p>
+      ${cards}`, flashOf(req));
+  });
+
+  // Legacy path kept working: existing links and habits land on the real-estate template.
+  app.get('/app/estate', { preHandler: guard }, async (req, reply) => reply.redirect('/app/templates/real-estate'));
+
+  app.get('/app/templates/real-estate', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
     const fd = (d) => { if (!d) return ''; const x = d instanceof Date ? d : new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
     const STAGES = [['enquiry', 'Enquiry'], ['viewing', 'Viewing'], ['offer', 'Offer'], ['otp_signed', 'OTP signed'], ['bond_pending', 'Bond pending'], ['transfer_attorneys', 'Transfer attorneys'], ['registered', 'Registered'], ['fallen_through', 'Fallen through']];
@@ -911,8 +929,8 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const payRows = data.payments.map((p) => `<tr><td>${esc(fd(p.paid_on))}</td><td>${fmtR(p.amount_cents)}${p.period ? ` (${esc(p.period)})` : ''}</td><td>${esc([p.property, p.tenant].filter(Boolean).join(' - '))}</td></tr>`).join('');
     const invRows = data.unpaidInvoices.map((i) => `<tr><td>${esc(i.invoice_no || '(no number)')}</td><td>${fmtR(i.amount_cents)}</td><td>${esc(i.contact || '')}</td><td>${i.due_on ? `due ${esc(fd(i.due_on))}` : ''}</td></tr>`).join('');
     const moneyCard = (payRows || invRows || data.monthExpenses.n) ? `<div class="card"><b>Money records</b>${data.monthExpenses.n ? `<p class="mut" style="margin:6px 0 0">Expenses this month: <b>${fmtR(data.monthExpenses.total)}</b> across ${data.monthExpenses.n} entr${data.monthExpenses.n === 1 ? 'y' : 'ies'}.</p>` : ''}${payRows ? `<p class="mut" style="margin:10px 0 0"><b>Recent payments</b></p><table style="margin-top:4px">${payRows}</table>` : ''}${invRows ? `<p class="mut" style="margin:10px 0 0"><b>Unpaid invoices</b></p><table style="margin-top:4px">${invRows}</table>` : ''}</div>` : '';
-    return render(reply, u, 'Estate', `
-      <h1><b>Estate</b> deals, viewings and follow-ups.</h1>${attnCard}${srcCard}
+    return render(reply, u, 'Real estate', `
+      <h1><b>Real estate</b> deals, viewings and follow-ups.</h1>${attnCard}${srcCard}
       <p class="mut">${data.props} ${data.props === 1 ? 'property' : 'properties'}, ${data.contacts} contact${data.contacts === 1 ? '' : 's'} on record. Manage it by talking to HI - for example: <i>"Add a deal for 12 Oak Street with buyer Sipho, offer stage, next action: bank docs by Friday"</i> or <i>"seller report for 12 Oak Street"</i>.</p>
       ${empty ? '<div class="card empty">Nothing tracked yet. Tell HI about a property, a buyer or a deal and it appears here.</div>' : ''}
       ${dueRows ? `<div class="card"><b>Overdue and upcoming follow-ups</b><table style="margin-top:8px"><tr><th>Due</th><th>Property</th><th>Who</th><th>Action</th></tr>${dueRows}</table></div>` : ''}
@@ -932,7 +950,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const u = req.user;
     const grp = (g, items) => `<div class="card"><b>${g}</b><p style="margin:10px 0 2px">${items.map(([n, h]) => `<a class="chip" style="padding:8px 14px;margin:4px 6px 4px 0" href="${h}">${n}</a>`).join('')}</p></div>`;
     return render(reply, u, 'Menu', `<h1>All sections</h1>
-      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Estate', '/app/estate'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Inbox', '/app/inbox'], ['Notifications', '/app/notifications'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']])}
+      ${grp('Today', [['Agent', '/app/agent'], ['Opportunities', '/app'], ['Templates', '/app/templates'], ['Approvals', '/app/approvals'], ['Briefs', '/app/briefs'], ['Inbox', '/app/inbox'], ['Notifications', '/app/notifications'], ['Reports', '/app/reports'], ['Tasks', '/app/tasks']])}
       ${grp('Work', [['Browser', '/app/browser'], ['Drive', '/app/drive'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents']])}
       ${grp('Account', [['Memory', '/app/memory'], ['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']])}`, flashOf(req));
   });

@@ -38,7 +38,7 @@ const call = (t, name, args) => withTenant(t.tenantId, (c) => runTool(name, args
 
 test('journey: signup to working estate desk with boundaries intact', async () => {
   // 1. Fresh tenant lands on an empty but working Estate page
-  let r = await app.inject({ url: '/app/estate', headers: { cookie: A.cookie } });
+  let r = await app.inject({ url: '/app/templates/real-estate', headers: { cookie: A.cookie } });
   assert.equal(r.statusCode, 200);
   assert.doesNotMatch(r.body, /Needs attention/);
 
@@ -59,7 +59,7 @@ test('journey: signup to working estate desk with boundaries intact', async () =
   assert.match(attn, /recorded rent payments R0 of R/);
 
   // 4. Estate page reflects it all
-  r = await app.inject({ url: '/app/estate', headers: { cookie: A.cookie } });
+  r = await app.inject({ url: '/app/templates/real-estate', headers: { cookie: A.cookie } });
   assert.match(r.body, /Needs attention/);
   assert.match(r.body, /12 Oak Street, Sandton/);
   assert.match(r.body, /5 Flat Road/);
@@ -93,7 +93,7 @@ test('journey: signup to working estate desk with boundaries intact', async () =
   assert.match(r.body, /Auto-send my morning brief/);
 
   // 8. Tenant isolation end to end: Beta sees none of Alpha anywhere
-  r = await app.inject({ url: '/app/estate', headers: { cookie: B.cookie } });
+  r = await app.inject({ url: '/app/templates/real-estate', headers: { cookie: B.cookie } });
   assert.doesNotMatch(r.body, /5 Flat Road/);      // seeded only in Alpha; the empty-state example names other strings
   assert.doesNotMatch(r.body, /Tandi Tenant/);
   assert.doesNotMatch(r.body, /Needs attention/);
