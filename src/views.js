@@ -34,7 +34,7 @@ code{background:var(--chip);border-radius:6px;padding:1px 6px;font-size:14px;ove
 .lede{font-size:19px;max-width:560px;margin:0 auto 18px;color:var(--text)}
 .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:18px 0 26px}
 .cta .btn{padding:13px 34px;font-size:16px}
-.shot{margin:0 auto;max-width:340px}.shot img{width:100%;display:block;border:1px solid var(--line);border-radius:14px;box-shadow:0 4px 16px rgba(0,0,0,.07)}
+.chips{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;max-width:640px;margin:0 auto}.chips .chip{padding:8px 14px}
 .feat{display:grid;grid-template-columns:1fr;gap:10px;max-width:640px;margin:24px auto 0;text-align:left}
 .feat .card{margin:0;padding:14px 18px}
 @media(min-width:700px){.feat{grid-template-columns:1fr 1fr}}

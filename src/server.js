@@ -41,7 +41,6 @@ const STATIC = {
   '/boot.js': ['public/boot.js', 'text/javascript; charset=utf-8'],
   '/apple-touch-icon.png': ['public/apple-touch-icon.png', 'image/png'],
   '/home-app.jpg': ['public/home-app.jpg', 'image/jpeg'],
-  '/home-estate.jpg': ['public/home-estate.jpg', 'image/jpeg'],
   '/icons/icon-192.png': ['public/icons/icon-192.png', 'image/png'],
   '/icons/icon-512.png': ['public/icons/icon-512.png', 'image/png'],
   '/icons/maskable-512.png': ['public/icons/maskable-512.png', 'image/png'],
@@ -146,17 +145,19 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     return render(reply, null, 'HI - the app that does the desk work', `
       <section class="hero">
         <h1>HI does the desk work.</h1>
-        <p class="lede">Built for South African estate agencies: it tracks your deals, viewings and follow-ups, drafts your client emails, remembers your business and works on a schedule. You approve everything before anything goes out.</p>
+        <p class="lede">HI does the computer work you already do every day: it clicks the web, types, fills forms and works through portals. It remembers your business, drafts your emails and documents, and works on a schedule. You approve everything before anything goes out.</p>
         <p class="cta"><a class="btn" href="/signup">Start free</a> <a class="btn sec" href="/login">Sign in</a></p>
-        <div class="shot"><img src="/home-estate.jpg" alt="The HI Estate page with sample deals, viewings and follow-ups for an estate agency - sample data"></div>
+        <p class="mut" style="margin:0 0 6px">Ask HI to:</p>
+        <p class="chips"><a class="chip" href="/signup">Open websites and fill in forms</a><a class="chip" href="/signup">Work through portals</a><a class="chip" href="/signup">Research with cited sources</a><a class="chip" href="/signup">Remember your business</a><a class="chip" href="/signup">Draft emails and documents</a></p>
       </section>
       <section class="feat">
-        <div class="card"><b>Tracks deals</b><br>Properties, contacts, viewings and deal stages, with next actions kept in view.</div>
+        <div class="card"><b>Uses the web for you</b><br>Opens sites, clicks, types, fills forms and works through portals - the work you already do at your computer.</div>
         <div class="card"><b>Drafts for you</b><br>Emails, briefs and replies, ready to check. Nothing sends without your approval.</div>
         <div class="card"><b>Remembers</b><br>Your clients, your pricing, your documents - it keeps what matters and uses it.</div>
         <div class="card"><b>Works on schedule</b><br>Recurring jobs and a morning brief, reported back to you.</div>
       </section>
-      <p class="mut" style="text-align:center;max-width:560px;margin:22px auto 0">Honest limits: HI drafts and proposes - you approve everything that leaves your account. It can be wrong, and it says so when it cannot verify something.</p>`);
+      <p class="mut" style="text-align:center;max-width:560px;margin:22px auto 0">One HI for any kind of business, with templates per trade - real estate is the first. Connect your own accounts, files and plugins as you need them.</p>
+      <p class="mut" style="text-align:center;max-width:560px;margin:12px auto 0">Honest limits: HI drafts and proposes - you approve everything that leaves your account. It can be wrong, and it says so when it cannot verify something.</p>`);
   });
 
   app.get('/signup', async (req, reply) => render(reply, null, 'Create account', `
@@ -972,8 +973,8 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     }).join('')}</div>`;
     const talk = voiceConfigured() ? `<div id="talkbox" data-csrf="${esc(u.csrf)}" data-c="${d.conv ? d.conv.id : ''}" style="margin-top:8px"><button type="button" id="talkbtn" class="sec">Talk</button> <span id="talkstatus" class="mut"></span></div><script src="/talk.js" defer></script>` : '';
     const switcher = d.agents.length > 1 ? `<span class="mut small">${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join(' &middot; ')}</span>` : '';
-    const starters = ['Add a deal for 12 Oak Street with buyer Sipho, offer stage', 'What follow-ups are due this week?', 'Seller report for 12 Oak Street'];
-    const emptyChat = `<div class="card empty"><p style="font-size:18px;color:var(--text)"><b>Ask HI anything.</b></p><p>Research with cited sources, remember a fact about your business, find tenders, schedule a job. HI drafts - you approve anything that leaves your account.</p>${starters.map((q) => `<form method="post" action="/app/agent/message" class="ask">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="text" value="${esc(q)}"><button class="sec">${esc(q)}</button></form>`).join('')}</div>`;
+    const starters = ['Open a website, click and fill in a form for me', 'Work through a portal for me', 'Research a question and show me the sources', 'Remember a fact about my business'];
+    const emptyChat = `<div class="card empty"><p style="font-size:18px;color:var(--text)"><b>Ask HI anything.</b></p><p>HI does the computer work you already do every day: it opens websites, clicks, types and fills forms, works through portals, researches with cited sources and remembers your business. HI drafts - you approve anything that leaves your account.</p>${starters.map((q) => `<form method="post" action="/app/agent/message" class="ask">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="text" value="${esc(q)}"><button class="sec">${esc(q)}</button></form>`).join('')}</div>`;
     return render(reply, u, 'Agent', `<div class="row" style="margin-bottom:2px"><h1 style="margin:0">Agent</h1><span>${switcher} ${agentModelEnabled() ? '' : '<span class="bad small">AI model not configured</span>'}</span></div>
       ${d.msgs.length ? '' : emptyChat}${thread}
       <form method="post" action="/app/agent/message" class="card">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}">
@@ -1134,7 +1135,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
       <form method="post" action="/app/dump" class="card">${csrf(u)}
         <b>Everything on your mind, in one go</b>
         <p class="mut">Type it all - every task, reminder and idea. HI splits it into separate tasks. You check the split, then start the work now or save it for later.</p>
-        <textarea name="raw" rows="6" maxlength="${MAX_DUMP_CHARS}" required placeholder="e.g. Follow up the Sandton quote&#10;Ask Sipho about the viewing Saturday&#10;Find three electricians for the Midrand job&#10;Remind me to renew the CIPC registration"></textarea>
+        <textarea name="raw" rows="6" maxlength="${MAX_DUMP_CHARS}" required placeholder="e.g. Follow up the Sandton quote&#10;Ask the supplier to confirm the Saturday delivery&#10;Find three electricians for the Midrand job&#10;Remind me to renew the CIPC registration"></textarea>
         <p><button>Split into tasks</button></p></form>
       <div class="card"><b>Active</b>
         <h2 style="margin-top:10px">Needs your input</h2>
