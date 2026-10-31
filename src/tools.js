@@ -231,6 +231,7 @@ export async function runTool(name, args, ctx) {
          WHERE (closes_at IS NULL OR closes_at > now()) AND (title ILIKE '%'||$1||'%' OR buyer ILIKE '%'||$1||'%' OR description ILIKE '%'||$1||'%')
          ORDER BY closes_at NULLS LAST LIMIT 8`, [q]);
       for (const t of r.rows) if (t.source_url && /^https:\/\//.test(t.source_url) && !ctx.sources.some((s) => s.url === t.source_url)) ctx.sources.push({ title: clip(t.title, 160), url: t.source_url });
+      if (r.rowCount) ctx.steps.push({ type: 'tenders', items: r.rows.slice(0, 5).map((t) => ({ title: clip(t.title, 140), buyer: clip(t.buyer || '', 80), closes: t.closes_at || null, url: t.source_url || '' })) });
       return UNTRUSTED(r.rowCount ? r.rows.map((t) => `- ${t.title} | buyer: ${t.buyer || 'n/a'} | closes: ${t.closes_at ? new Date(t.closes_at).toISOString().slice(0, 16) : 'not stated'} | ${t.source_url}`).join('\n') : 'No open tenders matched.');
     }
     case 'ask_user': return 'The question was shown to the customer. Their answer arrives as the next message.';

@@ -54,9 +54,9 @@ table.mem td.mmeta+td.mmeta::before{content:" · "}
 /* signed-in shell */
 .topbar{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--line);background:#fff;position:sticky;top:0;z-index:20}
 .side{display:none}
-.appmain{max-width:760px;margin:0 auto;padding:20px 16px 100px}
+.appmain{max-width:760px;margin:0 auto;padding:20px 16px calc(108px + env(safe-area-inset-bottom))}
 .tabs{position:fixed;bottom:0;left:0;right:0;display:flex;background:#fff;border-top:1px solid var(--line);z-index:20;padding:6px 2px calc(6px + env(safe-area-inset-bottom))}
-.tabs a{flex:1;text-align:center;text-decoration:none;color:var(--mut);font-size:12px;font-weight:600;padding:12px 4px;letter-spacing:-.01em;min-height:44px;display:flex;align-items:center;justify-content:center}
+.tabs a{flex:1;text-align:center;text-decoration:none;color:var(--mut);font-size:11px;font-weight:600;padding:11px 2px;min-height:44px;display:flex;align-items:center;justify-content:center;white-space:nowrap;min-width:0;overflow:hidden}
 .tabs a:hover{color:var(--ink)}
 @media(min-width:900px){
 .topbar,.tabs{display:none}
@@ -68,11 +68,44 @@ a.nl:hover{background:var(--soft)}
 .side form{padding:10px}
 .appmain{margin-left:232px;max-width:840px;padding:32px 28px}
 }
-/* chat */
-.msg{border:1px solid var(--line);border-radius:14px;padding:12px 16px;margin:10px 0;background:#fff}
-.msg.me{background:var(--soft)}
-.who{font-size:12px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
-.ask{display:inline-block;margin:4px 6px 0 0}.ask button{font-size:14px;padding:8px 14px}
+/* chat - Claude/ChatGPT-style bubbles, Apple-HIG tokens: 8pt grid, 18px radii, clear roles */
+.thread{display:flex;flex-direction:column;margin:8px 0 4px}
+.turn{display:flex;flex-direction:column;margin:7px 0;max-width:100%}
+.turn .who{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--mut);margin:0 2px 4px}
+.turn.me .who{justify-content:flex-end}
+.av{width:22px;height:22px;border-radius:50%;background:var(--ink);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;letter-spacing:.02em;flex:none}
+.bub{max-width:86%;min-width:0;overflow-x:auto;padding:10px 14px;border-radius:18px;font-size:15.5px;line-height:1.55;overflow-wrap:anywhere;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.mdscroll{overflow-x:auto;max-width:calc(100vw - 120px);-webkit-overflow-scrolling:touch}
+.turn.me .bub{align-self:flex-end;background:var(--ink);color:#fff;border-bottom-right-radius:6px}
+.turn.me .bub a{color:#fff;text-decoration:underline}
+.turn.hi .bub{align-self:flex-start;background:#fff;border:1px solid var(--line);border-bottom-left-radius:6px}
+.bub p{margin:.4em 0}.bub b{font-weight:650}
+.bub table.mdt{font-size:14px;margin:8px 0}.bub table.mdt th,.bub table.mdt td{padding:6px 8px}
+.srcs{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+a.src{display:flex;gap:8px;align-items:baseline;border:1px solid var(--line);border-radius:10px;padding:8px 10px;text-decoration:none;background:var(--soft);color:var(--text);font-size:14px;line-height:1.35}
+a.src:hover{border-color:#c9c9c9}
+a.src .no{color:var(--mut);font-size:12px;flex:none}
+a.src .dom{color:var(--mut);font-size:12px;white-space:nowrap;flex:none}
+.worked{margin:6px 2px 0;font-size:12.5px;color:var(--mut);align-self:flex-start}
+.worked summary{cursor:pointer;list-style:none}
+.worked summary::before{content:"\\25B8";margin-right:6px;font-size:10px}
+.worked[open] summary::before{content:"\\25BE"}
+.worked .steps{margin:4px 0 0 2px;color:var(--mut)}
+.tcards{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.tcard{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:#fff}
+.tcard .tt{font-weight:650;line-height:1.35}
+.tcard .tm{color:var(--mut);font-size:13px;margin-top:3px}
+.tcard a.tsrc{display:inline-block;margin-top:8px;font-size:13.5px;border:1px solid var(--line);border-radius:999px;padding:4px 12px;text-decoration:none;color:var(--text);background:var(--soft)}
+.appr{border:1px solid #e5cf9a;background:#fffdf6;border-radius:14px;padding:14px 16px;margin:12px 0}
+.appr .asum{font-weight:650}
+.appr .anote{color:var(--mut);font-size:13.5px;margin:6px 0 10px}
+.appr form{margin:0}.appr button{margin-right:8px}
+.composer{border:1px solid var(--line);border-radius:16px;padding:10px 12px;margin:14px 0 8px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.composer textarea{border:0;resize:vertical;padding:8px 6px;background:#fff}
+.composer textarea:focus{outline:none}
+.composer .crow{display:flex;justify-content:flex-end;gap:8px;align-items:center}
+.composer button{border-radius:999px;padding:9px 22px}
+.ask{display:inline-block;margin:4px 6px 0 0}.ask button{font-size:14px;padding:8px 14px;border-radius:999px}
 /* empty states */
 .empty{text-align:center;color:var(--mut);padding:28px 18px}
 @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
@@ -86,7 +119,7 @@ const sideNav = (user) => GROUPS.map(([g, links]) => `${g ? `<div class="grp">${
   const badge = (h === '/app/notifications' && user?.notif_unread > 0) ? ` <span style="background:var(--ink);color:#fff;border-radius:10px;padding:1px 7px;font-size:12px">${Number(user.notif_unread)}</span>` : '';
   return `<a class="nl" href="${h}">${n}${badge}</a>`;
 }).join('')}`).join('');
-const TABS = [['Agent', '/app/agent'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Approvals', '/app/approvals'], ['Tasks', '/app/tasks'], ['More', '/app/menu']];
+const TABS = [['Agent', '/app/agent'], ['Dump', '/app/dump'], ['Approvals', '/app/approvals'], ['Tasks', '/app/tasks'], ['More', '/app/menu']];
 const tabs = TABS.map(([n, h]) => `<a href="${h}">${n}</a>`).join('');
 
 export function page({ title, user, body, flash }) {

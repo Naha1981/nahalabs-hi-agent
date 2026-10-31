@@ -122,7 +122,7 @@ test('a finished browser task posts its result into the originating conversation
   await step(j, { type: 'done', summary: 'The title is Example Domain.' });
   const msgs = (await withTenant(A.tenantId, (c) => c.query("SELECT role, content FROM messages WHERE conversation_id=$1", [convId]))).rows;
   assert.equal(msgs.length, 1); assert.equal(msgs[0].role, 'assistant');
-  assert.match(msgs[0].content, /^Browser task done on forms\.example\.test: The title is Example Domain\.$/);
+  assert.match(msgs[0].content, /^Done - the browser task on forms\.example\.test finished\. The title is Example Domain\.$/);
   assert.equal((await state(A, p.job_id)).chat_notified, true);
   // a duplicate terminal signal must not double-post
   await step(j, { type: 'done', summary: 'duplicate' }).catch(() => {});
@@ -138,7 +138,7 @@ test('a failed browser task posts the failure into the originating conversation'
   await step(j, null); // model gives no usable action -> failed
   const msgs = (await withTenant(B.tenantId, (c) => c.query("SELECT role, content FROM messages WHERE conversation_id=$1", [convId]))).rows;
   assert.equal(msgs.length, 1);
-  assert.match(msgs[0].content, /^Browser task failed on forms\.example\.test: The model gave no usable action\.$/);
+  assert.match(msgs[0].content, /^The browser task on forms\.example\.test did not finish\. The model gave no usable action\.$/);
 });
 
 test('a job without a conversation still finishes cleanly and posts nothing', async () => {
@@ -155,7 +155,7 @@ test('approval-time start failures are also posted to the conversation', async (
   try { const r = await approve(A, p.approval_id); assert.equal(r.status, 'failed'); } finally { process.env.GITHUB_DISPATCH_TOKEN = saved; }
   const msgs = (await withTenant(A.tenantId, (c) => c.query("SELECT content FROM messages WHERE conversation_id=$1", [convId]))).rows;
   assert.equal(msgs.length, 1);
-  assert.match(msgs[0].content, /^Browser task failed on forms\.example\.test: Browser runner is not configured\.$/);
+  assert.match(msgs[0].content, /browser worker is not connected on this server yet/);
 });
 
 test('task-level rejection posts nothing to the conversation', async () => {

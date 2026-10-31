@@ -21,10 +21,18 @@ export async function proposeBrowserJob(c, { tenantId, agentId, agentName, start
   if (open >= Number(process.env.BROWSER_MAX_JOBS_PER_TENANT_DAY || 5)) return { error: 'Daily browser task limit reached for your account.' };
   const job = (await c.query("INSERT INTO browser_jobs (tenant_id, agent_id, start_url, goal, mode, conversation_id) VALUES (current_setting('app.tenant_id')::uuid,$1,$2,$3,$4,$5) RETURNING id", [agentId, startUrl, goal.slice(0, 1500), m, conversationId])).rows[0];
   const ap = (await c.query("INSERT INTO approvals (tenant_id, kind, summary, payload, proposed_by) VALUES (current_setting('app.tenant_id')::uuid,'browser_task',$1,$2,$3) RETURNING id",
-    [`Open ${new URL(startUrl).hostname} in an isolated browser (${m === 'act' ? 'can type and click, you approve before any final submit' : 'read only'}): ${goal.slice(0, 120)}`, JSON.stringify({ job_id: job.id }), `agent:${agentName}`])).rows[0];
+    [`Open ${new URL(startUrl).hostname} in an isolated browser (${m === 'act' ? 'can type and click, you approve before any final submit' : 'read only'}): ${wordClip(goal, 160)}`, JSON.stringify({ job_id: job.id }), `agent:${agentName}`])).rows[0];
   await c.query('UPDATE browser_jobs SET approval_id=$2 WHERE id=$1', [job.id, ap.id]);
   await audit(c, tenantId, `agent:${agentName}`, 'browser.proposed', { job_id: job.id, host: new URL(startUrl).hostname, mode: m });
   return { job_id: job.id, approval_id: ap.id };
+}
+
+// Clip on a word boundary so summaries never end mid-word.
+function wordClip(t, n) {
+  const s2 = String(t || '').trim();
+  if (s2.length <= n) return s2;
+  const c = s2.slice(0, n);
+  return c.slice(0, Math.max(c.lastIndexOf(' '), 40)) + '...';
 }
 
 // Posts the finished outcome into the originating agent conversation, exactly once.
@@ -34,7 +42,7 @@ async function notifyBrowserFinished(c, jobId, status, result) {
   const j = (await c.query("UPDATE browser_jobs SET chat_notified=true WHERE id=$1 AND conversation_id IS NOT NULL AND chat_notified=false RETURNING conversation_id, start_url", [jobId])).rows[0];
   if (!j) return;
   const host = new URL(j.start_url).hostname;
-  const text = status === 'done' ? `Browser task done on ${host}: ${result}` : `Browser task failed on ${host}: ${result}`;
+  const text = status === 'done' ? `Done - the browser task on ${host} finished. ${result}` : `The browser task on ${host} did not finish. ${result}`;
   await c.query("INSERT INTO messages (tenant_id, conversation_id, role, content) VALUES (current_setting('app.tenant_id')::uuid,$1,'assistant',$2)", [j.conversation_id, String(text).slice(0, 4000)]);
 }
 
@@ -47,11 +55,11 @@ export async function startBrowserJob(c, { tenantId, jobId, fetchImpl = fetch })
   const token = randomBytes(24).toString('hex');
   await c.query("UPDATE browser_jobs SET status='queued', token_hash=$2, token_expires_at=now() + interval '15 minutes' WHERE id=$1", [jobId, hash(token)]);
   const gh = process.env.GITHUB_DISPATCH_TOKEN, repo = process.env.GITHUB_REPO || 'Naha1981/nahalabs-hi-agent', base = process.env.PUBLIC_BASE_URL;
-  if (!gh || !base) { await c.query("UPDATE browser_jobs SET status='failed', result='Browser runner is not configured.' WHERE id=$1", [jobId]); await notifyBrowserFinished(c, jobId, 'failed', 'Browser runner is not configured.'); return { error: 'runner not configured' }; }
+  if (!gh || !base) { const why = 'HI\'s browser worker is not connected on this server yet, so the task did not run. Nothing was done anywhere.'; await c.query("UPDATE browser_jobs SET status='failed', result=$2 WHERE id=$1", [jobId, why]); await notifyBrowserFinished(c, jobId, 'failed', why); return { error: why }; }
   const res = await fetchImpl(`https://api.github.com/repos/${repo}/actions/workflows/browser.yml/dispatches`, {
     method: 'POST', headers: { authorization: `Bearer ${gh}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'user-agent': 'hi-by-nahalabs' },
     body: JSON.stringify({ ref: 'main', inputs: { job_id: jobId, token, base_url: base } }), signal: AbortSignal.timeout(15000) });
-  if (res.status !== 204) { await c.query("UPDATE browser_jobs SET status='failed', result=$2 WHERE id=$1", [jobId, `Runner dispatch failed (${res.status}).`]); await notifyBrowserFinished(c, jobId, 'failed', `Runner dispatch failed (${res.status}).`); return { error: 'dispatch failed' }; }
+  if (res.status !== 204) { const why = `The browser worker could not be started just now (error ${res.status}). Nothing ran.`; await c.query("UPDATE browser_jobs SET status='failed', result=$2 WHERE id=$1", [jobId, why]); await notifyBrowserFinished(c, jobId, 'failed', why); return { error: why }; }
   await audit(c, tenantId, 'system', 'browser.started', { job_id: jobId });
   return { status: 'queued' };
 }

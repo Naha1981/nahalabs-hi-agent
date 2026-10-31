@@ -432,7 +432,13 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const u = req.user;
     if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return reply.code(400).send('bad id');
     const r = await decideApproval({ tenantId: u.tenant_id, userId: u.user_id, userEmail: u.email, approvalId: req.params.id, decision: req.body?.decision, fetchImpl });
-    return reply.redirect('/app/approvals?m=' + encodeURIComponent(r.error ? r.error : r.reason ? `${r.status}: ${r.reason}` : r.status));
+    const backTo = /^\/app\//.test(String(req.body?.back || '')) ? String(req.body.back) : '/app/approvals';
+    const flash = r.error ? `That could not be done: ${r.error}`
+      : r.status === 'executed' ? 'Approved. HI is on it.'
+      : r.status === 'rejected' ? 'Declined. Nothing was done.'
+      : r.status === 'cancelled' ? `Cancelled - ${r.reason || 'not possible right now'}.`
+      : (r.reason || r.status || 'Done.');
+    return reply.redirect(backTo + (backTo.includes('?') ? '&' : '?') + 'm=' + encodeURIComponent(flash));
   });
 
   app.get('/app/briefs', { preHandler: guard }, async (req, reply) => {
@@ -943,8 +949,52 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
   });
 
   // ---------- Agent platform ----------
-  const mdLite = (t) => esc(String(t).replace(/<br\s*\/?>/gi, '\n').replace(/^\s*\|?[-:| ]{3,}\|?\s*$/gm, '')).replace(/\*\*([^*\n]{1,200})\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
-  const srcList = (src) => (src || []).length ? `<div class="mut">Sources: ${(src).map((x, i) => `[${i + 1}] <a href="${safeUrl(x.url)}" rel="noopener noreferrer" target="_blank">${esc(String(x.title || x.url).slice(0, 80))}</a>`).join(' &nbsp; ')}</div>` : '';
+  // Chat markdown: escape first, then bold/italic/inline code and clickable links.
+  // Bare URLs become their domain so long links never run off the screen.
+  const mdInline = (h) => {
+    h = h.replace(/\*\*([^*\n]{1,200})\*\*/g, '<b>$1</b>');
+    h = h.replace(/(^|\s)\*([^*\n]{1,160})\*(?=$|\s|[.,;:])/g, '$1<i>$2</i>');
+    h = h.replace(/`([^`\n]{1,120})`/g, '<code>$1</code>');
+    h = h.replace(/\[([^\]\n]{1,120})\]\((https:\/\/[^)\s]+)\)/g, (m, txt, u) => `<a href="${esc(u)}" rel="noopener noreferrer" target="_blank">${txt}</a>`);
+    h = h.replace(/(^|[\s(])(https:\/\/[^\s)<"]+)/g, (m, pre, u) => { let d = u; try { d = new URL(u).hostname.replace(/^www\./, ''); } catch {} return `${pre}<a href="${u}" rel="noopener noreferrer" target="_blank">${esc(d)}</a>`; });
+    return h;
+  };
+  // Chat markdown: escape first, then per-line structure (headings, rules, tables,
+  // bullets) with inline bold/italic/code/links. Bare URLs show as their domain.
+  const stripEmoji = (t) => String(t || '').replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2705}\u{2714}\u{2716}]/gu, '');
+  const mdLite = (t) => {
+    const lines = esc(String(t).replace(/<br\s*\/?>/gi, '\n')).split('\n').filter((ln) => !/^\s*\|?[-:| ]{3,}\|?\s*$/.test(ln) && !/^\s*(\*{3,}|-{3,})\s*$/.test(ln));
+    const out = [];
+    let table = [];
+    const flushTable = () => {
+      if (!table.length) return;
+      const rows = table.map((ln) => ln.replace(/^\s*\||\|\s*$/g, '').split('|').map((cell) => cell.trim()));
+      const [head, ...body] = rows;
+      out.push('<div class="mdscroll"><table class="mdt"><tr>' + head.map((cell) => `<th>${mdInline(cell)}</th>`).join('') + '</tr>' + body.map((r) => '<tr>' + r.map((cell) => `<td>${mdInline(cell)}</td>`).join('') + '</tr>').join('') + '</table></div>');
+      table = [];
+    };
+    for (const ln of lines) {
+      if (/^\s*\|.*\|\s*$/.test(ln)) { table.push(ln); continue; }
+      flushTable();
+      const head = /^(#{1,4})\s+(.+)$/.exec(ln);
+      if (head) { out.push(`<b>${mdInline(head[2])}</b>`); continue; }
+      out.push(mdInline(ln));
+    }
+    flushTable();
+    return out.join('<br>');
+  };
+  const domainOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return String(u || '').slice(0, 40); } };
+  const srcList = (src) => (src || []).length ? `<div class="srcs">${(src).map((x, i) => { const t = String(x.title || '').trim(); const label = (!t || /^https?:\/\//i.test(t)) ? domainOf(x.url) : t; return `<a class="src" href="${safeUrl(x.url)}" rel="noopener noreferrer" target="_blank"><span class="no">${i + 1}</span><span>${esc(label.slice(0, 90))}</span><span class="dom">${esc(domainOf(x.url))}</span></a>`; }).join('')}</div>` : '';
+  const workedLine = (steps) => {
+    const labels = (steps || []).filter((x) => x.type === 'tool').map((x) => toolLabel(x.name)).filter(Boolean);
+    if (!labels.length) return '';
+    return `<details class="worked"><summary>Worked: ${labels.length} step${labels.length === 1 ? '' : 's'}</summary><div class="steps">${labels.map(esc).join(' &middot; ')}</div></details>`;
+  };
+  const tenderCards = (steps) => {
+    const items = (steps || []).filter((x) => x.type === 'tenders').flatMap((x) => x.items || []).slice(0, 5);
+    if (!items.length) return '';
+    return `<div class="tcards">${items.map((t) => `<div class="tcard"><div class="tt">${esc(t.title)}</div><div class="tm">${t.buyer ? `Buyer: ${esc(t.buyer)}` : 'Buyer not stated'} &middot; Closes: ${t.closes ? esc(fdate(t.closes)) : 'not stated'}</div>${/^https:\/\//.test(t.url || '') ? `<a class="tsrc" href="${safeUrl(t.url)}" rel="noopener noreferrer" target="_blank">Source &middot; ${esc(domainOf(t.url))}</a>` : ''}</div>`).join('')}</div>`;
+  };
   const uuidOk = (x) => /^[0-9a-f-]{36}$/i.test(String(x || ''));
 
   app.get('/app/menu', { preHandler: guard }, async (req, reply) => {
@@ -964,21 +1014,25 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
       const convs = (await c.query(`SELECT id, title, created_at FROM conversations WHERE agent_id=$1 AND title NOT LIKE 'Scheduled task "%' ORDER BY created_at DESC LIMIT 15`, [agent.id])).rows;
       const conv = uuidOk(req.query.c) ? convs.find((x) => x.id === req.query.c) : null;
       const msgs = conv ? (await c.query('SELECT role, content, sources, steps, created_at FROM messages WHERE conversation_id=$1 ORDER BY id', [conv.id])).rows : [];
-      return { agents, agent, convs, conv, msgs };
+      const pending = (await c.query("SELECT id, kind, summary, created_at FROM approvals WHERE status='proposed' ORDER BY created_at DESC LIMIT 5")).rows;
+      return { agents, agent, convs, conv, msgs, pending };
     });
-    const thread = `<div id="thread">${d.msgs.map((m, i) => {
+    const back = `/app/agent?agent=${d.agent.id}${d.conv ? `&c=${d.conv.id}` : ''}`;
+    const thread = `<div id="thread" class="thread">${d.msgs.map((m, i) => {
       const opts = (m.role === 'assistant' && i === d.msgs.length - 1) ? (m.steps || []).find((x) => x.type === 'options') : null;
       const chips = opts ? `<div style="margin-top:6px">${opts.items.map((o) => `<form method="post" action="/app/agent/message" class="ask">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}"><input type="hidden" name="text" value="${esc(o)}"><button class="sec">${esc(o)}</button></form>`).join('')}</div>` : '';
-      return `<div class="msg ${m.role === 'user' ? 'me' : 'hi'}"><div class="who">${m.role === 'user' ? 'You' : esc(d.agent.name)}</div><div>${mdLite(m.content)}</div>${m.role === 'assistant' ? srcList(m.sources) : ''}${(m.steps || []).filter((x) => x.type === 'tool').length ? `<div class="mut">Used: ${(m.steps).filter((x) => x.type === 'tool').map((x) => esc(toolLabel(x.name))).filter(Boolean).join(', ')}</div>` : ''}${chips}</div>`;
+      if (m.role === 'user') return `<div class="turn me"><div class="who">You</div><div class="bub">${mdLite(m.content)}</div></div>`;
+      return `<div class="turn hi"><div class="who"><span class="av">HI</span>${esc(d.agent.name)}</div><div class="bub">${mdLite(stripEmoji(m.content))}${srcList(m.sources)}${tenderCards(m.steps)}${chips}</div>${workedLine(m.steps)}</div>`;
     }).join('')}</div>`;
+    const pendingCards = d.pending.length ? d.pending.map((a) => `<div class="appr"><div class="asum">${esc(a.summary)}</div><div class="anote">Waiting for your approval. Nothing runs until you approve it - review the full detail on the <a href="/app/approvals">Approvals page</a>.</div><form method="post" action="/app/approvals/${a.id}">${csrf(u)}<input type="hidden" name="back" value="${esc(back)}"><button name="decision" value="approve">Approve</button><button name="decision" value="reject" class="sec danger">Decline</button></form></div>`).join('') : '';
     const talk = voiceConfigured() ? `<div id="talkbox" data-csrf="${esc(u.csrf)}" data-c="${d.conv ? d.conv.id : ''}" style="margin-top:8px"><button type="button" id="talkbtn" class="sec">Talk</button> <span id="talkstatus" class="mut"></span></div><script src="/talk.js" defer></script>` : '';
     const switcher = d.agents.length > 1 ? `<span class="mut small">${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join(' &middot; ')}</span>` : '';
     const starters = ['Open a website, click and fill in a form for me', 'Work through a portal for me', 'Research a question and show me the sources', 'Remember a fact about my business'];
     const emptyChat = `<div class="card empty"><p style="font-size:18px;color:var(--text)"><b>Ask HI anything.</b></p><p>HI does the computer work you already do every day: it opens websites, clicks, types and fills forms, works through portals, researches with cited sources and remembers your business. HI drafts - you approve anything that leaves your account.</p>${starters.map((q) => `<form method="post" action="/app/agent/message" class="ask">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="text" value="${esc(q)}"><button class="sec">${esc(q)}</button></form>`).join('')}</div>`;
     return render(reply, u, 'Agent', `<div class="row" style="margin-bottom:2px"><h1 style="margin:0">Agent</h1><span>${switcher} ${agentModelEnabled() ? '' : '<span class="bad small">AI model not configured</span>'}</span></div>
-      ${d.msgs.length ? '' : emptyChat}${thread}
-      <form method="post" action="/app/agent/message" class="card">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}">
-        <label>Message ${esc(d.agent.name)}</label><textarea name="text" rows="3" maxlength="4000" required></textarea><p><button>Send</button></p>${talk}</form>
+      ${d.msgs.length ? '' : emptyChat}${thread}${pendingCards}
+      <form method="post" action="/app/agent/message" class="composer">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}">
+        <textarea name="text" rows="2" maxlength="4000" required placeholder="Message ${esc(d.agent.name)}"></textarea><div class="crow"><button>Send</button></div></form>${talk}
       <div class="card"><b>Recent conversations</b><ul>${d.convs.map((x) => `<li><a href="/app/agent?agent=${d.agent.id}&c=${x.id}">${esc(x.title)}</a> <span class="mut">${fdate(x.created_at)}</span></li>`).join('') || '<li class="mut">None yet</li>'}</ul></div>
       <details class="card"><summary style="cursor:pointer"><b>Add another named agent</b></summary><form method="post" action="/app/agent/new">${csrf(u)}<label>Name</label><input name="name" required maxlength="40"><label>What is this agent for?</label><input name="persona" maxlength="300" placeholder="e.g. Handles supplier research and quotes"><p><button class="sec">Create agent</button></p></form></details>`, flashOf(req));
   });
