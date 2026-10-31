@@ -267,7 +267,7 @@ ${r.answer}`)
             continue;
           }
           const result = await withTenant(tenantId, (c) => runTool(t.name, t.args, { c, tenantId, userEmail, agentId, agentName: agent.name, fetchImpl, lookup, sources, steps, mode, taskId, trackMailMessages, mailMessagesSeen, principal, conversationId: convId })).catch((e) => 'Tool error: ' + String(e.message).slice(0, 120));
-          steps.push({ type: 'tool', name: t.name, args: JSON.stringify(t.args || {}).slice(0, 200) });
+          steps.push({ type: 'tool', name: t.name, args: JSON.stringify(t.args || {}).slice(0, 200), result: String(result).slice(0, 160) });
           msgs.push({ role: 'tool', tool_call_id: t.id, content: wrapToolResult(nonce, t.name, String(result).slice(0, 8000)) });
         }
         if (endTurn) break;
@@ -283,7 +283,8 @@ ${r.answer}`)
         }
       }
     } catch (e) {
-      const proposed = steps.some((x) => x.type === 'tool' && PROPOSAL_TOOLS.includes(x.name));
+      const proposed = steps.some((x) => x.type === 'tool' && PROPOSAL_TOOLS.includes(x.name))
+        && await withTenant(tenantId, (c) => c.query("SELECT 1 FROM approvals WHERE status='proposed' LIMIT 1")).then((r) => r.rowCount > 0).catch(() => false);
       answer = proposed ? 'That is prepared and waiting for your approval - use the Approve button on the card below.' : 'Something went wrong talking to the model. Try again shortly.';
       status = 'failed';
       steps.push({ type: 'error', message: String(e.message).slice(0, 160) });
@@ -292,7 +293,8 @@ ${r.answer}`)
   // Never show a blank bubble: if the model ended with no text after doing work,
   // say honestly what state things are in.
   if (!String(answer || '').trim()) {
-    const proposed = steps.some((x) => x.type === 'tool' && PROPOSAL_TOOLS.includes(x.name));
+    const proposed = steps.some((x) => x.type === 'tool' && PROPOSAL_TOOLS.includes(x.name))
+      && await withTenant(tenantId, (c) => c.query("SELECT 1 FROM approvals WHERE status='proposed' LIMIT 1")).then((r) => r.rowCount > 0).catch(() => false);
     answer = proposed ? 'That is prepared and waiting for your approval - use the Approve button on the card below.' : 'I could not put together a reply just now. Please try again.';
     if (!proposed) status = 'failed';
   }
