@@ -285,7 +285,10 @@ ${r.answer}`)
     } catch (e) {
       const proposed = steps.some((x) => x.type === 'tool' && PROPOSAL_TOOLS.includes(x.name))
         && await withTenant(tenantId, (c) => c.query("SELECT 1 FROM approvals WHERE status='proposed' LIMIT 1")).then((r) => r.rowCount > 0).catch(() => false);
-      answer = proposed ? 'That is prepared and waiting for your approval - use the Approve button on the card below.' : 'Something went wrong talking to the model. Try again shortly.';
+      const rateLimited = /model http 429/.test(String(e && e.message));
+      answer = proposed ? 'That is prepared and waiting for your approval - use the Approve button on the card below.'
+        : rateLimited ? 'The AI provider is limiting requests right now - too many in a short window. Your message is saved; please try again in a few minutes.'
+        : 'Something went wrong talking to the model. Try again shortly.';
       status = 'failed';
       steps.push({ type: 'error', message: String(e.message).slice(0, 160) });
     }

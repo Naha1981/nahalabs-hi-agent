@@ -58,7 +58,7 @@ export async function chat({ messages, tools, fetchImpl = fetch, sleep = (ms) =>
       });
       if (res.status === 429 || res.status === 413) {
         lastStatus = res.status;
-        const wait = Math.min(15000, (Number(res.headers?.get?.('retry-after')) || 5) * 1000);
+        const wait = Math.min(30000, (Number(res.headers?.get?.('retry-after')) || 5) * 1000);
         if (attempt === 0 && res.status === 429) { await sleep(wait); continue; }
         break; // go to fallback model
       }

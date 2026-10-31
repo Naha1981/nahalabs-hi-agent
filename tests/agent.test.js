@@ -298,3 +298,34 @@ test('memory suggestions skip facts already saved inside a longer memory', async
   assert.equal(cand.rowCount, 1);
   assert.match(cand.rows[0].detail, /25th/);
 });
+
+test('a 429 from the model becomes an honest rate-limit message, not a generic error', async () => {
+  const convId = await withTenant(A.tenantId, async (c) => (await c.query("INSERT INTO conversations (tenant_id, agent_id, title) VALUES (current_setting('app.tenant_id')::uuid,$1,'rl') RETURNING id", [A.agentId])).rows[0].id);
+  const failing = async () => { throw new Error('model http 429'); };
+  await runAgent({ tenantId: A.tenantId, userEmail: A.email, agentId: A.agentId, conversationId: convId, userText: 'hello', llm: failing, fetchImpl: fakeFetch, lookup });
+  const m = await withTenant(A.tenantId, (c) => c.query("SELECT content FROM messages WHERE conversation_id=$1 AND role='assistant' ORDER BY id DESC LIMIT 1", [convId]));
+  assert.match(m.rows[0].content, /limiting requests right now/);
+  assert.doesNotMatch(m.rows[0].content, /Something went wrong/);
+});
+
+test('chat() retries a 429 once with backoff, then succeeds', async () => {
+  const { chat } = await import('../src/gateway.js');
+  let calls = 0; const sleeps = [];
+  const flakyFetch = async () => {
+    calls++;
+    if (calls === 1) return { ok: false, status: 429, headers: new Map([['retry-after', '2']]) };
+    return { ok: true, json: async () => ({ choices: [{ message: { content: 'fine', tool_calls: [] } }], usage: {}, }) };
+  };
+  const out = await chat({ messages: [{ role: 'user', content: 'hi' }], tools: [], fetchImpl: flakyFetch, sleep: async (ms) => sleeps.push(ms) });
+  assert.equal(out.content, 'fine');
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [2000]);
+});
+
+test('chat() falls back after two 429s and only then throws', async () => {
+  const { chat } = await import('../src/gateway.js');
+  let calls = 0;
+  const alwaysLimited = async () => { calls++; return { ok: false, status: 429, headers: new Map() }; };
+  await assert.rejects(() => chat({ messages: [{ role: 'user', content: 'hi' }], tools: [], fetchImpl: alwaysLimited, sleep: async () => {} }), /model http 429/);
+  assert.equal(calls, 4);
+});
