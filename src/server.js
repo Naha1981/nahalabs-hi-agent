@@ -34,6 +34,9 @@ const COOKIE = 'hi_session';
 // PWA: manifest, service worker, icons (static, no auth)
 import { readFileSync } from 'node:fs';
 const STATIC = {
+  '/favicon.ico': ['public/favicon.ico', 'image/x-icon'],
+  '/favicon-16.png': ['public/favicon-16.png', 'image/png'],
+  '/favicon-32.png': ['public/favicon-32.png', 'image/png'],
   '/manifest.webmanifest': ['public/manifest.webmanifest', 'application/manifest+json; charset=utf-8'],
   '/sw.js': ['public/sw.js', 'text/javascript; charset=utf-8'],
   '/drive.js': ['public/drive.js', 'text/javascript; charset=utf-8'],
