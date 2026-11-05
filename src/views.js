@@ -112,7 +112,7 @@ a.src .dom{color:var(--mut);font-size:12px;white-space:nowrap;flex:none}
 `;
 
 const GROUPS = [
-  ['', [['Agent', '/app/agent'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Inbox', '/app/inbox'], ['Tasks', '/app/tasks'], ['Notifications', '/app/notifications'], ['Drive', '/app/drive']]],
+  ['', [['Agent', '/app/agent'], ['Team', '/app/team'], ['Skills', '/app/skills'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Inbox', '/app/inbox'], ['Tasks', '/app/tasks'], ['Notifications', '/app/notifications'], ['Drive', '/app/drive']]],
   ['Settings', [['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents'], ['Briefs', '/app/briefs'], ['Reports', '/app/reports'], ['Memory', '/app/memory'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']]],
 ];
 const sideNav = (user) => GROUPS.map(([g, links]) => `${g ? `<div class="grp">${g}</div>` : ''}${links.map(([n, h]) => {

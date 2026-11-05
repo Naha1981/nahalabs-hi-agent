@@ -4,6 +4,7 @@ import { TOOL_SCHEMAS, runTool, EXTERNAL_CONTACT_TOOLS } from './tools.js';
 import { chat, agentModelEnabled } from './gateway.js';
 import { emergencyStopped } from './core.js';
 import { randomBytes } from 'node:crypto';
+import {getSkill} from './skills.js';
 
 const MAX_STEPS = 12;
 const MAX_AUTO_CONTINUES = 1;
@@ -374,7 +375,9 @@ export async function runDueTasks({ llm = chat, fetchImpl = fetch, lookup, now =
        FROM tasks t JOIN claimed c ON c.id=t.id JOIN due d ON d.id=t.id ORDER BY d.due_at`,
       [now, limitPerTick])).then((r) => r.rows);
     for (const t of tasks) {
-      const r = await runAgent({ tenantId, userEmail: t.email, agentId: t.agent_id, conversationId: null, userText: `Scheduled task "${t.title}": ${t.instruction}`, mode: 'task', taskId: t.id, llm, fetchImpl, lookup, now });
+      const routineSkill = String(t.created_by||'').startsWith('skill:') ? await getSkill(tenantId,t.created_by.slice(6)) : null;
+      if(String(t.created_by||'').startsWith('skill:')&&!routineSkill){await withTenant(tenantId,c=>c.query("UPDATE tasks SET status='paused' WHERE id=$1",[t.id]));out.push({tenant:tenantId,task:t.id,status:'Skill unavailable. Routine paused.'});continue;}
+      const r = await runAgent({ skill:routineSkill, tenantId, userEmail: t.email, agentId: t.agent_id, conversationId: null, userText: `Scheduled task "${t.title}": ${t.instruction}`, mode: 'task', taskId: t.id, llm, fetchImpl, lookup, now });
       // Windowed tasks: the claim already bumped next_run_at by the interval; clamp it into the window.
       if (t.interval_minutes && t.window_start != null && t.window_end != null) {
         const clamped = nextInWindow(now, t.interval_minutes, t.window_start, t.window_end);

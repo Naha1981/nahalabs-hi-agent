@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import {registerTeamRoutes} from './team-routes.js';
 import {teamHealth} from '../coordination/room.mjs';
 import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
@@ -123,6 +124,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   };
   const render = (reply, user, title, body, flash) => reply.type('text/html').send(page({ title, user, body, flash }));
   const csrf = (u) => `<input type="hidden" name="csrf" value="${esc(u.csrf)}">`;
+  registerTeamRoutes(app,{guard,render,csrf,llm,fetchImpl,lookup});
   const flashOf = (req) => req.query?.m ? String(req.query.m).slice(0, 160) : null;
 
   for (const [p, [file, mime]] of Object.entries(STATIC)) {
@@ -1005,7 +1007,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const u = req.user;
     const grp = (g, items) => `<div class="card"><b>${g}</b><p style="margin:10px 0 2px">${items.map(([n, h]) => `<a class="chip" style="padding:8px 14px;margin:4px 6px 4px 0" href="${h}">${n}</a>`).join('')}</p></div>`;
     return render(reply, u, 'Menu', `<h1>All sections</h1>
-      ${grp('Every day', [['Agent', '/app/agent'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Inbox', '/app/inbox'], ['Tasks', '/app/tasks'], ['Notifications', '/app/notifications'], ['Drive', '/app/drive']])}
+      ${grp('Every day', [['Agent', '/app/agent'], ['Team', '/app/team'], ['Skills', '/app/skills'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Inbox', '/app/inbox'], ['Tasks', '/app/tasks'], ['Notifications', '/app/notifications'], ['Drive', '/app/drive']])}
       ${grp('Settings', [['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents'], ['Briefs', '/app/briefs'], ['Reports', '/app/reports'], ['Memory', '/app/memory'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']])}`, flashOf(req));
   });
 
