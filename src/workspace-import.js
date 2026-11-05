@@ -6,7 +6,7 @@ export function inspectWorkspace(raw){
  if(!raw||raw.format!=='nahamind-selected-work-v1')throw Error('Use a selected-work export.');
  const data={bots:[],skills:[],chats:[]};
  for(const b of (Array.isArray(raw.bots)?raw.bots:[]).slice(0,10)){const name=String(b.name||'').trim().slice(0,40),persona=String(b.job||b.role||'').trim().slice(0,500);if(name&&persona)data.bots.push({name,persona});}
- for(const s of (Array.isArray(raw.skills)?raw.skills:[]).slice(0,10)){const name=String(s.name||'').toLowerCase().replace(/[^a-z0-9-]+/g,'-').slice(0,36),task=String(s.task||'').slice(0,1800);if(name.length>1&&task.length>=20)data.skills.push({name,task});}
+ for(const s of (Array.isArray(raw.skills)?raw.skills:[]).slice(0,10)){const name=String(s.name||'').toLowerCase().replace(/[^a-z0-9-]+/g,'-').slice(0,32),task=String(s.task||'').slice(0,1800);if(name.length>1&&task.length>=20)data.skills.push({name,task});}
  for(const c of (Array.isArray(raw.chats)?raw.chats:[]).slice(0,10)){const messages=[];for(const m of (c.messages||[]).slice(-60)){if(m.role==='groupchat'){for(const t of (m.thread||[]).slice(-30))messages.push({role:t.from==='You'?'user':'assistant',text:(t.from==='You'?'':String(t.from).slice(0,60)+': ')+String(t.text||'').slice(0,4000)});}else if(['user','assistant'].includes(m.role)&&typeof(m.text||m.content)==='string')messages.push({role:m.role,text:String(m.text||m.content).slice(0,4000)});}if(messages.length)data.chats.push({title:String(c.title||'Imported chat').slice(0,60),messages});}
  const bytes=JSON.stringify(data);if(bytes.length>60000)throw Error('Export is too large. Import a smaller selection.');
  return{...data,hash:createHash('sha256').update(bytes).digest('hex')};

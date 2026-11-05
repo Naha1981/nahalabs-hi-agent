@@ -25,4 +25,9 @@ test('selected-work import strips credentials, is atomic and dedupes per tenant'
  const r=await importWorkspace(A.tid,raw);assert.equal(r.chats,1);assert.equal((await importWorkspace(A.tid,raw)).duplicate,true);
  const saved=await withTenant(A.tid,c=>c.query("SELECT content FROM messages WHERE content LIKE 'Selected QA%'"));assert.equal(saved.rowCount,2);const other=await withTenant(B.tid,c=>c.query("SELECT content FROM messages WHERE content LIKE 'Selected QA%'"));assert.equal(other.rowCount,0);
 });
+test('failed second worker keeps first result and releases in-flight lock',async()=>{
+ const members=(await teamMembers(A.tid)).slice(1,3);let calls=0;const out=await groupRound({tenantId:A.tid,userText:'Failure QA',memberIds:members.map(m=>m.id),llm:async()=>{if(++calls===2)throw Error('private-provider-error');return{content:'FIRST_PARTIAL_RESULT'};}});assert.ok(out.error);assert.ok(out.conversationId);assert.doesNotMatch(out.error,/private-provider/);
+ const saved=await withTenant(A.tid,c=>c.query("SELECT content FROM messages WHERE conversation_id=$1 AND role='assistant'",[out.conversationId]));assert.equal(saved.rows[0].content,'FIRST_PARTIAL_RESULT');
+ const next=await groupRound({tenantId:A.tid,userText:'Continue',conversationId:out.conversationId,llm});assert.equal(next.status,'done');
+});
 test('paused account cannot start a team job',async()=>{await withTenant(A.tid,c=>c.query('UPDATE tenants SET paused=true WHERE id=$1',[A.tid]));const r=await groupRound({tenantId:A.tid,userText:'No',memberIds:(await teamMembers(A.tid)).map(m=>m.id),llm});assert.match(r.error,/paused/);});
