@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import {teamHealth} from '../coordination/room.mjs';
 import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
 import cookie from '@fastify/cookie';
@@ -139,7 +140,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   }
 
 
-  app.get('/healthz', async () => ({ ok: true }));
+  app.get('/healthz', async (req,reply) => {const ready=await teamHealth();return reply.code(ready?200:503).send({ok:ready,coordination:ready?'ready':'unavailable',revision:process.env.RENDER_GIT_COMMIT||'local'});});
   app.get('/healthz/db', async (req, reply) => { try { const r = await withSystem((c) => c.query('SELECT count(*)::int n FROM tenants')); return { ok: true, db: 'ok' }; } catch (e) { return reply.code(503).send({ ok: false, db: 'down' }); } });
 
   app.get('/', async (req, reply) => {
