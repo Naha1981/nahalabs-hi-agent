@@ -256,14 +256,9 @@ test('internal run executes tasks only with the cron secret', async () => {
   assert.equal(ok.statusCode, 200);
 });
 
-test('model gateway retries on 429 then falls back to the smaller model', async () => {
-  const { chat } = await import('../src/gateway.js');
-  process.env.GROQ_API_KEY = 'gsk_test_placeholder_key';
-  const used = [];
-  const f = async (url, opts) => { const m = JSON.parse(opts.body).model; used.push(m); if (m.includes('120b')) return { ok: false, status: 429, headers: new Map([['retry-after', '1']]) }; return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'hello' } }], usage: {} }) }; };
-  const out = await chat({ messages: [], tools: [], fetchImpl: f, sleep: async () => {} });
-  assert.equal(out.content, 'hello'); assert.deepEqual(used, ['openai/gpt-oss-120b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b']);
-  delete process.env.GROQ_API_KEY;
+test('model gateway respects429 without model or provider rotation', async () => {
+ const {chat}=await import('../src/gateway.js');process.env.GROQ_API_KEY='gsk_test_placeholder_key';let calls=0;
+ try{await assert.rejects(chat({messages:[],tools:[],fetchImpl:async()=>{calls++;return new Response(null,{status:429,headers:{'retry-after':'60'}})}}),/model http 429/);assert.equal(calls,1)}finally{delete process.env.GROQ_API_KEY}
 });
 
 test('chat shows friendly tool labels, never raw tool names', async () => {
@@ -308,24 +303,4 @@ test('a 429 from the model becomes an honest rate-limit message, not a generic e
   assert.doesNotMatch(m.rows[0].content, /Something went wrong/);
 });
 
-test('chat() retries a 429 once with backoff, then succeeds', async () => {
-  const { chat } = await import('../src/gateway.js');
-  let calls = 0; const sleeps = [];
-  const flakyFetch = async () => {
-    calls++;
-    if (calls === 1) return { ok: false, status: 429, headers: new Map([['retry-after', '2']]) };
-    return { ok: true, json: async () => ({ choices: [{ message: { content: 'fine', tool_calls: [] } }], usage: {}, }) };
-  };
-  const out = await chat({ messages: [{ role: 'user', content: 'hi' }], tools: [], fetchImpl: flakyFetch, sleep: async (ms) => sleeps.push(ms) });
-  assert.equal(out.content, 'fine');
-  assert.equal(calls, 2);
-  assert.deepEqual(sleeps, [2000]);
-});
-
-test('chat() falls back after two 429s and only then throws', async () => {
-  const { chat } = await import('../src/gateway.js');
-  let calls = 0;
-  const alwaysLimited = async () => { calls++; return { ok: false, status: 429, headers: new Map() }; };
-  await assert.rejects(() => chat({ messages: [{ role: 'user', content: 'hi' }], tools: [], fetchImpl: alwaysLimited, sleep: async () => {} }), /model http 429/);
-  assert.equal(calls, 4);
-});
+test('chat429 returns cooldown without sleeps or retry',async()=>{const {chat}=await import('../src/gateway.js');process.env.GROQ_API_KEY='gsk_test_placeholder_key';let calls=0;await assert.rejects(chat({messages:[{role:'user',content:'hi'}],tools:[],fetchImpl:async()=>{calls++;return new Response(null,{status:429,headers:{'retry-after':'2'}})}}),e=>e.retryAfter===2);assert.equal(calls,1);delete process.env.GROQ_API_KEY});

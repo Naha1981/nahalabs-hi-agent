@@ -1,5 +1,6 @@
 // The only place model calls happen. Redacts, budgets, logs, and treats tender text as untrusted data.
 import { withTenant, audit } from './db.js';
+import {freeChat,freeChatEnabled} from './free-chat.js';
 
 export function redact(text) {
   return String(text || '')
@@ -42,32 +43,6 @@ export async function explainFit({ tenantId, profile, tender, fetchImpl = fetch 
   return text || null;
 }
 
-export function agentModelEnabled() { return !!process.env.GROQ_API_KEY && process.env.MODEL_ENABLED !== 'false'; }
-
-// OpenAI-compatible chat with tool calling (Groq). Returns { content, tool_calls:[{id,name,args}], usage, model }.
-export async function chat({ messages, tools, fetchImpl = fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
-  const models = [process.env.AGENT_MODEL || 'openai/gpt-oss-120b', process.env.AGENT_FALLBACK_MODEL || 'openai/gpt-oss-20b'];
-  let lastStatus = 0;
-  for (const model of models) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const res = await fetchImpl('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-        body: JSON.stringify({ model, temperature: 0.3, max_tokens: 1200, messages, tools: tools.map((t) => ({ type: 'function', function: t })), tool_choice: 'auto' }),
-        signal: AbortSignal.timeout(45000),
-      });
-      if (res.status === 429 || res.status === 413) {
-        lastStatus = res.status;
-        const wait = Math.min(30000, (Number(res.headers?.get?.('retry-after')) || 5) * 1000);
-        if (attempt === 0 && res.status === 429) { await sleep(wait); continue; }
-        break; // go to fallback model
-      }
-      if (!res.ok) throw new Error('model http ' + res.status);
-      const j = await res.json();
-      const m = j.choices?.[0]?.message || {};
-      const tool_calls = (m.tool_calls || []).map((t) => { let args = {}; try { args = JSON.parse(t.function?.arguments || '{}'); } catch {} return { id: t.id, name: t.function?.name, args }; });
-      return { content: m.content || '', tool_calls, usage: j.usage, model };
-    }
-  }
-  throw new Error('model http ' + lastStatus);
-}
+export function agentModelEnabled() { return freeChatEnabled(process.env); }
+// Existing caller retains tenant auth, budget, tool permissions and audit.
+export async function chat({messages,tools=[],fetchImpl=fetch}) {return freeChat({messages,tools,fetchImpl});}
