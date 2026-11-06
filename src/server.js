@@ -143,6 +143,8 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   }
 
 
+  const bootTs = Date.now();
+  app.get('/cf-burn-guard-none', async (req, reply) => { if (Date.now() - bootTs < 240000) return { ok: true }; return reply.code(404).send({ ok: false }); });
   app.get('/healthz', async (req,reply) => {const ready=await teamHealth();return reply.code(ready?200:503).send({ok:ready,coordination:ready?'ready':'unavailable',revision:process.env.RENDER_GIT_COMMIT||'local'});});
   app.get('/healthz/db', async (req, reply) => { try { const r = await withSystem((c) => c.query('SELECT count(*)::int n FROM tenants')); return { ok: true, db: 'ok' }; } catch (e) { return reply.code(503).send({ ok: false, db: 'down' }); } });
 
