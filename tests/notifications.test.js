@@ -39,7 +39,7 @@ test('a real inbound customer message records a notification event', async () =>
 test('feed shows the real event, unread badge in the nav, and NEW marker', async () => {
   await withTenant(A.tenantId, (c) => audit(c, A.tenantId, 'system', 'stripe.payment_received', { type: 'rent', amount_cents: 950000, currency: 'zar' }));
   const page = await get(A, '/app/agent');
-  assert.match(page.body, /Notifications <span[^>]*>2<\/span>/);
+  assert.match(page.body, /Notifications\s*<span[^>]*>2<\/span>/);
   const feed = await get(A, '/app/notifications');
   assert.match(feed.body, /WhatsApp message from 27829990011/);
   assert.match(feed.body, /Payment received: zar 9500\.00/);
@@ -61,10 +61,10 @@ test('mark all as read resets the badge; a new event brings it back', async () =
   const after = await get(A, '/app/notifications');
   assert.doesNotMatch(after.body, /<b>NEW<\/b>/);
   const nav = await get(A, '/app/agent');
-  assert.doesNotMatch(nav.body, /Notifications <span/);
+  assert.doesNotMatch(nav.body, /Notifications\s*<span/);
   await inbound({ to: '27821110011', from: '27829990011', text: 'Any update?', id: 'notif-wa-2' });
   const again = await get(A, '/app/agent');
-  assert.match(again.body, /Notifications <span[^>]*>1<\/span>/);
+  assert.match(again.body, /Notifications\s*<span[^>]*>1<\/span>/);
 });
 
 test('mark-read needs the CSRF token', async () => {
@@ -78,7 +78,7 @@ test('tenant isolation: B sees only its own events and an honest empty state', a
   assert.doesNotMatch(feed.body, /27829990011/);
   assert.match(feed.body, /Nothing yet/);
   const nav = await get(B, '/app/agent');
-  assert.doesNotMatch(nav.body, /Notifications <span/);
+  assert.doesNotMatch(nav.body, /Notifications\s*<span/);
 });
 
 test('notifications need a login', async () => {

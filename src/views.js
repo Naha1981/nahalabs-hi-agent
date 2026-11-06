@@ -1,9 +1,9 @@
+import {PREMIUM,icon} from './premium-design.js';
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const fdate = (d) => d ? new Date(d).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg', dateStyle: 'medium', timeStyle: 'short' }) : 'not stated';
 export const safeUrl = (u) => /^https:\/\//i.test(String(u)) ? esc(u) : '#';
 
-// One design system for the whole app: white surfaces, 1px neutral borders, 12px radii,
-// black primary actions, muted helper text. Restraint is the premium look: no decoration.
+// Base layout primitives. Premium tokens and responsive treatments are shared below.
 const CSS = `
 :root{--ink:#171717;--text:#171717;--mut:#737373;--bg:#ffffff;--soft:#fafafa;--panel:#ffffff;--line:#e8e8e8;--chip:#f5f5f5;--ok:#15803d;--bad:#dc2626;--gold:#8a6d1d}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
@@ -111,26 +111,22 @@ a.src .dom{color:var(--mut);font-size:12px;white-space:nowrap;flex:none}
 @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 `;
 
-const GROUPS = [
-  ['', [['Agent', '/app/agent'], ['Team', '/app/team'], ['Skills', '/app/skills'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Inbox', '/app/inbox'], ['Tasks', '/app/tasks'], ['Notifications', '/app/notifications'], ['Drive', '/app/drive']]],
-  ['Settings', [['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents'], ['Briefs', '/app/briefs'], ['Reports', '/app/reports'], ['Memory', '/app/memory'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']]],
-];
-const sideNav = (user) => GROUPS.map(([g, links]) => `${g ? `<div class="grp">${g}</div>` : ''}${links.map(([n, h]) => {
-  const badge = (h === '/app/notifications' && user?.notif_unread > 0) ? ` <span style="background:var(--ink);color:#fff;border-radius:10px;padding:1px 7px;font-size:12px">${Number(user.notif_unread)}</span>` : '';
-  return `<a class="nl" href="${h}">${n}${badge}</a>`;
-}).join('')}`).join('');
-const TABS = [['Agent', '/app/agent'], ['Dump', '/app/dump'], ['Approvals', '/app/approvals'], ['Tasks', '/app/tasks'], ['More', '/app/menu']];
-const tabs = TABS.map(([n, h]) => `<a href="${h}">${n}</a>`).join('');
-
+const NAV=[['Agent','/app/agent'],['Team','/app/team'],['Approvals','/app/approvals'],['Tasks','/app/tasks'],['Browser','/app/browser'],['Skills','/app/skills'],['Dump','/app/dump']];
+const EXTRA=[['Templates','/app/templates'],['Opportunities','/app'],['Inbox','/app/inbox'],['Notifications','/app/notifications'],['Drive','/app/drive'],['Profile','/app/profile'],['Integrations','/app/integrations'],['WhatsApp','/app/whatsapp'],['Files','/app/files'],['Documents','/app/documents'],['Briefs','/app/briefs'],['Reports','/app/reports'],['Memory','/app/memory'],['API keys','/app/api-keys'],['Audit log','/app/audit'],['Settings','/app/settings']];
+const active=(title,n)=>title.toLowerCase().includes(n.toLowerCase());
+const badge=user=>user?.notif_unread>0?` <span class="nav-badge">${Number(user.notif_unread)}</span>`:'';
+const links=(items,title,user)=>items.map(([n,h])=>`<a class="nl" href="${h}" ${active(title,n)?'aria-current="page"':''}>${icon(n)}<span>${n}${n==='Notifications'?badge(user):''}</span></a>`).join('');
+const sideNav=(user,title)=>links(NAV,title,user)+`<details ${EXTRA.some(([n])=>active(title,n))?'open':''}><summary>More tools & settings${badge(user)}</summary>${links(EXTRA,title,user)}</details>`;
+const tabs=(title)=>[['Agent','/app/agent'],['Team','/app/team'],['Approvals','/app/approvals'],['Tasks','/app/tasks'],['More','/app/menu']].map(([n,h])=>`<a href="${h}" ${active(title,n)?'aria-current="page"':''}>${icon(n)}<span>${n}</span></a>`).join('');
 export function page({ title, user, body, flash }) {
-  const head = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#ffffff"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="HI"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/favicon.ico?v=2" sizes="16x16 32x32 48x48 64x64"><link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2"><link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=2"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2" sizes="180x180"><title>${esc(title)} - HI by NahaLabs</title><style>${CSS}</style></head>`;
+  const head = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#ffffff"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="HI"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/favicon.ico?v=2" sizes="16x16 32x32 48x48 64x64"><link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2"><link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=2"><link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2" sizes="180x180"><title>${esc(title)} - HI by NahaLabs</title><style>${CSS}${PREMIUM}</style></head>`;
   const sw = `<script src="/boot.js" defer></script>`;
   if (!user) {
     return `${head}<body><header class="pub-h"><a class="brand" href="/">HI<small>by NahaLabs</small></a><a class="btn sec" href="/login">Sign in</a></header><main class="pub-m">${flash ? `<div class="flash">${esc(flash)}</div>` : ''}${body}</main>
 <footer class="pub-f"><p style="margin:0 0 8px"><a href="/developers">Developers</a> &middot; <a href="/developers">API</a></p>HI by NahaLabs (Pty) Ltd. Honest limits: HI researches, remembers, matches, drafts and schedules. It never sends, buys, books or submits anything without your approval, and it can be wrong - check the sources it cites.</footer>${sw}</body></html>`;
   }
   const out = `<form method="post" action="/logout" style="margin:0"><input type="hidden" name="csrf" value="${esc(user.csrf)}"><button class="sec" style="padding:7px 16px;font-size:14px">Sign out</button></form>`;
-  return `${head}<body><aside class="side"><a class="brand" href="/app/agent">HI<small>by NahaLabs</small></a><nav>${sideNav(user)}</nav>${out}</aside><header class="topbar"><a class="brand" href="/app/agent">HI<small>by NahaLabs</small></a>${out}</header><main class="appmain">${flash ? `<div class="flash">${esc(flash)}</div>` : ''}${body}</main><nav class="tabs">${tabs}</nav>${sw}</body></html>`;
+  return `${head}<body><aside class="side"><a class="brand" href="/app/agent">HI<small>by NahaLabs</small></a><nav>${sideNav(user,title)}</nav>${out}</aside><header class="topbar"><a class="brand" href="/app/agent">HI<small>by NahaLabs</small></a>${out}</header><div class="shell-top"><span>Workspace <span aria-hidden="true">/</span> ${esc(title)}</span><span class="status"><i class="status-dot"></i>Your private workspace</span></div><main class="appmain">${flash ? `<div class="flash">${esc(flash)}</div>` : ''}${body}</main><nav class="tabs">${tabs(title)}</nav>${sw}</body></html>`;
 }
 
 // Drive Mode: minimal phone-first voice page. Script and styles are self-hosted (CSP 'self').

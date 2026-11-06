@@ -1,3 +1,4 @@
+import {landing} from './premium-design.js';
 import Fastify from 'fastify';
 import {registerTeamRoutes} from './team-routes.js';
 import {teamHealth} from '../coordination/room.mjs';
@@ -148,22 +149,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   app.get('/', async (req, reply) => {
     const s = await sessionOf(req);
     if (s) return reply.redirect('/app/agent');
-    return render(reply, null, 'HI - the app that does the desk work', `
-      <section class="hero">
-        <h1>HI does the desk work.</h1>
-        <p class="lede">HI does the computer work you already do every day: it clicks the web, types, fills forms and works through portals. It remembers your business, drafts your emails and documents, and works on a schedule. You approve everything before anything goes out.</p>
-        <p class="cta"><a class="btn" href="/signup">Start free</a> <a class="btn sec" href="/login">Sign in</a></p>
-        <p class="mut" style="margin:0 0 6px">Ask HI to:</p>
-        <p class="chips"><a class="chip" href="/signup">Open websites and fill in forms</a><a class="chip" href="/signup">Work through portals</a><a class="chip" href="/signup">Research with cited sources</a><a class="chip" href="/signup">Remember your business</a><a class="chip" href="/signup">Draft emails and documents</a></p>
-      </section>
-      <section class="feat">
-        <div class="card"><b>Uses the web for you</b><br>Opens sites, clicks, types, fills forms and works through portals - the work you already do at your computer.</div>
-        <div class="card"><b>Drafts for you</b><br>Emails, briefs and replies, ready to check. Nothing sends without your approval.</div>
-        <div class="card"><b>Remembers</b><br>Your clients, your pricing, your documents - it keeps what matters and uses it.</div>
-        <div class="card"><b>Works on schedule</b><br>Recurring jobs and a morning brief, reported back to you.</div>
-      </section>
-      <p class="mut" style="text-align:center;max-width:560px;margin:22px auto 0">One HI for any kind of business, with templates per trade - real estate is the first. Connect your own accounts, files and plugins as you need them.</p>
-      <p class="mut" style="text-align:center;max-width:560px;margin:12px auto 0">Honest limits: HI drafts and proposes - you approve everything that leaves your account. It can be wrong, and it says so when it cannot verify something.</p>`);
+    return render(reply, null, 'HI - the app that does the desk work', landing);
   });
 
   app.get('/signup', async (req, reply) => render(reply, null, 'Create account', `
@@ -1009,7 +995,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const u = req.user;
     const grp = (g, items) => `<div class="card"><b>${g}</b><p style="margin:10px 0 2px">${items.map(([n, h]) => `<a class="chip" style="padding:8px 14px;margin:4px 6px 4px 0" href="${h}">${n}</a>`).join('')}</p></div>`;
     return render(reply, u, 'Menu', `<h1>All sections</h1>
-      ${grp('Every day', [['Agent', '/app/agent'], ['Team', '/app/team'], ['Skills', '/app/skills'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Inbox', '/app/inbox'], ['Tasks', '/app/tasks'], ['Notifications', '/app/notifications'], ['Drive', '/app/drive']])}
+      ${grp('Every day', [['Agent', '/app/agent'], ['Team', '/app/team'], ['Skills', '/app/skills'], ['Dump', '/app/dump'], ['Templates', '/app/templates'], ['Opportunities', '/app'], ['Approvals', '/app/approvals'], ['Inbox', '/app/inbox'], ['Tasks', '/app/tasks'], ['Browser tasks','/app/browser'], ['Import selected work','/app/import'], ['Notifications', '/app/notifications'], ['Drive', '/app/drive']])}
       ${grp('Settings', [['Profile', '/app/profile'], ['Integrations', '/app/integrations'], ['WhatsApp', '/app/whatsapp'], ['Files', '/app/files'], ['Documents', '/app/documents'], ['Briefs', '/app/briefs'], ['Reports', '/app/reports'], ['Memory', '/app/memory'], ['API keys', '/app/api-keys'], ['Audit log', '/app/audit'], ['Settings', '/app/settings']])}`, flashOf(req));
   });
 

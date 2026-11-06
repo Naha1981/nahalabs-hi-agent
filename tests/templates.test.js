@@ -30,7 +30,7 @@ test('templates landing lists real estate as the first template', async () => {
   assert.match(r.body, /<b>Templates<\/b> for your business/);
   assert.match(r.body, /<a href="\/app\/templates\/real-estate"><b>Real estate<\/b><\/a>/);
   // nav uses Templates wording and points at the landing page
-  assert.match(r.body, /<a class="nl" href="\/app\/templates">Templates<\/a>/);
+  assert.match(r.body, /<a class="nl" href="\/app\/templates"[^>]*>[\s\S]*?<span>Templates<\/span><\/a>/);
   assert.doesNotMatch(r.body, />Estate<\/a>/);
 });
 
