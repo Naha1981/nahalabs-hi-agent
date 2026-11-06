@@ -588,6 +588,8 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     u.emails_today = await withTenant(u.tenant_id, (c) => c.query("SELECT count(*)::int n FROM email_log WHERE sent_at > now() - interval '1 day'").then((r) => r.rows[0].n));
     u.email_cap = Number(process.env.HI_EMAIL_DAILY_CAP || 5);
     u.last_cron = await withSystem((c) => c.query("SELECT value FROM system_flags WHERE key='last_cron_run'").then((r) => r.rows[0]?.value || null));
+    // Postgres OF emits +00, which JS needs normalized to +00:00.
+    if (u.last_cron) u.last_cron = String(u.last_cron).replace(/([+-]\d{2})$/, '$1:00');
     u.wa_owner_link = await withTenant(u.tenant_id, (c) => c.query("SELECT phone, status, code_hash IS NOT NULL AS has_code, code_expires_at, auto_reply, created_at FROM wa_owner_links WHERE status <> 'revoked' ORDER BY created_at DESC LIMIT 1").then((r) => r.rows[0] || null));
     u.stripe_links = await withTenant(u.tenant_id, (c) => c.query("SELECT id, label, token, signing_secret_enc IS NOT NULL AS has_secret, status, created_at FROM stripe_links ORDER BY created_at").then((r) => r.rows));
     u.stripe_events = await withTenant(u.tenant_id, (c) => c.query('SELECT type, amount_cents, currency, description, created_at FROM stripe_events ORDER BY created_at DESC LIMIT 10').then((r) => r.rows));
