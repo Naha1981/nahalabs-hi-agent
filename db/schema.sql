@@ -904,3 +904,51 @@ CREATE OR REPLACE FUNCTION wa_owner_lookup(p_phone text) RETURNS TABLE (tenant_i
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 REVOKE ALL ON FUNCTION wa_owner_lookup(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION wa_owner_lookup(text) TO hi_app;
+
+-- Customer-owned messaging. Encrypted keys and hook secrets never render in UI.
+CREATE TABLE IF NOT EXISTS wa_connections (
+ tenant_id uuid PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+ api_key_enc text NOT NULL,
+ profile_id text NOT NULL,
+ account_id text UNIQUE,
+ webhook_secret_enc text,
+ hook_token uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+ webhook_id text,
+ connect_state_hash text,
+ connect_expires_at timestamptz,
+ connect_user_id uuid,
+ status text NOT NULL DEFAULT 'key_valid' CHECK(status IN ('key_valid','connecting','connected','needs_attention','disconnected')),
+ verified_free boolean NOT NULL DEFAULT false,
+ monthly_cap integer NOT NULL DEFAULT 900 CHECK(monthly_cap BETWEEN 0 AND 900),
+ daily_cap integer NOT NULL DEFAULT 50 CHECK(daily_cap BETWEEN 0 AND 100),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS wa_webhook_events (
+ tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+ event_id text NOT NULL,
+ event_type text NOT NULL,
+ status text NOT NULL DEFAULT 'pending',
+ created_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(tenant_id,event_id)
+);
+ALTER TABLE wa_contacts ADD COLUMN IF NOT EXISTS provider_conversation_id text;
+ALTER TABLE wa_contacts ADD COLUMN IF NOT EXISTS opted_out boolean NOT NULL DEFAULT false;
+ALTER TABLE wa_contacts ADD COLUMN IF NOT EXISTS opted_out_at timestamptz;
+ALTER TABLE wa_messages ADD COLUMN IF NOT EXISTS provider_message_id text;
+DO $$ DECLARE t text; BEGIN
+ FOREACH t IN ARRAY ARRAY['wa_connections','wa_webhook_events'] LOOP
+  EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY',t);
+  EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY',t);
+  EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I',t);
+  EXECUTE format('CREATE POLICY tenant_isolation ON %I USING (tenant_id = NULLIF(current_setting(''app.tenant_id'',true),'''')::uuid) WITH CHECK (tenant_id = NULLIF(current_setting(''app.tenant_id'',true),'''')::uuid)',t);
+ END LOOP;
+END $$;
+GRANT SELECT,INSERT,UPDATE,DELETE ON wa_connections,wa_webhook_events TO hi_app;
+CREATE OR REPLACE FUNCTION wa_hook_tenant(p_token uuid) RETURNS uuid AS $$
+ SELECT tenant_id FROM wa_connections WHERE hook_token=p_token AND status IN ('connecting','connected','needs_attention');
+$$ LANGUAGE sql SECURITY DEFINER SET search_path=public;
+REVOKE ALL ON FUNCTION wa_hook_tenant(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION wa_hook_tenant(uuid) TO hi_app;
+ALTER TABLE wa_channels DROP CONSTRAINT IF EXISTS wa_channels_engine_check;
+ALTER TABLE wa_channels ADD CONSTRAINT wa_channels_engine_check CHECK(engine IN ('simulator','own_engine','meta_cloud','zernio'));

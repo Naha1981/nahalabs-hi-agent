@@ -48,10 +48,12 @@ export async function executeWhatsAppReply(c, { tenantId, approval, fetchImpl = 
   if (!ch) return fail('the WhatsApp number is no longer active');
   const contact = (await c.query('SELECT 1 FROM wa_contacts WHERE phone=$1', [msg.phone])).rows[0];
   if (!contact) return fail('the contact was removed');
+  const stop=(await c.query('SELECT opted_out FROM wa_contacts WHERE phone=$1',[msg.phone])).rows[0];
+  if(stop?.opted_out)return fail('contact opted out');
   const daily = (await c.query("SELECT count(*)::int n FROM wa_messages WHERE direction='out' AND status='sent' AND created_at > now() - interval '1 day'")).rows[0].n;
   if (daily >= Number(process.env.WA_MAX_REPLIES_PER_TENANT_DAY || 100)) return fail('daily WhatsApp reply limit reached');
   try {
-    await makeAdapter(fetchImpl)({ engine: ch.engine, from: p.from, to: msg.phone, text: msg.body });
+    if(ch.engine==='zernio'){const {sendOwnedReply}=await import('./wa-owned.js');await sendOwnedReply(c,{phone:msg.phone,text:msg.body,fetchImpl});}else await makeAdapter(fetchImpl)({ engine: ch.engine, from: p.from, to: msg.phone, text: msg.body });
   } catch (e) {
     return fail(String(e?.message || e).slice(0, 120));
   }

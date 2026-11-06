@@ -19,13 +19,14 @@ export async function handleInbound({ to, from, text, externalId, llm, fetchImpl
   // Owner line: a number linked from the authenticated Settings session with a
   // one-time code gets the owner assistant, never the external-contact principal.
   const ownerLink = (await withSystem((c) => c.query('SELECT * FROM wa_owner_lookup($1)', [fromN]))).rows[0];
-  if (ownerLink && ownerLink.tenant_id === ch.tenant_id) {
+  if (ch.engine !== 'zernio' && ownerLink && ownerLink.tenant_id === ch.tenant_id) {
     return handleOwner({ ch, fromN, body: String(text || '').slice(0, 2000), externalId, llm, fetchImpl, lookup, autoReply: ownerLink.auto_reply });
   }
   const gate = await withTenant(tenantId, async (c) => {
     if (externalId && (await c.query('SELECT 1 FROM wa_messages WHERE external_id=$1', [externalId])).rowCount) return { dup: true };
     const contact = (await c.query('SELECT * FROM wa_contacts WHERE phone=$1', [fromN])).rows[0];
     const body = String(text || '').slice(0, 2000);
+    if(contact?.opted_out)return {ignored:'contact opted out'};
     if (!contact) {
       const claim = /^\s*HI-?([A-Z0-9]{6})\s*$/i.exec(body.trim());
       if (claim) {

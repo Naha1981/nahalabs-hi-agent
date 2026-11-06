@@ -1,3 +1,4 @@
+import {registerOwnedWhatsApp} from './wa-owned.js';
 import Fastify from 'fastify';
 import {registerTeamRoutes} from './team-routes.js';
 import {teamHealth} from '../coordination/room.mjs';
@@ -125,6 +126,7 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
   const render = (reply, user, title, body, flash) => reply.type('text/html').send(page({ title, user, body, flash }));
   const csrf = (u) => `<input type="hidden" name="csrf" value="${esc(u.csrf)}">`;
   registerTeamRoutes(app,{guard,render,csrf,llm,fetchImpl,lookup});
+  registerOwnedWhatsApp(app,{guard,render,csrf,llm,fetchImpl,lookup});
   const flashOf = (req) => req.query?.m ? String(req.query.m).slice(0, 160) : null;
 
   for (const [p, [file, mime]] of Object.entries(STATIC)) {
@@ -1402,7 +1404,7 @@ app.get('/app/whatsapp', { preHandler: guard }, async (req, reply) => {
       channels: (await c.query('SELECT number, engine, status FROM wa_channels')).rows,
       contacts: (await c.query('SELECT id, phone, name FROM wa_contacts ORDER BY created_at')).rows,
       msgs: (await c.query('SELECT phone, direction, body, status, created_at FROM wa_messages ORDER BY id DESC LIMIT 30')).rows }));
-    return render(reply, u, 'WhatsApp', `<h1>WhatsApp</h1><p class="mut">Your agent answers WhatsApp messages from the people you add here, and only replies. It never starts a conversation, and anyone not on this list is ignored. ${d.channels.length ? '' : 'No WhatsApp number is linked yet; a number is linked by NahaLabs when you are ready.'}</p>
+    return render(reply, u, 'WhatsApp', `<h1>WhatsApp</h1><p><a class="btn" href="/app/whatsapp/connect">Connect number</a></p><p class="mut">Your agent answers WhatsApp messages from the people you add here, and only replies. It never starts a conversation, and anyone not on this list is ignored. ${d.channels.length ? '' : 'No WhatsApp number is linked yet; a number is linked by NahaLabs when you are ready.'}</p>
       <div class="card"><b>Linked number</b><ul>${d.channels.map((x) => `<li>${esc(x.number)} (${esc(x.engine)}, ${esc(x.status)})</li>`).join('') || '<li class="mut">None yet</li>'}</ul></div>
       <div class="card"><b>People HI may reply to</b><table>${d.contacts.map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.phone)}</td><td><form method="post" action="/app/whatsapp/contacts/${x.id}/delete">${csrf(u)}<button class="sec">Remove</button></form></td></tr>`).join('') || '<tr><td class="mut">No contacts yet</td></tr>'}</table>
         <form method="post" action="/app/whatsapp/contacts">${csrf(u)}<label>Name</label><input name="name" maxlength="60"><label>Phone number with country code, e.g. 27821234567</label><input name="phone" required><p><button>Add contact</button></p></form></div>
