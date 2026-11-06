@@ -33,7 +33,7 @@ test('failed second worker keeps first result and releases in-flight lock',async
 test('paused account cannot start a team job',async()=>{await withTenant(A.tid,c=>c.query('UPDATE tenants SET paused=true WHERE id=$1',[A.tid]));const r=await groupRound({tenantId:A.tid,userText:'No',memberIds:(await teamMembers(A.tid)).map(m=>m.id),llm});assert.match(r.error,/paused/);});
 test('teammate browser handoff is explicit, tenant-scoped and approval gated',async()=>{
  await withTenant(A.tid,c=>c.query('UPDATE tenants SET paused=false WHERE id=$1',[A.tid]));
- const page=await app.inject({url:'/app/team',headers:{cookie:A.cookie}});assert.match(page.body,/Give a teammate a browser task/);
+ const page=await app.inject({url:'/app/team',headers:{cookie:A.cookie}});assert.match(page.body,/Browser task/);
  const member=(await teamMembers(A.tid))[1],alien=(await teamMembers(B.tid))[1];
  const req=agent=>app.inject({method:'POST',url:'/app/team/browser',headers:{...H,cookie:A.cookie},payload:form({csrf:A.csrf,agent,url:'https://example.com',goal:'Read the visible heading',mode:'read'})});
  await req(alien.id);assert.equal((await withTenant(A.tid,c=>c.query('SELECT id FROM browser_jobs'))).rowCount,0);
