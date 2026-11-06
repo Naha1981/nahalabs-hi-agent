@@ -55,6 +55,7 @@ export async function executeWhatsAppReply(c, { tenantId, approval, fetchImpl = 
   try {
     if(ch.engine==='zernio'){const {sendOwnedReply}=await import('./wa-owned.js');await sendOwnedReply(c,{phone:msg.phone,text:msg.body,fetchImpl});}else await makeAdapter(fetchImpl)({ engine: ch.engine, from: p.from, to: msg.phone, text: msg.body });
   } catch (e) {
+    if(e.uncertain){await c.query("UPDATE wa_messages SET status='queued' WHERE id=$1",[msg.id]);await audit(c,tenantId,'system','wa.send_uncertain',{approval_id:approval.id});return{error:'Send outcome unknown. Check the inbox before retrying.'};}
     return fail(String(e?.message || e).slice(0, 120));
   }
   await c.query("UPDATE wa_messages SET status='sent' WHERE id=$1", [msg.id]);
