@@ -7,7 +7,7 @@ Product page: https://hi.nahalabs.co.za/
 ## What this repository contains
 
 - Organise tasks and conversations, prepare drafts and review proposed actions.
-- NahaMind teammate and group-chat features are merging into HI; this does not mean NahaMind has been retired.
+- Teammate, group-chat and selected-work import features from NahaLabs' earlier assistant app are merged into HI.
 
 ## Current limits
 

@@ -20,8 +20,10 @@ test('skill routine uses existing scheduler exactly once and pauses when skill r
  await withTenant(A.tid,async c=>{await c.query("DELETE FROM skills WHERE name='routine-qa'");await c.query("UPDATE tasks SET next_run_at=now()-interval '1 minute' WHERE id=$1",[rows.rows[0].id]);});await runDueTasks({llm});const task=await withTenant(A.tid,c=>c.query('SELECT status FROM tasks WHERE id=$1',[rows.rows[0].id]));assert.equal(task.rows[0].status,'paused');
 });
 test('selected-work import strips credentials, is atomic and dedupes per tenant',async()=>{
- const raw={format:'nahamind-selected-work-v1',token:'NEVER_IMPORT_THIS',vault:[{password:'NEVER_IMPORT_THIS'}],routines:[{enabled:true}],bots:[{name:'Imported QA',job:'Draft-only QA teammate'}],skills:[{name:'Imported QA',task:'Write a short draft for review only.'}],chats:[{title:'Selected QA',messages:[{role:'user',text:'Selected QA hello'},{role:'assistant',text:'Selected QA reply'}]}]};
+ const raw={format:'selected-work-v1',token:'NEVER_IMPORT_THIS',vault:[{password:'NEVER_IMPORT_THIS'}],routines:[{enabled:true}],bots:[{name:'Imported QA',job:'Draft-only QA teammate'}],skills:[{name:'Imported QA',task:'Write a short draft for review only.'}],chats:[{title:'Selected QA',messages:[{role:'user',text:'Selected QA hello'},{role:'assistant',text:'Selected QA reply'}]}]};
  assert.doesNotMatch(JSON.stringify(inspectWorkspace(raw)),/NEVER_IMPORT_THIS|routines|vault/);
+ assert.equal(inspectWorkspace({format:'nahamind-selected-work-v1',bots:[{name:'Legacy QA',job:'Draft only'}]}).bots.length,1); // legacy format key still imports
+ assert.throws(()=>inspectWorkspace({format:'unknown-v9'}),/selected-work/);
  const r=await importWorkspace(A.tid,raw);assert.equal(r.chats,1);assert.equal((await importWorkspace(A.tid,raw)).duplicate,true);
  const saved=await withTenant(A.tid,c=>c.query("SELECT content FROM messages WHERE content LIKE 'Selected QA%'"));assert.equal(saved.rowCount,2);const other=await withTenant(B.tid,c=>c.query("SELECT content FROM messages WHERE content LIKE 'Selected QA%'"));assert.equal(other.rowCount,0);
 });

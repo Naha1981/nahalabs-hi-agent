@@ -4,6 +4,7 @@
 // downloads and API reads mark them with encoding: 'base64'.
 import { withTenant, audit } from './db.js';
 import { buildXlsx, XLSX_MIME } from './xlsx.js';
+import { buildPptx, deckJson, PPTX_MIME } from './pptx.js';
 
 export const FILE_TYPES = {
   csv: { ext: '.csv', mime: 'text/csv' },
@@ -11,6 +12,7 @@ export const FILE_TYPES = {
   md: { ext: '.md', mime: 'text/markdown' },
   txt: { ext: '.txt', mime: 'text/plain' },
   xlsx: { ext: '.xlsx', mime: XLSX_MIME, binary: true },
+  pptx: { ext: '.pptx', mime: PPTX_MIME, binary: true, deck: true },
 };
 
 const cellVal = (cell) => {
@@ -39,9 +41,13 @@ function sheetJson(content) {
 
 export async function saveFile(c, { tenantId, agentId, filename, format, content, actor }) {
   const type = FILE_TYPES[String(format || '').toLowerCase()];
-  if (!type) return { error: 'format must be csv, md, txt, html or xlsx.' };
+  if (!type) return { error: 'format must be csv, md, txt, html, xlsx or pptx.' };
   let stored;
-  if (type.binary) {
+  if (type.deck) {
+    const parsed = deckJson(String(content || '').slice(0, 100000));
+    if (parsed.error) return parsed;
+    stored = (await buildPptx(parsed.deck)).toString('base64');
+  } else if (type.binary) {
     const parsed = sheetJson(String(content || '').slice(0, 400000));
     if (parsed.error) return parsed;
     stored = buildXlsx(parsed.sheets).toString('base64');

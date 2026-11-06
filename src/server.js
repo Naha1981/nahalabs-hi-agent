@@ -28,6 +28,7 @@ import { registerApi, newApiKey } from './api.js';
 import { ensureBuiltinSkills } from './skills.js';
 import { voiceConfigured, voiceMaxBytes, transcribe, speak } from './voice.js';
 import { buildXlsx, XLSX_MIME } from './xlsx.js';
+import { PPTX_MIME } from './pptx.js';
 import { authUrlFor, connectAccount, providerConfigured, PROVIDERS, integrationsConfigured, enc } from './integrations.js';
 import { saveUpload, listUploads, uploadTypeFor, tenantUploadQuota, UPLOAD_TYPES } from './uploads.js';
 import { createHash as _ch } from 'node:crypto';
@@ -45,6 +46,7 @@ const STATIC = {
   '/drive.js': ['public/drive.js', 'text/javascript; charset=utf-8'],
   '/talk.js': ['public/talk.js', 'text/javascript; charset=utf-8'],
   '/boot.js': ['public/boot.js', 'text/javascript; charset=utf-8'],
+  '/theme.js': ['public/theme.js', 'text/javascript; charset=utf-8'],
   '/apple-touch-icon.png': ['public/apple-touch-icon.png', 'image/png'],
   '/home-app.jpg': ['public/home-app.jpg', 'image/jpeg'],
   '/icons/icon-192.png': ['public/icons/icon-192.png', 'image/png'],
@@ -153,6 +155,55 @@ export async function buildApp({ fetchImpl = fetch, logger = false, llm = defaul
     if (s) return reply.redirect('/app/agent');
     return render(reply, null, 'HI - the app that does the desk work', landing);
   });
+
+
+  const legal = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} - HI by NahaLabs</title><style>body{font-family:Georgia,serif;max-width:760px;margin:0 auto;padding:48px 24px;color:#1c1917;line-height:1.7}h1{font-size:1.8rem}h2{font-size:1.2rem;margin-top:2rem}a{color:#1d4ed8}</style></head><body>${body}<hr><p><a href="/">HI by NahaLabs</a></p></body></html>`;
+  app.get('/privacy', async (req, reply) => reply.type('text/html').send(legal('Privacy Policy', `
+<h1>Privacy Policy</h1>
+<p><strong>HI</strong>, a product of NahaLabs (Pty) Ltd, Johannesburg, South Africa.<br>Last updated: 6 November 2026</p>
+<h2>What HI does</h2>
+<p>HI is an AI employee for a small business. With your permission it can read connected Gmail and Outlook inboxes and calendars, research the public web, prepare documents, spreadsheets and slide decks, and draft emails, calendar events, posts and browser tasks. Nothing is sent, booked, published or submitted automatically: every external action waits for your explicit approval in the approval queue.</p>
+<h2>Connected account data</h2>
+<p>When you connect Google or Microsoft accounts we request only the permissions needed to read your mail and calendar and to create the drafts and events you approve. HI's use and transfer to any other app of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+<h2>How we use your data</h2>
+<ul>
+<li>Only to provide the features you asked for.</li>
+<li>We do not build advertising profiles, we do not sell your data, and we never use connected account data to train general-purpose AI models.</li>
+<li>We do not allow humans to read your connected account data, except with your explicit agreement for a specific support issue, or where required by law.</li>
+<li>Data is processed by the infrastructure providers needed to run the service (cloud hosting, database and the AI model that answers your requests), under equivalent confidentiality obligations.</li>
+</ul>
+<h2>What we store</h2>
+<ul>
+<li>Your account email and a password hash for signing in.</li>
+<li>OAuth tokens for connected accounts, stored encrypted and deleted when you disconnect.</li>
+<li>Your conversations, tasks, files and saved memories, so HI can continue your work. Memories are visible and deletable on the Memory page.</li>
+</ul>
+<h2>Your controls</h2>
+<ul>
+<li>Disconnect a connected account at any time on the Connections page - this deletes the stored tokens.</li>
+<li>Revoke HI's access at any time in your Google or Microsoft account permissions.</li>
+<li>Ask us to delete your account and all associated data: ai-solutions@nahalabs.co.za.</li>
+</ul>
+<h2>Security</h2>
+<p>All traffic is encrypted in transit (TLS). OAuth tokens are encrypted at rest. Each customer's data is isolated at the database level. Access to production systems is restricted to NahaLabs engineering.</p>
+<h2>Contact</h2>
+<p>NahaLabs (Pty) Ltd, Johannesburg, South Africa - ai-solutions@nahalabs.co.za</p>`)));
+
+  app.get('/terms', async (req, reply) => reply.type('text/html').send(legal('Terms of Service', `
+<h1>Terms of Service</h1>
+<p><strong>HI</strong>, a product of NahaLabs (Pty) Ltd, Johannesburg, South Africa.<br>Last updated: 6 November 2026</p>
+<h2>The service</h2>
+<p>HI is provided as-is as a business assistant. AI output can be wrong: always review drafts, research and proposed actions before relying on them. A model answer is not evidence that a task completed.</p>
+<h2>Your approvals</h2>
+<p>External actions - sending email or messages, publishing posts, creating calendar events, submitting website forms, running browser tasks - happen only after you approve the specific proposal in the approval queue. You are responsible for approvals you give.</p>
+<h2>Acceptable use</h2>
+<p>You may use HI only for lawful business purposes. Do not use it to send spam, to mislead people, to process another person's data without a lawful basis, or to attempt to access other customers' data. We may suspend accounts that break these rules.</p>
+<h2>Your data</h2>
+<p>You keep ownership of your data and the work HI produces for you. You can export or delete it, and you can ask us to delete your account at any time.</p>
+<h2>Availability and liability</h2>
+<p>Free hosting can sleep and scheduled routines can run late; do not rely on HI as the only channel for time-critical commitments. To the extent the law allows, NahaLabs is not liable for indirect or consequential losses, and our total liability is limited to the fees you paid in the three months before the claim.</p>
+<h2>Contact</h2>
+<p>NahaLabs (Pty) Ltd, Johannesburg, South Africa - ai-solutions@nahalabs.co.za</p>`)));
 
   app.get('/signup', async (req, reply) => render(reply, null, 'Create account', `
     <div class="auth"><h1>Create account</h1><form method="post" class="card">
@@ -821,7 +872,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     const upRows = ups.map((x) => `<tr><td>${esc(x.filename)}</td><td><span class="chip">${esc((UPLOAD_TYPES[x.mime] || {}).label || x.mime)}</span></td><td>${Math.ceil(x.size_bytes / 1024)} KB</td><td>${x.has_extract ? 'yes' : 'no'}</td><td>${fdate(x.created_at)}</td></tr>`).join('');
     return render(reply, u, 'Files', `
       <h1><b>Files</b> your agent made.</h1>
-      <p class="mut">Ask HI to save a report or spreadsheet and it lands here. Honest limit: csv, markdown and text for now.</p>
+      <p class="mut">Ask HI to save a report or spreadsheet and it lands here. Real files: csv, markdown, text, xlsx spreadsheets and pptx slide decks.</p>
       <div class="card"><table><tr><th>File</th><th>Type</th><th>Size</th><th>Made by</th><th>When</th></tr>${rows || '<tr><td colspan="5" class="mut">No files yet - ask the agent to create one, e.g. "save a csv of this week\'s matches"</td></tr>'}</table></div>
       <h2 style="margin-top:18px"><b>Documents</b> you upload.</h2>
       <p class="mut">Upload an offer to purchase, FICA pack, lease or sheet (PDF, Word, text, csv - up to 8 MB). Then tell HI in chat what to do with it, e.g. "record the deadlines from the OTP I uploaded".</p>
@@ -864,7 +915,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
       reply.header('content-security-policy', "sandbox; default-src 'none'");
       reply.header('x-content-type-options', 'nosniff');
     }
-    return reply.type(f.mime).send(f.mime === XLSX_MIME ? Buffer.from(f.content, 'base64') : f.content);
+    return reply.type(f.mime).send((f.mime === XLSX_MIME || f.mime === PPTX_MIME) ? Buffer.from(f.content, 'base64') : f.content);
   });
 
   // Templates: prebuilt desks HI can run for a business. One entry per template;
@@ -1028,7 +1079,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     return render(reply, u, 'Agent', `<div class="row" style="margin-bottom:2px"><h1 style="margin:0">Agent</h1><span>${switcher} ${agentModelEnabled() ? '' : '<span class="bad small">Model offline</span>'}</span></div>
       ${d.msgs.length ? '' : emptyChat}${thread}${pendingCards}
       <form method="post" action="/app/agent/message" class="composer" id="compose">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}">
-        <textarea name="text" rows="2" maxlength="4000" required placeholder="Message ${esc(d.agent.name)}"></textarea><div class="crow"><button>Send</button></div></form>${talk}
+        <textarea name="text" rows="2" maxlength="4000" required placeholder="Message ${esc(d.agent.name)}"></textarea><div class="crow"><select name="mode" aria-label="Answer style" style="width:auto"><option value="normal">Normal</option><option value="fast">Fast</option><option value="think">Think</option><option value="fun">Fun</option></select><button>Send</button></div></form>${talk}
       <details class="history"><summary>History</summary><ul>${d.convs.map((x) => `<li><a href="/app/agent?agent=${d.agent.id}&c=${x.id}">${esc(x.title)}</a> <span class="mut">${fdate(x.created_at)}</span></li>`).join('') || '<li class="mut">No conversations</li>'}</ul></details>
       <details class="card"><summary style="cursor:pointer"><b>Add agent</b></summary><form method="post" action="/app/agent/new">${csrf(u)}<label>Name</label><input name="name" required maxlength="40"><label>Role</label><input name="persona" maxlength="300" placeholder="e.g. Supplier research"><p><button class="sec">Create agent</button></p></form></details>`, flashOf(req));
   });
@@ -1036,10 +1087,11 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
   app.post('/app/agent/message', { preHandler: guard }, async (req, reply) => {
     const u = req.user;
     const { agent, c: conv, text } = req.body || {};
+    const chatMode = ['fast', 'think', 'fun'].includes(req.body?.mode) ? req.body.mode : 'normal';
     if (!uuidOk(agent) || !String(text || '').trim()) return reply.redirect('/app/agent?m=' + encodeURIComponent('Write a message first.'));
     if (uuidOk(conv)) { const owns = await withTenant(u.tenant_id, (c) => c.query('SELECT 1 FROM conversations WHERE id=$1', [String(conv)]).then((r) => r.rowCount > 0)); if (!owns) return reply.redirect('/app/agent?m=' + encodeURIComponent('That conversation is not available.')); }
     if (!msgLimit(u.tenant_id)) return reply.redirect('/app/agent?m=' + encodeURIComponent('Too many messages this hour.'));
-    const r = await runAgent({ tenantId: u.tenant_id, userEmail: u.email, agentId: agent, conversationId: uuidOk(conv) ? conv : null, userText: String(text).trim(), llm, fetchImpl, lookup });
+    const r = await runAgent({ tenantId: u.tenant_id, userEmail: u.email, agentId: agent, conversationId: uuidOk(conv) ? conv : null, userText: String(text).trim(), llm, fetchImpl, lookup, chatMode });
     if (r.error) return reply.redirect(`/app/agent?agent=${agent}&m=` + encodeURIComponent(r.error));
     return reply.redirect(`/app/agent?agent=${agent}&c=${r.conversationId}`);
   });

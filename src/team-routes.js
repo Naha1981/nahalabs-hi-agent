@@ -4,7 +4,7 @@ import {withTenant,audit} from './db.js';
 import {teamMembers,groupRound,TEAM} from './team-workspace.js';
 import {listSkills,createSkill,getSkill,ensureBuiltinSkills} from './skills.js';
 import {runAgent} from './agent.js';
-import {esc} from './views.js';
+import {esc,fdate} from './views.js';
 const idOk=x=>/^[0-9a-f-]{36}$/i.test(String(x||''));
 export function registerTeamRoutes(app,{guard,render,csrf,llm,fetchImpl,lookup}){
  const flash=r=>String(r.query?.m||'').slice(0,180);
@@ -17,7 +17,7 @@ export function registerTeamRoutes(app,{guard,render,csrf,llm,fetchImpl,lookup})
  const options=members.filter(m=>m.name!=='HI').map(m=>`<label style="display:block"><input type="checkbox" style="width:auto" name="members" value="${m.id}" ${TEAM.some(t=>t[0]===m.name)?'checked':''}> ${esc(m.name)} <span class="member-role" title="${esc(m.persona)}"></span></label>`).join('');
  return render(reply,u,'Team',`<h1>Your team</h1><p><a class="chip" href="/app/skills">Skills</a><a class="chip" href="/app/tasks">Routines</a><a class="chip" href="/app/import">Import work</a><a class="chip" href="/app/team">New chat</a></p>
  ${d.conv?`<h2>${esc(d.conv.title.slice(6))}</h2>`:''}<div class="thread">${d.msgs.map(m=>`<div class="turn ${m.role==='user'?'me':'hi'}"><div class="who">${esc(m.role==='user'?'You':m.steps?.find(s=>s.type==='teammate')?.name||'Team')}</div><div class="bub" style="white-space:pre-wrap">${esc(m.content)}</div></div>`).join('')}</div>
- <form method="post" action="/app/team/message" class="card">${csrf(u)}${d.conv?`<input type="hidden" name="c" value="${d.conv.id}">`:`<b>Teammates · Max 5</b>${options}`}<label>Message</label><textarea name="text" placeholder="Message team" required maxlength="4000"></textarea><p><button>Send</button></p></form>
+ <form method="post" action="/app/team/message" class="card">${csrf(u)}${d.conv?`<input type="hidden" name="c" value="${d.conv.id}">`:`<b>Teammates · Max 5</b>${options}`}<label>Message</label><textarea name="text" placeholder="Message team - @Name addresses one teammate" required maxlength="4000"></textarea><p><button>Send</button></p></form>
  <details class="card" id="browser-task"><summary>Browser task</summary><form method="post" action="/app/team/browser">${csrf(u)}<label>Teammate</label><select name="agent">${members.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select><label>Website URL</label><input name="url" type="url" required placeholder="https://example.com"><label>Task</label><textarea name="goal" required maxlength="1500"></textarea><label>Mode</label><select name="mode"><option value="read">Read only</option><option value="act">Type & click</option></select><p><button>Request task</button></p></form><p><a href="/app/browser">Results</a></p></details>
  <details class="card"><summary>Add teammate</summary><form method="post" action="/app/team/member">${csrf(u)}<label>Name</label><input name="name" required maxlength="40"><label>Role</label><textarea name="persona" required maxlength="500"></textarea><p><button>Add teammate</button></p></form></details>
  <div class="card"><b>History</b>${d.convs.map(c=>`<p><a href="/app/team?c=${c.id}">${esc(c.title.slice(6))}</a></p>`).join('')||'<p class="mut">No conversations yet.</p>'}</div>`,flash(req));
@@ -55,5 +55,28 @@ export function registerTeamRoutes(app,{guard,render,csrf,llm,fetchImpl,lookup})
  });
  app.get('/app/import',{preHandler:guard},async(req,reply)=>render(reply,req.user,'Import work',`<h1>Import work</h1><details class="card"><summary>Import details</summary><p class="mut">Bots, skills, chats. Originals unchanged. No secrets, accounts or routines. Draft-only skills.</p></details><form method="post" action="/app/import" class="card">${csrf(req.user)}<label>Selected-work JSON · Max 60 KB</label><textarea name="workspace" required maxlength="60000" rows="12"></textarea><label><input type="checkbox" style="width:auto" name="confirm" value="yes" required> I reviewed this selection.</label><p><button>Import work</button></p></form>`,flash(req)));
  app.post('/app/import',{preHandler:guard},async(req,reply)=>{if(req.body?.confirm!=='yes')return reply.redirect('/app/import?m=Confirm%20your%20selection%20first.');try{const r=await importWorkspace(req.user.tenant_id,req.body.workspace);return reply.redirect('/app/import?m='+encodeURIComponent(r.duplicate?'This exact selection was already imported.':`Imported ${r.bots} teammates, ${r.skills} skills and ${r.chats} chats. Original unchanged.`));}catch{return reply.redirect('/app/import?m=Could%20not%20import.%20Check%20format%2C%20size%20and%20account%20limits.');}});
+
+ app.get('/app/pages',{preHandler:guard},async(req,reply)=>{
+  const u=req.user;const pages=await withTenant(u.tenant_id,c=>c.query('SELECT id,title,body,updated_at FROM pages ORDER BY updated_at DESC LIMIT 200').then(r=>r.rows));
+  return render(reply,u,'Pages',`<h1>Pages</h1><p class="mut">Notes and working documents, kept in your workspace.</p>
+  <form method="post" action="/app/pages" class="card">${csrf(u)}<b>New page</b><label>Title</label><input name="title" required maxlength="120"><label>Body</label><textarea name="body" maxlength="50000"></textarea><p><button>Save page</button></p></form>
+  ${pages.map(pg=>`<div class="card"><form method="post" action="/app/pages/${pg.id}/update">${csrf(u)}<label>Title</label><input name="title" required maxlength="120" value="${esc(pg.title)}"><label>Body</label><textarea name="body" maxlength="50000">${esc(pg.body)}</textarea><p><button>Save changes</button> <button type="submit" class="sec danger" form="del-${pg.id}">Delete</button></p></form><form id="del-${pg.id}" method="post" action="/app/pages/${pg.id}/delete">${csrf(u)}</form><p class="mut small">Updated ${fdate(pg.updated_at)}</p></div>`).join('')||'<p class="mut">No pages yet.</p>'}`,flash(req));
+ });
+ app.post('/app/pages',{preHandler:guard},async(req,reply)=>{
+  const title=String(req.body?.title||'').trim().slice(0,120),body=String(req.body?.body||'').slice(0,50000);
+  if(!title)return reply.redirect('/app/pages?m=Give%20the%20page%20a%20title.');
+  try{await withTenant(req.user.tenant_id,async c=>{if((await c.query('SELECT count(*)::int n FROM pages')).rows[0].n>=200)throw Error('limit');await c.query('INSERT INTO pages(tenant_id,title,body) VALUES(current_setting(\'app.tenant_id\')::uuid,$1,$2)',[title,body]);});}catch(e){return reply.redirect('/app/pages?m='+encodeURIComponent(e.message==='limit'?'Page limit reached (200).':'Could not save the page.'));}
+  return reply.redirect('/app/pages');
+ });
+ app.post('/app/pages/:id/update',{preHandler:guard},async(req,reply)=>{
+  if(!idOk(req.params.id))return reply.redirect('/app/pages');
+  const title=String(req.body?.title||'').trim().slice(0,120),body=String(req.body?.body||'').slice(0,50000);
+  if(title)await withTenant(req.user.tenant_id,c=>c.query('UPDATE pages SET title=$1,body=$2,updated_at=now() WHERE id=$3',[title,body,req.params.id]));
+  return reply.redirect('/app/pages');
+ });
+ app.post('/app/pages/:id/delete',{preHandler:guard},async(req,reply)=>{
+  if(idOk(req.params.id))await withTenant(req.user.tenant_id,c=>c.query('DELETE FROM pages WHERE id=$1',[req.params.id]));
+  return reply.redirect('/app/pages');
+ });
  app.get('/app/vault',{preHandler:guard},async(req,reply)=>render(reply,req.user,'Documents and connections','<h1>Documents and connections</h1><p>HI does not have a general password vault. Do not enter passwords, payment cards or recovery codes here.</p><p><a class="chip" href="/app/documents">Document references and expiry dates</a><a class="chip" href="/app/files">Business files</a><a class="chip" href="/app/integrations">Connected accounts</a></p>'));
 }

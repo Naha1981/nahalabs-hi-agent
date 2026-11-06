@@ -904,3 +904,19 @@ CREATE OR REPLACE FUNCTION wa_owner_lookup(p_phone text) RETURNS TABLE (tenant_i
 $$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
 REVOKE ALL ON FUNCTION wa_owner_lookup(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION wa_owner_lookup(text) TO hi_app;
+
+-- Pages: customer notes and working documents, one workspace each.
+CREATE TABLE IF NOT EXISTS pages (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  title text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 120),
+  body text NOT NULL DEFAULT '' CHECK (char_length(body) <= 50000),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE pages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pages FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON pages;
+CREATE POLICY tenant_isolation ON pages USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON pages TO hi_app;

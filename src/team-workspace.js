@@ -11,6 +11,13 @@ export const TEAM = [
  ['Chief of Staff','Checks the brief, decisions and gaps. Never commits money or external action.'],
 ];
 const locks=new Set();
+// @Name addressing: "@Coder" or "@Chief of Staff" anywhere in a new team message
+// restricts the round to the mentioned teammates. No mentions = the chosen members.
+export function mentionMembers(text,agents){
+ const t=String(text||'').toLowerCase();const out=[];
+ for(const a of agents){const n=String(a.name||'').toLowerCase();if(n&&t.includes('@'+n))out.push(a.id);}
+ return out;
+}
 export async function teamMembers(tenantId){await ensureDefaultAgent(tenantId);return withTenant(tenantId,async c=>{
  for(const [name,role] of TEAM) await c.query("INSERT INTO agents (tenant_id,name,persona) VALUES (current_setting('app.tenant_id')::uuid,$1,$2) ON CONFLICT (tenant_id,name) DO NOTHING",[name,role]);
  return (await c.query('SELECT id,name,persona FROM agents ORDER BY created_at')).rows;
@@ -29,6 +36,7 @@ export async function groupRound({tenantId,userText,conversationId,memberIds,llm
   if(conversationId){conv=(await c.query("SELECT * FROM conversations WHERE id=$1 AND title LIKE 'Team: %'",[conversationId])).rows[0];if(!conv)throw Error('That team conversation is unavailable.');}
   let ids=Array.isArray(memberIds)?[...new Set(memberIds)]:[];if(ids.length>5)throw Error('Choose one to five teammates from your account.');
   if(conv){const initial=(await c.query("SELECT steps FROM messages WHERE conversation_id=$1 AND role='system' ORDER BY id LIMIT 1",[conv.id])).rows[0];ids=initial?.steps?.[0]?.members||[];}
+  if(!conv){const mentioned=mentionMembers(text,(await c.query('SELECT id,name FROM agents')).rows);if(mentioned.length)ids=mentioned.slice(0,5);}
   const members=(await c.query('SELECT id,name,persona FROM agents WHERE id=ANY($1::uuid[]) ORDER BY created_at',[ids])).rows;
   if(!members.length||members.length!==ids.length)throw Error('Choose one to five teammates from your account.');
   if(used+members.length>Number(process.env.AGENT_MAX_CALLS_PER_TENANT_DAY||80))throw Error('Not enough daily AI allowance for this team.');

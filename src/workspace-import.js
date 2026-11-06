@@ -3,7 +3,8 @@ import {createHash} from 'node:crypto';
 import {withTenant,audit} from './db.js';
 export function inspectWorkspace(raw){
  if(typeof raw==='string'){if(raw.length>60000)throw Error('Export is too large. Import a smaller selection.');raw=JSON.parse(raw);}
- if(!raw||raw.format!=='nahamind-selected-work-v1')throw Error('Use a selected-work export.');
+ const formats=['selected-work-v1','nahamind-selected-work-v1']; // second key: legacy alias so older saved exports still import
+ if(!raw||!formats.includes(raw.format))throw Error('Use a selected-work export.');
  const data={bots:[],skills:[],chats:[]};
  for(const b of (Array.isArray(raw.bots)?raw.bots:[]).slice(0,10)){const name=String(b.name||'').trim().slice(0,40),persona=String(b.job||b.role||'').trim().slice(0,500);if(name&&persona)data.bots.push({name,persona});}
  for(const s of (Array.isArray(raw.skills)?raw.skills:[]).slice(0,10)){const name=String(s.name||'').toLowerCase().replace(/[^a-z0-9-]+/g,'-').slice(0,32),task=String(s.task||'').slice(0,1800);if(name.length>1&&task.length>=20)data.skills.push({name,task});}
