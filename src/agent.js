@@ -191,7 +191,7 @@ async function extractMemoryCandidates({ llm, company, userText, answer }) {
   return { items, usage: out.usage, model: out.model };
 }
 
-export async function runAgent({ tenantId, userEmail, agentId, conversationId, userText, mode = 'chat', taskId = null, llm = chat, fetchImpl = fetch, lookup, now = new Date(), skill = null, depth = 0, voice = false, principal = 'owner', chatMode = 'normal' }) {
+export async function runAgent({ tenantId, userEmail, agentId, conversationId, userText, mode = 'chat', taskId = null, llm = chat, fetchImpl = fetch, lookup, now = new Date(), skill = null, depth = 0, voice = false, principal = 'owner', chatMode = 'normal', onDelta, onProgress }) {
   if (!['normal', 'fast', 'think', 'fun'].includes(chatMode)) chatMode = 'normal';
   if (await emergencyStopped()) return { error: 'HI is paused platform-wide right now.' };
   const budget = Number(process.env.AGENT_MAX_CALLS_PER_TENANT_DAY || 80);
@@ -232,20 +232,21 @@ export async function runAgent({ tenantId, userEmail, agentId, conversationId, u
   const msgs = [{ role: 'system', content: systemPrompt({ agent, company: ctxInfo.company, profile: ctxInfo.profile, core: ctxInfo.core, recalled: ctxInfo.recalled, mode, now, skill, voice, summary: ctxInfo.convSummary, external: principal !== 'owner', chatMode }) },
     ...ctxInfo.history.map((m) => ({ role: m.role, content: m.content })), { role: 'user', content: userText.slice(0, 4000) }];
 
-  if (!agentModelEnabled() && llm === chat) { answer = 'The AI model is not configured on this server yet.'; status = 'failed'; }
+  if (!agentModelEnabled() && llm === chat) { answer = 'HI replies are not available right now. Please try again later.'; status = 'failed'; }
   else {
     try {
       const schemas = (skill ? TOOL_SCHEMAS.filter((t) => skill.tools.includes(t.name)) : TOOL_SCHEMAS).filter((t) => principal === 'owner' || EXTERNAL_CONTACT_TOOLS.includes(t.name));
       let autoContinues = 0;
       for (let i = 0; i < MAX_STEPS; i++) {
         if (used >= budget) { answer = answer || 'Daily model budget for your account is used up. It resets within 24 hours.'; status = 'budget'; break; }
-        const out = await llm({ messages: msgs, tools: schemas });
+        const out = await llm({ messages: msgs, tools: schemas, ...(onDelta ? {onDelta} : {}) });
         used++;
         await withTenant(tenantId, (c) => c.query("INSERT INTO model_usage (tenant_id, provider, model, prompt_tokens, completion_tokens) VALUES (current_setting('app.tenant_id')::uuid,'agent',$1,$2,$3)", [out.model || 'unknown', out.usage?.prompt_tokens || 0, out.usage?.completion_tokens || 0]));
         if (!out.tool_calls?.length) { answer = out.content || ''; break; }
         msgs.push({ role: 'assistant', content: out.content || '', tool_calls: out.tool_calls.map((t) => ({ id: t.id, type: 'function', function: { name: t.name, arguments: JSON.stringify(t.args || {}) } })) });
         let endTurn = false;
         for (const t of out.tool_calls) {
+          onProgress?.(toolLabel(t.name));
           if (t.name === 'ask_user') {
             if (mode === 'task') { msgs.push({ role: 'tool', tool_call_id: t.id, content: wrapToolResult(nonce, 'ask_user', 'Questions are not possible in an unattended run. Make a reasonable assumption and note it in your report.') }); continue; }
             if (voice) { msgs.push({ role: 'tool', tool_call_id: t.id, content: wrapToolResult(nonce, 'ask_user', 'Do not use this tool on voice: ask your question aloud in one short spoken sentence instead.') }); continue; }
@@ -292,8 +293,8 @@ ${r.answer}`)
         && await withTenant(tenantId, (c) => c.query("SELECT 1 FROM approvals WHERE status='proposed' LIMIT 1")).then((r) => r.rowCount > 0).catch(() => false);
       const rateLimited = /model http 429/.test(String(e && e.message));
       answer = proposed ? 'That is prepared and waiting for your approval - use the Approve button on the card below.'
-        : rateLimited ? 'The AI provider is limiting requests right now - too many in a short window. Your message is saved; please try again in a few minutes.'
-        : 'Something went wrong talking to the model. Try again shortly.';
+        : rateLimited ? 'HI is limiting requests right now. Your message is saved; please try again in a few minutes.'
+        : 'The reply was interrupted. Your message is saved. Please try again shortly.';
       status = 'failed';
       steps.push({ type: 'error', message: String(e.message).slice(0, 160) });
     }

@@ -63,7 +63,8 @@ test('chat renders bubbles, markdown, source chips, collapsed steps, tender and 
   // approval card with in-chat buttons posting back to the conversation
   assert.match(r.body, /<div class="appr"><div class="asum">Open example\.com and read the title<\/div>/);
   assert.match(r.body, /<input type="hidden" name="back" value="\/app\/agent\?agent=/);
-  assert.match(r.body, /<button name="decision" value="approve">Approve<\/button>/);
+  assert.match(r.body, /<a class="btn" href="\/app\/approvals">Review action<\/a>/);
+  assert.doesNotMatch(r.body, /<button name="decision" value="approve">Approve<\/button>/);
   // headings become bold, rules stripped, tables become real tables
   assert.match(r.body, /<b>Quick steps<\/b>/);
   assert.doesNotMatch(r.body, /###/);

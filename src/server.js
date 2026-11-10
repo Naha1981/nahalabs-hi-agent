@@ -45,6 +45,7 @@ const STATIC = {
   '/sw.js': ['public/sw.js', 'text/javascript; charset=utf-8'],
   '/drive.js': ['public/drive.js', 'text/javascript; charset=utf-8'],
   '/talk.js': ['public/talk.js', 'text/javascript; charset=utf-8'],
+  '/chat.js': ['public/chat.js', 'text/javascript; charset=utf-8'],
   '/boot.js': ['public/boot.js', 'text/javascript; charset=utf-8'],
   '/theme.js': ['public/theme.js', 'text/javascript; charset=utf-8'],
   '/apple-touch-icon.png': ['public/apple-touch-icon.png', 'image/png'],
@@ -1061,7 +1062,7 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
       const convs = (await c.query(`SELECT id, title, created_at FROM conversations WHERE agent_id=$1 AND title NOT LIKE 'Scheduled task "%' ORDER BY created_at DESC LIMIT 15`, [agent.id])).rows;
       const conv = uuidOk(req.query.c) ? convs.find((x) => x.id === req.query.c) : null;
       const msgs = conv ? (await c.query('SELECT role, content, sources, steps, created_at FROM messages WHERE conversation_id=$1 ORDER BY id', [conv.id])).rows : [];
-      const pending = (await c.query("SELECT id, kind, summary, created_at FROM approvals WHERE status='proposed' ORDER BY created_at DESC LIMIT 5")).rows;
+      const pending = (await c.query("SELECT id, kind, summary, payload, created_at FROM approvals WHERE status='proposed' ORDER BY created_at DESC LIMIT 5")).rows;
       return { agents, agent, convs, conv, msgs, pending };
     });
     const back = `/app/agent?agent=${d.agent.id}${d.conv ? `&c=${d.conv.id}` : ''}`;
@@ -1071,17 +1072,17 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
       if (m.role === 'user') return `<div class="turn me"><div class="who">You</div><div class="bub">${mdLite(m.content)}</div></div>`;
       return `<div class="turn hi"><div class="who"><span class="av">HI</span>${esc(d.agent.name)}</div><div class="bub">${mdLite(stripEmoji(m.content))}${srcList(m.sources)}${tenderCards(m.steps)}${chips}</div>${workedLine(m.steps)}</div>`;
     }).join('')}</div>`;
-    const pendingCards = d.pending.length ? d.pending.map((a) => `<div class="appr"><div class="asum">${esc(a.summary)}</div><div class="anote">Review in <a href="/app/approvals">Approvals</a>.</div><form method="post" action="/app/approvals/${a.id}">${csrf(u)}<input type="hidden" name="back" value="${esc(back)}"><button name="decision" value="approve">Approve</button><button name="decision" value="reject" class="sec danger">Decline</button></form></div>`).join('') : '';
+    const pendingCards = d.pending.length ? d.pending.map((a) => `<div class="appr"><div class="asum">${esc(a.summary)}</div><div class="anote">Check the full action and destination before approving.</div><form method="post" action="/app/approvals/${a.id}">${csrf(u)}<input type="hidden" name="back" value="${esc(back)}"><a class="btn" href="/app/approvals">Review action</a><button name="decision" value="reject" class="sec danger">Decline</button></form></div>`).join('') : '';
     const talk = voiceConfigured() ? `<div id="talkbox" data-csrf="${esc(u.csrf)}" data-c="${d.conv ? d.conv.id : ''}" style="margin-top:8px"><button type="button" id="talkbtn" class="sec">Talk</button> <span id="talkstatus" class="mut"></span></div><script src="/talk.js" defer></script>` : '';
-    const switcher = d.agents.length > 1 ? `<span class="mut small">${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join(' &middot; ')}</span>` : '';
+    const switcher = d.agents.length > 1 ? `<details class="agent-switcher"><summary>Team</summary><div>${d.agents.map((a) => `<a href="/app/agent?agent=${a.id}">${esc(a.name)}</a>`).join('')}</div></details>` : '';
     const starters = ['Open a website, click and fill in a form for me', 'Work through a portal for me', 'Research a question and show me the sources', 'Remember a fact about my business'];
-    const emptyChat = `<div class="work-empty">${icon('Agent')}<h2>What can HI do?</h2><a class="btn sec" href="#compose">Start a task</a></div>`;
-    return render(reply, u, 'Agent', `<div class="row" style="margin-bottom:2px"><h1 style="margin:0">Agent</h1><span>${switcher} ${agentModelEnabled() ? '' : '<span class="bad small">Model offline</span>'}</span></div>
-      ${d.msgs.length ? '' : emptyChat}${thread}${pendingCards}
+    const emptyChat = `<div class="work-empty"><span class="chat-mark">h</span><p class="eyebrow">YOUR SPACE TO GET THINGS DONE</p><h2>What can I take off your desk?</h2><p class="mut">Research, prepare, remember. You stay in control.</p><div class="starter-grid">${[['Research a question','Research a question and show me the sources'],['Work through a website','Open a website, click and fill in a form for me'],['Prepare my next step','Help me plan my next business task'],['Remember something','Remember a fact about my business']].map(([label,text])=>`<button type="button" class="sec" data-starter="${esc(text)}">${label} <span aria-hidden="true">↗</span></button>`).join('')}</div></div>`;
+    return render(reply, u, 'Agent', `<section class="chat-workspace"><header class="chat-heading"><h1>${esc(d.agent.name)}</h1>${switcher}<span>${agentModelEnabled() ? '' : '<span class="small mut">Replies unavailable</span>'}</span><a class="btn sec" href="/app/menu" aria-label="All tools">Tools</a><a class="btn sec" href="/app/agent?agent=${d.agent.id}">New chat</a></header><div class="chat-scroll">
+      ${d.msgs.length ? '' : emptyChat}${thread}${pendingCards}</div>
       <form method="post" action="/app/agent/message" class="composer" id="compose">${csrf(u)}<input type="hidden" name="agent" value="${d.agent.id}"><input type="hidden" name="c" value="${d.conv ? d.conv.id : ''}">
-        <textarea name="text" rows="2" maxlength="4000" required placeholder="Message ${esc(d.agent.name)}"></textarea><div class="crow"><select name="mode" aria-label="Answer style" style="width:auto"><option value="normal">Normal</option><option value="fast">Fast</option><option value="think">Think</option><option value="fun">Fun</option></select><button>Send</button></div></form>${talk}
-      <details class="history"><summary>History</summary><ul>${d.convs.map((x) => `<li><a href="/app/agent?agent=${d.agent.id}&c=${x.id}">${esc(x.title)}</a> <span class="mut">${fdate(x.created_at)}</span></li>`).join('') || '<li class="mut">No conversations</li>'}</ul></details>
-      <details class="card"><summary style="cursor:pointer"><b>Add agent</b></summary><form method="post" action="/app/agent/new">${csrf(u)}<label>Name</label><input name="name" required maxlength="40"><label>Role</label><input name="persona" maxlength="300" placeholder="e.g. Supplier research"><p><button class="sec">Create agent</button></p></form></details>`, flashOf(req));
+        <textarea name="text" aria-label="Message HI" rows="2" maxlength="4000" required placeholder="Message ${esc(d.agent.name)}"></textarea><div class="crow"><select name="mode" aria-label="Answer style" style="width:auto"><option value="normal">Normal</option><option value="fast">Fast</option><option value="think">Think</option><option value="fun">Fun</option></select><span class="compose-links"><a href="/app/files">Attach files</a><a href="/app/integrations">Connect</a></span><button type="submit">Send</button></div><p id="chat-status" role="status" aria-live="polite"></p></form>${talk}</section>
+      <div class="chat-tools"><details class="history"><summary>History</summary><ul>${d.convs.map((x) => `<li><a href="/app/agent?agent=${d.agent.id}&c=${x.id}">${esc(x.title)}</a> <span class="mut">${fdate(x.created_at)}</span></li>`).join('') || '<li class="mut">No conversations</li>'}</ul></details>
+      <details class="card"><summary style="cursor:pointer"><b>Add agent</b></summary><form method="post" action="/app/agent/new">${csrf(u)}<label>Name</label><input name="name" aria-label="Agent name" required maxlength="40"><label>Role</label><input name="persona" aria-label="Agent role" maxlength="300" placeholder="e.g. Supplier research"><p><button class="sec">Create agent</button></p></form></details></div><script src="/chat.js" defer></script>`, flashOf(req));
   });
   const msgLimit = makeLimiter(30, 60 * 60 * 1000);
   app.post('/app/agent/message', { preHandler: guard }, async (req, reply) => {
@@ -1091,6 +1092,17 @@ ${[a.payload?.body, a.payload?.description_2].filter(Boolean).map((d, i2) => 'De
     if (!uuidOk(agent) || !String(text || '').trim()) return reply.redirect('/app/agent?m=' + encodeURIComponent('Write a message first.'));
     if (uuidOk(conv)) { const owns = await withTenant(u.tenant_id, (c) => c.query('SELECT 1 FROM conversations WHERE id=$1', [String(conv)]).then((r) => r.rowCount > 0)); if (!owns) return reply.redirect('/app/agent?m=' + encodeURIComponent('That conversation is not available.')); }
     if (!msgLimit(u.tenant_id)) return reply.redirect('/app/agent?m=' + encodeURIComponent('Too many messages this hour.'));
+    if (req.headers.accept === 'application/x-ndjson') {
+      reply.hijack();
+      reply.raw.writeHead(200, {'content-type':'application/x-ndjson; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','x-accel-buffering':'no'});
+      const emit=(event)=>{if(!reply.raw.destroyed)reply.raw.write(JSON.stringify(event)+'\n');};
+      emit({type:'progress',text:'Working on your request'});
+      try {
+        const r=await runAgent({tenantId:u.tenant_id,userEmail:u.email,agentId:agent,conversationId:uuidOk(conv)?conv:null,userText:String(text).trim(),llm,fetchImpl,lookup,chatMode,onDelta:text=>emit({type:'delta',text}),onProgress:text=>emit({type:'progress',text})});
+        if(r.error)emit({type:'error',text:r.error});else emit({type:'done',url:`/app/agent?agent=${agent}&c=${r.conversationId}`});
+      }catch{emit({type:'error',text:'The reply could not finish. Check History before retrying.'});}
+      reply.raw.end(); return;
+    }
     const r = await runAgent({ tenantId: u.tenant_id, userEmail: u.email, agentId: agent, conversationId: uuidOk(conv) ? conv : null, userText: String(text).trim(), llm, fetchImpl, lookup, chatMode });
     if (r.error) return reply.redirect(`/app/agent?agent=${agent}&m=` + encodeURIComponent(r.error));
     return reply.redirect(`/app/agent?agent=${agent}&c=${r.conversationId}`);

@@ -45,4 +45,4 @@ export async function explainFit({ tenantId, profile, tender, fetchImpl = fetch 
 
 export function agentModelEnabled() { return freeChatEnabled(process.env); }
 // Existing caller retains tenant auth, budget, tool permissions and audit.
-export async function chat({messages,tools=[],fetchImpl=fetch}) {return freeChat({messages,tools,fetchImpl});}
+export async function chat({messages,tools=[],fetchImpl=fetch,onDelta}) {return freeChat({messages,tools,fetchImpl,onDelta});}
